@@ -1,0 +1,4 @@
+# Supabase CLI configuration for Amar Dokan Pro Edge Functions
+# Auth/Admin verification is enforced inside manage-staff-user via supabaseAdmin.auth.getUser(token)
+[functions.manage-staff-user]
+verify_jwt = false

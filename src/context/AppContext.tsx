@@ -225,7 +225,7 @@ interface AppContextType {
     updates: { fullName?: string; phone?: string; branchId?: string; branchName?: string; status?: 'active' | 'inactive' }
   ) => Promise<void>;
   toggleSellerStatus: (id: string, status: 'active' | 'inactive') => Promise<void>;
-  resetSellerPassword: (email: string, newPassword?: string) => Promise<{ success: boolean; message: string }>;
+  resetSellerPassword: (email: string, newPassword?: string, sellerId?: string) => Promise<{ success: boolean; message: string }>;
   reloadSellers: () => Promise<void>;
 
   // Audit Logs
@@ -1195,15 +1195,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const hasPermission = useCallback(
     (moduleKey: PermissionModuleKey, action: PermissionAction = 'view'): boolean => {
-      const roleObj = roles.find(
-        r =>
-          r.roleKey === currentUserRole ||
-          r.roleKey === activeRoleKey ||
-          (currentEmployee?.roleId && r.id === currentEmployee.roleId && activeRoleKey === currentEmployee.roleKey)
-      );
+      const roleObj =
+        roles.find(
+          r =>
+            currentEmployee?.roleId &&
+            r.id === currentEmployee.roleId &&
+            activeRoleKey === normalizeRoleKey(currentEmployee.roleKey || currentEmployee.role)
+        ) ||
+        roles.find(r => r.roleKey === activeRoleKey) ||
+        roles.find(r => r.roleKey === authenticatedRoleKey) ||
+        roles.find(r => r.roleKey === currentUserRole);
       return hasMatrixPermission(roleObj?.permissions, activeRoleKey, moduleKey, action);
     },
-    [roles, currentUserRole, activeRoleKey, currentEmployee]
+    [roles, currentUserRole, activeRoleKey, authenticatedRoleKey, currentEmployee]
   );
 
   const enforcePermission = useCallback(
@@ -3633,25 +3637,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let newEmp: Employee;
     if (isSupabaseConfigured) {
       ensureCloudContext();
+      const normRoleKey = normalizeRoleKey(empData.roleKey || empData.role);
       const { data, error } = await supabase
         .from('employees')
         .insert({
           business_id: activeBusinessId,
           branch_id: sanitizeUuid(empData.branchId || activeBranchId),
+          user_id: sanitizeUuid(empData.userId),
           name: empData.name,
           mobile: empData.mobile,
           position: empData.position,
           role: empData.role,
-          role_key: normalizeRoleKey(empData.role),
+          role_key: normRoleKey,
           salary: empData.salary,
           joining_date: empData.joiningDate,
           status: empData.status,
           account_status: empData.accountStatus || empData.status || 'active',
+          created_by: sanitizeUuid(user?.id),
         })
         .select()
         .single();
       if (error) throw raiseDbError(error, 'Failed to add employee.');
-      newEmp = { ...empData, id: data.id };
+      newEmp = {
+        ...empData,
+        id: data.id,
+        userId: data.user_id || undefined,
+        roleKey: data.role_key || normRoleKey,
+        accountStatus: data.account_status || empData.accountStatus || 'active',
+      };
     } else {
       newEmp = { ...empData, id: `emp-${Date.now()}` };
     }
@@ -3745,9 +3758,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('SELLER_STATUS_CHANGED', 'seller', id, `Seller status changed to ${status}`);
   };
 
-  const resetSellerPassword = async (email: string, newPassword?: string) => {
-    const res = await sellerService.resetPassword(email, newPassword);
-    addAuditLog('SELLER_PASSWORD_RESET', 'seller', email, `Password reset initiated for seller ${email}`);
+  const resetSellerPassword = async (email: string, newPassword?: string, sellerId?: string) => {
+    if (!enforcePermission('user_management', 'edit', 'Reset Seller Password')) {
+      return { success: false, message: 'Permission denied: Only Admins can reset seller passwords.' };
+    }
+    const res = await sellerService.resetPassword(email, newPassword, sellerId, activeBusinessId || undefined);
+    addAuditLog('SELLER_PASSWORD_RESET', 'seller', sellerId || email, `Password reset initiated for seller ${email}`);
     return res;
   };
 
@@ -3857,7 +3873,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!enforcePermission('user_management', 'edit', 'Reset Employee Password')) {
       return { success: false, message: 'Permission denied: Only Admins can reset employee passwords.' };
     }
-    const res = await staffRbacService.resetEmployeePassword(employee, newPassword);
+    const res = await staffRbacService.resetEmployeePassword(
+      employee,
+      newPassword,
+      activeBusinessId || undefined
+    );
     logUserActivity(
       'PASSWORD_RESET',
       'user_management',

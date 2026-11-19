@@ -82,6 +82,12 @@ export const formatSupabaseError = (
     return rawMsg || 'A duplicate record with this code or invoice number already exists.';
   }
   if (code === '23503' || lower.includes('foreign key')) {
+    if (lower.includes('employees_user_id_fkey')) {
+      return 'Employee authentication user could not be linked because the Auth user UUID does not exist in auth.users. Ensure the Supabase Auth user is created before saving the employee record.';
+    }
+    if (lower.includes('insert or update')) {
+      return `Invalid reference while saving record: ${rawMsg}`;
+    }
     return 'This record cannot be modified or deleted because it is linked to existing transactions.';
   }
   if (code === 'PGRST116') {

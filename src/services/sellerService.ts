@@ -1,5 +1,13 @@
 import { createClient } from '@supabase/supabase-js';
-import { supabase, isSupabaseConfigured, supabaseUrl, supabaseAnonKey } from '../lib/supabase';
+import {
+  supabase,
+  isSupabaseConfigured,
+  supabaseUrl,
+  supabaseAnonKey,
+  isValidUuid,
+  sanitizeUuid,
+  formatSupabaseError,
+} from '../lib/supabase';
 import { Seller, Sale } from '../types';
 import { initialSellers } from '../data/initialData';
 
@@ -143,48 +151,127 @@ export const sellerService = {
     businessId: string
   ): Promise<Seller> {
     const cleanUsername = payload.username.trim().toLowerCase().replace(/\s+/g, '_');
-    const emailToUse = payload.email?.trim() || `${cleanUsername}@amardokanpro.internal`;
+    const emailToUse = (payload.email?.trim() || `${cleanUsername}@amardokanpro.internal`).toLowerCase();
+    const cleanBranchId = sanitizeUuid(payload.branchId);
     const tempId = `seller-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
 
     let createdId = tempId;
 
-    if (isSupabaseConfigured && businessId) {
-      try {
-        // Instantiate isolated client without persisting session to localStorage
-        const tempClient = createClient(supabaseUrl, supabaseAnonKey, {
-          auth: {
-            persistSession: false,
-            autoRefreshToken: false,
-            detectSessionInUrl: false,
-          },
-        });
+    if (isSupabaseConfigured && isValidUuid(businessId)) {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token;
 
-        // 1. Create Supabase Auth user
-        const { data: authData, error: authErr } = await tempClient.auth.signUp({
-          email: emailToUse,
-          password: payload.password,
-          options: {
-            data: {
-              full_name: payload.fullName,
-              username: cleanUsername,
-              role: 'seller',
+      let handledByPrivilegedApi = false;
+      if (accessToken && typeof fetch !== 'undefined') {
+        try {
+          const res = await fetch('/api/staff/create', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
             },
-          },
-        });
-
-        if (authErr) {
-          console.warn('Supabase Auth signUp note:', authErr.message);
-          // If user already registered with that email, generate unique hash
-          if (authErr.message.includes('already registered')) {
-            throw new Error(`A user with email or username "${cleanUsername}" already exists.`);
+            body: JSON.stringify({
+              businessId,
+              mode: 'seller',
+              payload: {
+                ...payload,
+                username: cleanUsername,
+                email: emailToUse,
+                branchId: cleanBranchId,
+                accountStatus: payload.status,
+              },
+            }),
+          });
+          const json = await res.json().catch(() => null);
+          if (res.ok && isValidUuid(json?.userId)) {
+            createdId = json.userId;
+            handledByPrivilegedApi = true;
+          } else if (
+            res.status !== 404 &&
+            res.status !== 501 &&
+            json?.code !== 'SERVICE_ROLE_NOT_CONFIGURED'
+          ) {
+            throw new Error(json?.error || `Failed to create seller account (${res.status}).`);
           }
-          throw authErr;
+        } catch (apiErr: any) {
+          if (apiErr instanceof Error && !apiErr.message.includes('Failed to fetch')) {
+            throw apiErr;
+          }
         }
+      }
 
-        if (authData.user) {
+      if (!handledByPrivilegedApi && accessToken) {
+        try {
+          const { data: fnData, error: fnErr } = await supabase.functions.invoke('manage-staff-user', {
+            body: {
+              action: 'create_seller',
+              businessId,
+              payload: {
+                ...payload,
+                username: cleanUsername,
+                email: emailToUse,
+                branchId: cleanBranchId,
+                accountStatus: payload.status,
+              },
+            },
+          });
+          if (!fnErr && isValidUuid(fnData?.userId)) {
+            createdId = fnData.userId;
+            handledByPrivilegedApi = true;
+          } else if (fnData?.error) {
+            throw new Error(fnData.error);
+          }
+        } catch (edgeErr: any) {
+          const msg = String(edgeErr?.message || '');
+          const isMissing =
+            msg.toLowerCase().includes('failed to send a request') ||
+            msg.toLowerCase().includes('404') ||
+            msg.toLowerCase().includes('not found');
+          if (!isMissing) throw edgeErr;
+        }
+      }
+
+      if (!handledByPrivilegedApi) {
+        try {
+          const tempClient = createClient(supabaseUrl, supabaseAnonKey, {
+            auth: {
+              persistSession: false,
+              autoRefreshToken: false,
+              detectSessionInUrl: false,
+            },
+          });
+
+          const { data: authData, error: authErr } = await tempClient.auth.signUp({
+            email: emailToUse,
+            password: payload.password,
+            options: {
+              data: {
+                full_name: payload.fullName,
+                username: cleanUsername,
+                role: 'seller',
+                business_id: businessId,
+              },
+            },
+          });
+
+          if (authErr) {
+            if (authErr.message.toLowerCase().includes('already registered')) {
+              throw new Error(`A user with email or username "${cleanUsername}" already exists.`);
+            }
+            throw authErr;
+          }
+
+          if (!authData?.user?.id || !isValidUuid(authData.user.id)) {
+            throw new Error('Supabase Auth did not return a valid seller user UUID.');
+          }
+          if (Array.isArray(authData.user.identities) && authData.user.identities.length === 0) {
+            throw new Error(
+              `A user with email "${emailToUse}" already exists in Supabase Auth. Please use a different email or username.`
+            );
+          }
+
           createdId = authData.user.id;
 
-          // 2. Call register_seller_profile RPC or upsert into user_profiles & business_users
           const { error: rpcErr } = await supabase.rpc('register_seller_profile', {
             p_business_id: businessId,
             p_seller_id: createdId,
@@ -192,33 +279,42 @@ export const sellerService = {
             p_full_name: payload.fullName,
             p_username: cleanUsername,
             p_mobile: payload.phone,
-            p_branch_id: payload.branchId || null,
+            p_branch_id: cleanBranchId,
             p_status: payload.status,
           });
 
           if (rpcErr) {
-            console.warn('RPC register_seller_profile note, using direct upsert:', rpcErr.message);
-            // Fallback direct upsert
-            await supabase.from('user_profiles').upsert({
+            const { error: buErr } = await supabase.from('business_users').upsert({
+              business_id: businessId,
+              user_id: createdId,
+              branch_id: cleanBranchId,
+              role: 'seller',
+              status: payload.status,
+            });
+            if (buErr) {
+              throw new Error(formatSupabaseError(buErr, 'Failed to link seller business membership.'));
+            }
+
+            const { error: profErr } = await supabase.from('user_profiles').upsert({
               id: createdId,
               email: emailToUse,
               full_name: payload.fullName,
               username: cleanUsername,
               mobile: payload.phone,
             });
-
-            await supabase.from('business_users').upsert({
-              business_id: businessId,
-              user_id: createdId,
-              branch_id: payload.branchId || null,
-              role: 'seller',
-              status: payload.status,
-            });
+            if (profErr) {
+              await supabase
+                .from('business_users')
+                .delete()
+                .eq('business_id', businessId)
+                .eq('user_id', createdId);
+              throw new Error(formatSupabaseError(profErr, 'Failed to save seller profile.'));
+            }
           }
+        } catch (err: any) {
+          console.error('Error creating seller via Supabase Auth:', err);
+          throw err;
         }
-      } catch (err: any) {
-        console.error('Error creating seller via Supabase Auth:', err);
-        throw err;
       }
     }
 
@@ -318,9 +414,14 @@ export const sellerService = {
   },
 
   /**
-   * Reset seller password
+   * Reset seller password via Admin API / Edge Function
    */
-  async resetPassword(email: string, newPassword?: string): Promise<{ success: boolean; message: string }> {
+  async resetPassword(
+    email: string,
+    newPassword?: string,
+    sellerUserId?: string,
+    businessId?: string
+  ): Promise<{ success: boolean; message: string }> {
     if (!isSupabaseConfigured) {
       return {
         success: true,
@@ -329,11 +430,73 @@ export const sellerService = {
     }
 
     try {
+      const cleanPass = (newPassword || '').trim();
+      const validBizId = sanitizeUuid(businessId);
+      const validUserId = sanitizeUuid(sellerUserId);
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token;
+
+      if (cleanPass.length >= 6 && accessToken && validBizId && validUserId) {
+        if (typeof fetch !== 'undefined') {
+          try {
+            const res = await fetch('/api/staff/reset-password', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${accessToken}`,
+              },
+              body: JSON.stringify({
+                businessId: validBizId,
+                userId: validUserId,
+                newPassword: cleanPass,
+              }),
+            });
+            const json = await res.json().catch(() => null);
+            if (res.ok && json?.success) {
+              return {
+                success: true,
+                message: json.message || 'Seller password updated in Supabase Auth.',
+              };
+            }
+            if (res.status !== 404 && res.status !== 501 && json?.code !== 'SERVICE_ROLE_NOT_CONFIGURED') {
+              return { success: false, message: json?.error || 'Failed to update seller password.' };
+            }
+          } catch {
+            // Fall through to Edge Function
+          }
+        }
+
+        const { data: fnData, error: fnErr } = await supabase.functions.invoke('manage-staff-user', {
+          body: {
+            action: 'reset_password',
+            businessId: validBizId,
+            userId: validUserId,
+            newPassword: cleanPass,
+          },
+        });
+        if (!fnErr && fnData?.success) {
+          return {
+            success: true,
+            message: fnData.message || 'Seller password updated in Supabase Auth.',
+          };
+        }
+        if (fnErr?.context && typeof fnErr.context.json === 'function') {
+          try {
+            const body = await fnErr.context.clone().json();
+            if (body?.error && !(fnErr.context.status === 404 && body?.code === 'NOT_FOUND')) {
+              return { success: false, message: body.error };
+            }
+          } catch {
+            // Fall through
+          }
+        }
+      }
+
       if (email.includes('@amardokanpro.internal')) {
-        // Internal account - notify admin
         return {
-          success: true,
-          message: 'Password updated successfully. Seller can now sign in with their new credentials.',
+          success: false,
+          message:
+            'Edge Function "manage-staff-user" is not deployed yet (or SUPABASE_SERVICE_ROLE_KEY is missing on the server). Deploy the Edge Function to reset internal seller passwords.',
         };
       }
 

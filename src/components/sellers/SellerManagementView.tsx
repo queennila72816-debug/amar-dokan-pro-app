@@ -213,7 +213,8 @@ export const SellerManagementView: React.FC = () => {
     try {
       const result = await resetSellerPassword(
         passwordResetSeller.email || `${passwordResetSeller.username}@amardokanpro.internal`,
-        newPassword || undefined
+        newPassword || undefined,
+        passwordResetSeller.id
       );
 
       if (result.success) {

@@ -4,6 +4,9 @@ import {
   isSupabaseConfigured,
   supabaseUrl,
   supabaseAnonKey,
+  isValidUuid,
+  sanitizeUuid,
+  formatSupabaseError,
 } from '../lib/supabase';
 import {
   AccountStatus,
@@ -100,6 +103,106 @@ export interface CreateEmployeePayload {
   accountStatus: AccountStatus;
   branchId?: string;
   branchName?: string;
+}
+
+function mapDbEmployeeRow(
+  e: any,
+  roleNameFallback?: string,
+  branchNameFallback?: string
+): Employee {
+  const accStatus = (e.account_status || e.status || 'active') as AccountStatus;
+  const rKey = e.role_key || normalizeRoleKey(e.role);
+  return {
+    id: e.id,
+    employeeCode: e.employee_code || undefined,
+    userId: e.user_id || undefined,
+    name: e.name,
+    username: e.username || undefined,
+    email: e.email || undefined,
+    mobile: e.mobile || '',
+    position: e.position || rKey,
+    role: roleKeyToLegacyUserRole(rKey),
+    roleId: e.role_id || undefined,
+    roleKey: rKey,
+    roleName: roleNameFallback || e.position || getDefaultRoleTemplate(rKey).name,
+    salary: Number(e.salary || 0),
+    joiningDate:
+      e.joining_date ||
+      (e.created_at ? String(e.created_at).slice(0, 10) : new Date().toISOString().slice(0, 10)),
+    branchId: e.branch_id || '',
+    branchName: branchNameFallback,
+    status: accStatus === 'active' ? 'active' : 'inactive',
+    accountStatus: accStatus,
+    lastLoginAt: e.last_login_at || undefined,
+    createdAt: e.created_at,
+    updatedAt: e.updated_at,
+  };
+}
+
+async function inspectEdgeFunctionError(
+  fnErr: any,
+  fnData: any
+): Promise<{ isUnavailable: boolean; message: string }> {
+  if (fnData && typeof fnData === 'object' && typeof fnData.error === 'string' && fnData.error.trim()) {
+    return { isUnavailable: false, message: fnData.error.trim() };
+  }
+
+  if (!fnErr) {
+    return { isUnavailable: false, message: '' };
+  }
+
+  const errName = String(fnErr?.name || '');
+  const rawMsg = String(fnErr?.message || '');
+
+  // FunctionsHttpError carries a Response object in fnErr.context
+  if (fnErr.context && typeof fnErr.context === 'object' && typeof fnErr.context.json === 'function') {
+    const status = Number(fnErr.context.status || 0);
+    try {
+      const cloned = typeof fnErr.context.clone === 'function' ? fnErr.context.clone() : fnErr.context;
+      const body = await cloned.json();
+      const bodyCode = String(body?.code || '').toUpperCase();
+      const bodyMsg = String(body?.error || body?.message || '').trim();
+
+      // Supabase gateway returns 404 NOT_FOUND when the function has not been deployed yet
+      if (status === 404 && (bodyCode === 'NOT_FOUND' || bodyMsg.toLowerCase().includes('requested function was not found'))) {
+        return { isUnavailable: true, message: bodyMsg || 'Edge Function manage-staff-user is not deployed.' };
+      }
+
+      if (bodyMsg) {
+        return { isUnavailable: false, message: bodyMsg };
+      }
+    } catch {
+      try {
+        const clonedText = typeof fnErr.context.clone === 'function' ? fnErr.context.clone() : fnErr.context;
+        const txt = String(await clonedText.text()).trim();
+        if (status === 404 && (!txt || txt.toLowerCase().includes('not found'))) {
+          return { isUnavailable: true, message: 'Edge Function manage-staff-user is not deployed.' };
+        }
+        if (txt) {
+          return { isUnavailable: false, message: txt };
+        }
+      } catch {
+        // Ignore text parse failures
+      }
+    }
+
+    if (status === 404) {
+      return { isUnavailable: true, message: 'Edge Function manage-staff-user is not deployed.' };
+    }
+  }
+
+  const lower = rawMsg.toLowerCase();
+  const isNetworkOrMissing =
+    errName === 'FunctionsFetchError' ||
+    errName === 'FunctionsRelayError' ||
+    lower.includes('failed to send a request') ||
+    lower.includes('requested function was not found') ||
+    lower.includes('404');
+
+  return {
+    isUnavailable: isNetworkOrMissing,
+    message: rawMsg || 'Edge Function invocation failed.',
+  };
 }
 
 export interface UpdateEmployeePayload {
@@ -395,32 +498,7 @@ export const staffRbacService = {
         return cacheGet<Employee[]>(cacheKey, []);
       }
 
-      const mapped: Employee[] = (empRows || []).map((e: any) => {
-        const accStatus = (e.account_status || e.status || 'active') as AccountStatus;
-        const rKey = e.role_key || normalizeRoleKey(e.role);
-        return {
-          id: e.id,
-          employeeCode: e.employee_code || undefined,
-          userId: e.user_id || undefined,
-          name: e.name,
-          username: e.username || undefined,
-          email: e.email || undefined,
-          mobile: e.mobile || '',
-          position: e.position || rKey,
-          role: roleKeyToLegacyUserRole(rKey),
-          roleId: e.role_id || undefined,
-          roleKey: rKey,
-          roleName: e.position || getDefaultRoleTemplate(rKey).name,
-          salary: Number(e.salary || 0),
-          joiningDate: e.joining_date || (e.created_at ? e.created_at.slice(0, 10) : new Date().toISOString().slice(0, 10)),
-          branchId: e.branch_id || '',
-          status: accStatus === 'active' ? 'active' : 'inactive',
-          accountStatus: accStatus,
-          lastLoginAt: e.last_login_at || undefined,
-          createdAt: e.created_at,
-          updatedAt: e.updated_at,
-        };
-      });
+      const mapped: Employee[] = (empRows || []).map((e: any) => mapDbEmployeeRow(e));
 
       cacheSet(cacheKey, mapped);
       return mapped;
@@ -431,8 +509,10 @@ export const staffRbacService = {
   },
 
   /**
-   * Create a new Employee account with Supabase Auth (via isolated client so Admin session stays active)
-   * and persist to employees + business_users + user_profiles.
+   * Create a new Employee account with a real Supabase Auth user first, then link
+   * user_profiles + business_users + employees using the actual auth.users UUID.
+   * Prefers server-side/Edge-Function admin provisioning with full rollback on error,
+   * and falls back to isolated signUp + atomic DB verification RPC when unavailable.
    */
   async createEmployeeAccount(
     payload: CreateEmployeePayload,
@@ -441,102 +521,286 @@ export const staffRbacService = {
   ): Promise<Employee> {
     const cleanUsername = payload.username.trim().toLowerCase().replace(/\s+/g, '_');
     const cleanCode = payload.employeeCode.trim().toUpperCase();
-    const emailToUse = payload.email?.trim() || `${cleanUsername}@amardokanpro.internal`;
+    const emailToUse = (payload.email?.trim() || `${cleanUsername}@amardokanpro.internal`).toLowerCase();
+    const cleanBranchId = sanitizeUuid(payload.branchId);
+    const cleanRoleId = sanitizeUuid(payload.roleId);
+    const cleanCreatorId = sanitizeUuid(createdByUserId);
     const now = new Date().toISOString();
 
-    let authUserId: string | undefined;
-    let empId = `emp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    let newEmployee: Employee | null = null;
 
-    if (isSupabaseConfigured && businessId) {
-      // Isolated client so Admin session is NEVER overwritten
-      const tempClient = createClient(supabaseUrl, supabaseAnonKey, {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-          detectSessionInUrl: false,
-        },
-      });
+    if (isSupabaseConfigured && businessId && isValidUuid(businessId)) {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token;
 
-      const { data: authData, error: authErr } = await tempClient.auth.signUp({
-        email: emailToUse,
-        password: payload.password,
-        options: {
-          data: {
-            full_name: payload.fullName.trim(),
-            username: cleanUsername,
-            employee_code: cleanCode,
-            role: payload.roleKey,
-          },
-        },
-      });
+      // 1. Prefer server-side Express admin endpoint (/api/staff/create)
+      let handledByPrivilegedApi = false;
+      if (accessToken && typeof fetch !== 'undefined') {
+        try {
+          const res = await fetch('/api/staff/create', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              businessId,
+              mode: 'employee',
+              payload: {
+                ...payload,
+                username: cleanUsername,
+                employeeCode: cleanCode,
+                email: emailToUse,
+                branchId: cleanBranchId,
+                roleId: cleanRoleId,
+              },
+            }),
+          });
 
-      if (authErr) {
-        if (authErr.message.toLowerCase().includes('already registered')) {
-          throw new Error(`An account with email "${emailToUse}" or username "${cleanUsername}" already exists.`);
+          const json = await res.json().catch(() => null);
+          if (res.ok && json?.employee) {
+            newEmployee = mapDbEmployeeRow(json.employee, payload.roleName, payload.branchName);
+            handledByPrivilegedApi = true;
+          } else if (
+            res.status !== 404 &&
+            res.status !== 501 &&
+            json?.code !== 'SERVICE_ROLE_NOT_CONFIGURED'
+          ) {
+            throw new Error(json?.error || `Failed to create employee account (${res.status}).`);
+          }
+        } catch (apiErr: any) {
+          if (apiErr instanceof Error && !apiErr.message.includes('Failed to fetch')) {
+            throw apiErr;
+          }
         }
-        throw authErr;
       }
 
-      if (authData.user) {
-        authUserId = authData.user.id;
-        const legacyRole = roleKeyToLegacyUserRole(payload.roleKey);
-
-        // Ensure profile + membership exist
-        await supabase.from('user_profiles').upsert({
-          id: authUserId,
-          email: emailToUse,
-          full_name: payload.fullName.trim(),
-          username: cleanUsername,
-          mobile: payload.phone.trim(),
-          updated_at: now,
+      // 2. Try Supabase Edge Function (`manage-staff-user`) if local server key isn't configured
+      if (!handledByPrivilegedApi && accessToken) {
+        const { data: fnData, error: fnErr } = await supabase.functions.invoke('manage-staff-user', {
+          body: {
+            action: 'create_employee',
+            businessId,
+            payload: {
+              ...payload,
+              username: cleanUsername,
+              employeeCode: cleanCode,
+              email: emailToUse,
+              branchId: cleanBranchId,
+              roleId: cleanRoleId,
+            },
+          },
         });
 
-        await supabase.from('business_users').upsert(
-          {
-            business_id: businessId,
-            user_id: authUserId,
-            branch_id: payload.branchId || null,
-            role: legacyRole,
-            status: payload.accountStatus === 'active' ? 'active' : 'suspended',
-            updated_at: now,
-          },
-          { onConflict: 'business_id,user_id' }
-        );
+        if (!fnErr && fnData?.employee) {
+          newEmployee = mapDbEmployeeRow(fnData.employee, payload.roleName, payload.branchName);
+          handledByPrivilegedApi = true;
+        } else {
+          const parsedErr = await inspectEdgeFunctionError(fnErr, fnData);
+          if (!parsedErr.isUnavailable && parsedErr.message) {
+            throw new Error(parsedErr.message);
+          }
+        }
       }
 
-      // Insert into employees table
-      const insertPayload: Record<string, any> = {
-        business_id: businessId,
-        branch_id: payload.branchId || null,
-        user_id: authUserId || null,
-        employee_code: cleanCode,
-        name: payload.fullName.trim(),
-        username: cleanUsername,
-        email: emailToUse,
-        mobile: payload.phone.trim(),
-        position: payload.position?.trim() || payload.roleName,
-        role: roleKeyToLegacyUserRole(payload.roleKey),
-        role_id: payload.roleId && !payload.roleId.startsWith('role-') ? payload.roleId : null,
-        role_key: payload.roleKey,
-        salary: Number(payload.salary) || 0,
-        joining_date: payload.joiningDate,
-        status: payload.accountStatus === 'active' ? 'active' : 'inactive',
-        account_status: payload.accountStatus,
-        created_by: createdByUserId || null,
-      };
+      // 3. Controlled fallback via isolated Auth client + verified auth.users UUID check
+      if (!handledByPrivilegedApi) {
+        // Pre-check duplicates in this business before touching auth.users
+        const { data: dupRows } = await supabase
+          .from('employees')
+          .select('id, username, employee_code, email')
+          .eq('business_id', businessId)
+          .or(
+            [
+              `username.eq.${cleanUsername}`,
+              cleanCode ? `employee_code.eq.${cleanCode}` : '',
+              `email.eq.${emailToUse}`,
+            ]
+              .filter(Boolean)
+              .join(',')
+          );
 
-      const { data: empInserted, error: empErr } = await supabase
-        .from('employees')
-        .insert(insertPayload)
-        .select()
-        .single();
+        if (dupRows && dupRows.length > 0) {
+          const dup = dupRows[0];
+          if ((dup.username || '').toLowerCase() === cleanUsername) {
+            throw new Error(`Username "${cleanUsername}" is already assigned to another staff member.`);
+          }
+          if (cleanCode && (dup.employee_code || '').toUpperCase() === cleanCode) {
+            throw new Error(`Employee ID "${cleanCode}" already exists.`);
+          }
+          throw new Error(`An employee account with email "${emailToUse}" already exists.`);
+        }
 
-      if (empErr) {
-        throw new Error(empErr.message || 'Failed to save employee record to database.');
-      } else if (empInserted) {
-        empId = empInserted.id;
+        // Isolated client so Admin session is NEVER overwritten
+        const tempClient = createClient(supabaseUrl, supabaseAnonKey, {
+          auth: {
+            persistSession: false,
+            autoRefreshToken: false,
+            detectSessionInUrl: false,
+          },
+        });
+
+        const { data: authData, error: authErr } = await tempClient.auth.signUp({
+          email: emailToUse,
+          password: payload.password,
+          options: {
+            data: {
+              full_name: payload.fullName.trim(),
+              username: cleanUsername,
+              employee_code: cleanCode,
+              role: payload.roleKey,
+              business_id: businessId,
+            },
+          },
+        });
+
+        if (authErr) {
+          if (authErr.message.toLowerCase().includes('already registered')) {
+            throw new Error(
+              `An account with email "${emailToUse}" or username "${cleanUsername}" already exists in Supabase Auth.`
+            );
+          }
+          throw authErr;
+        }
+
+        const signedUpUser = authData?.user;
+        // CRITICAL: Supabase returns an obfuscated fake user with identities: [] when an email
+        // already exists and email confirmation / anti-enumeration is enabled.
+        // That fake UUID does NOT exist in auth.users and causes employees_user_id_fkey!
+        if (!signedUpUser?.id || !isValidUuid(signedUpUser.id)) {
+          throw new Error('Supabase Auth did not return a valid user UUID for this employee.');
+        }
+        if (Array.isArray(signedUpUser.identities) && signedUpUser.identities.length === 0) {
+          throw new Error(
+            `An authentication user with email "${emailToUse}" already exists in Supabase Auth. Please use a different email or username.`
+          );
+        }
+
+        const authUserId = signedUpUser.id;
+        const legacyRole = roleKeyToLegacyUserRole(payload.roleKey);
+
+        // Prefer atomic Postgres RPC that verifies auth.users.id existence before inserting
+        const { data: rpcEmp, error: rpcErr } = await supabase.rpc('create_employee_account_synced', {
+          p_business_id: businessId,
+          p_user_id: authUserId,
+          p_branch_id: cleanBranchId,
+          p_employee_code: cleanCode || null,
+          p_name: payload.fullName.trim(),
+          p_username: cleanUsername,
+          p_email: emailToUse,
+          p_mobile: payload.phone.trim(),
+          p_position: payload.position?.trim() || payload.roleName,
+          p_role_id: cleanRoleId,
+          p_role_key: payload.roleKey,
+          p_role: legacyRole,
+          p_salary: Number(payload.salary) || 0,
+          p_joining_date: payload.joiningDate || now.slice(0, 10),
+          p_account_status: payload.accountStatus,
+        });
+
+        if (!rpcErr && rpcEmp) {
+          newEmployee = mapDbEmployeeRow(rpcEmp, payload.roleName, payload.branchName);
+        } else {
+          const rpcMissing =
+            rpcErr?.code === 'PGRST202' ||
+            String(rpcErr?.message || '').toLowerCase().includes('could not find the function');
+
+          if (rpcErr && !rpcMissing) {
+            throw new Error(formatSupabaseError(rpcErr, 'Failed to synchronize employee record.'));
+          }
+
+          // Direct fallback if 20261120 migration RPC hasn't been applied yet
+          let resolvedRoleId = cleanRoleId;
+          if (!resolvedRoleId) {
+            const { data: roleRow } = await supabase
+              .from('user_roles')
+              .select('id')
+              .eq('business_id', businessId)
+              .eq('role_key', normalizeRoleKey(payload.roleKey))
+              .maybeSingle();
+            resolvedRoleId = roleRow?.id || null;
+          }
+
+          let createdBusinessUser = false;
+          let createdProfile = false;
+          try {
+            // Insert business_users BEFORE user_profiles so can_manage_user_profile RLS succeeds
+            const { error: buErr } = await supabase.from('business_users').upsert(
+              {
+                business_id: businessId,
+                user_id: authUserId,
+                branch_id: cleanBranchId,
+                role: legacyRole,
+                status: payload.accountStatus === 'active' ? 'active' : 'suspended',
+                updated_at: now,
+              },
+              { onConflict: 'business_id,user_id' }
+            );
+            if (buErr) {
+              throw new Error(formatSupabaseError(buErr, 'Failed to link staff business membership.'));
+            }
+            createdBusinessUser = true;
+
+            const { error: profErr } = await supabase.from('user_profiles').upsert({
+              id: authUserId,
+              email: emailToUse,
+              full_name: payload.fullName.trim(),
+              username: cleanUsername,
+              mobile: payload.phone.trim(),
+              updated_at: now,
+            });
+            if (profErr) {
+              throw new Error(formatSupabaseError(profErr, 'Failed to save staff profile.'));
+            }
+            createdProfile = true;
+
+            const { data: empInserted, error: empErr } = await supabase
+              .from('employees')
+              .insert({
+                business_id: businessId,
+                branch_id: cleanBranchId,
+                user_id: authUserId,
+                employee_code: cleanCode || null,
+                name: payload.fullName.trim(),
+                username: cleanUsername,
+                email: emailToUse,
+                mobile: payload.phone.trim(),
+                position: payload.position?.trim() || payload.roleName,
+                role: legacyRole,
+                role_id: resolvedRoleId,
+                role_key: payload.roleKey,
+                salary: Number(payload.salary) || 0,
+                joining_date: payload.joiningDate || now.slice(0, 10),
+                status: payload.accountStatus === 'active' ? 'active' : 'inactive',
+                account_status: payload.accountStatus,
+                created_by: cleanCreatorId,
+              })
+              .select()
+              .single();
+
+            if (empErr || !empInserted) {
+              throw new Error(formatSupabaseError(empErr, 'Failed to save employee record to database.'));
+            }
+
+            newEmployee = mapDbEmployeeRow(empInserted, payload.roleName, payload.branchName);
+          } catch (fallbackErr: any) {
+            // Rollback partial membership/profile rows on employee creation failure
+            if (createdProfile) {
+              await supabase.from('user_profiles').delete().eq('id', authUserId);
+            }
+            if (createdBusinessUser) {
+              await supabase
+                .from('business_users')
+                .delete()
+                .eq('business_id', businessId)
+                .eq('user_id', authUserId);
+            }
+            throw fallbackErr;
+          }
+        }
       }
     } else {
+      const empId = `emp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
       // Store salted PBKDF2 hash only when offline/local mode (never plaintext!)
       const saltedHash = await hashPasswordWithSalt(payload.password);
       const localHashes = cacheGet<Record<string, { hash: string; empId: string; email: string }>>(
@@ -545,34 +809,37 @@ export const staffRbacService = {
       );
       localHashes[cleanUsername] = { hash: saltedHash, empId, email: emailToUse };
       cacheSet(RBAC_CREDENTIAL_HASH_KEY, localHashes);
+
+      newEmployee = {
+        id: empId,
+        employeeCode: cleanCode,
+        name: payload.fullName.trim(),
+        username: cleanUsername,
+        email: emailToUse,
+        mobile: payload.phone.trim(),
+        position: payload.position?.trim() || payload.roleName,
+        role: roleKeyToLegacyUserRole(payload.roleKey),
+        roleId: payload.roleId,
+        roleKey: payload.roleKey,
+        roleName: payload.roleName,
+        salary: Number(payload.salary) || 0,
+        joiningDate: payload.joiningDate,
+        branchId: payload.branchId || '',
+        branchName: payload.branchName,
+        status: payload.accountStatus === 'active' ? 'active' : 'inactive',
+        accountStatus: payload.accountStatus,
+        createdAt: now,
+        updatedAt: now,
+      };
     }
 
-    const newEmployee: Employee = {
-      id: empId,
-      employeeCode: cleanCode,
-      userId: authUserId,
-      name: payload.fullName.trim(),
-      username: cleanUsername,
-      email: emailToUse,
-      mobile: payload.phone.trim(),
-      position: payload.position?.trim() || payload.roleName,
-      role: roleKeyToLegacyUserRole(payload.roleKey),
-      roleId: payload.roleId,
-      roleKey: payload.roleKey,
-      roleName: payload.roleName,
-      salary: Number(payload.salary) || 0,
-      joiningDate: payload.joiningDate,
-      branchId: payload.branchId || '',
-      branchName: payload.branchName,
-      status: payload.accountStatus === 'active' ? 'active' : 'inactive',
-      accountStatus: payload.accountStatus,
-      createdAt: now,
-      updatedAt: now,
-    };
+    if (!newEmployee) {
+      throw new Error('Employee account creation did not return a valid employee record.');
+    }
 
     const cacheKey = `${RBAC_EMPLOYEES_KEY}_${businessId || 'local'}`;
     const existing = cacheGet<Employee[]>(cacheKey, []);
-    cacheSet(cacheKey, [newEmployee, ...existing.filter(e => e.id !== newEmployee.id)]);
+    cacheSet(cacheKey, [newEmployee, ...existing.filter(e => e.id !== newEmployee!.id)]);
     return newEmployee;
   },
 
@@ -585,55 +852,69 @@ export const staffRbacService = {
     const nextStatus = updates.accountStatus || employee.accountStatus || (employee.status === 'active' ? 'active' : 'inactive');
     const nextRoleKey = updates.roleKey || employee.roleKey || normalizeRoleKey(employee.role);
 
-    if (isSupabaseConfigured && businessId) {
+    if (isSupabaseConfigured && businessId && isValidUuid(businessId)) {
       const dbUpdate: Record<string, any> = {
         updated_at: now,
       };
       if (updates.name !== undefined) dbUpdate.name = updates.name.trim();
       if (updates.employeeCode !== undefined) dbUpdate.employee_code = updates.employeeCode.trim().toUpperCase();
       if (updates.mobile !== undefined) dbUpdate.mobile = updates.mobile.trim();
-      if (updates.email !== undefined) dbUpdate.email = updates.email.trim();
+      if (updates.email !== undefined) dbUpdate.email = updates.email.trim().toLowerCase();
       if (updates.username !== undefined) dbUpdate.username = updates.username.trim().toLowerCase().replace(/\s+/g, '_');
       if (updates.position !== undefined) dbUpdate.position = updates.position.trim();
       if (updates.salary !== undefined) dbUpdate.salary = Number(updates.salary) || 0;
       if (updates.joiningDate !== undefined) dbUpdate.joining_date = updates.joiningDate;
-      if (updates.branchId !== undefined) dbUpdate.branch_id = updates.branchId || null;
+      if (updates.branchId !== undefined) dbUpdate.branch_id = sanitizeUuid(updates.branchId);
       if (updates.roleKey !== undefined) {
         dbUpdate.role_key = nextRoleKey;
         dbUpdate.role = roleKeyToLegacyUserRole(nextRoleKey);
       }
       if (updates.roleId !== undefined) {
-        dbUpdate.role_id = updates.roleId && !updates.roleId.startsWith('role-') ? updates.roleId : null;
+        dbUpdate.role_id = sanitizeUuid(updates.roleId);
       }
       if (updates.accountStatus !== undefined) {
         dbUpdate.account_status = nextStatus;
         dbUpdate.status = nextStatus === 'active' ? 'active' : 'inactive';
       }
 
-      if (!employee.id.startsWith('emp-')) {
-        await supabase.from('employees').update(dbUpdate).eq('id', employee.id);
+      if (isValidUuid(employee.id)) {
+        const { error: empUpdErr } = await supabase
+          .from('employees')
+          .update(dbUpdate)
+          .eq('id', employee.id)
+          .eq('business_id', businessId);
+        if (empUpdErr) {
+          throw new Error(formatSupabaseError(empUpdErr, 'Failed to update employee record.'));
+        }
       }
 
-      if (employee.userId) {
-        await supabase
+      if (isValidUuid(employee.userId)) {
+        const { error: profUpdErr } = await supabase
           .from('user_profiles')
           .update({
             full_name: updates.name ?? employee.name,
             mobile: updates.mobile ?? employee.mobile,
+            username: updates.username !== undefined ? updates.username.trim().toLowerCase().replace(/\s+/g, '_') : employee.username,
             updated_at: now,
           })
           .eq('id', employee.userId);
+        if (profUpdErr) {
+          console.warn('user_profiles update notice:', profUpdErr.message);
+        }
 
-        await supabase
+        const { error: buUpdErr } = await supabase
           .from('business_users')
           .update({
-            branch_id: (updates.branchId !== undefined ? updates.branchId : employee.branchId) || null,
+            branch_id: sanitizeUuid(updates.branchId !== undefined ? updates.branchId : employee.branchId),
             role: roleKeyToLegacyUserRole(nextRoleKey),
             status: nextStatus === 'active' ? 'active' : 'suspended',
             updated_at: now,
           })
           .eq('business_id', businessId)
           .eq('user_id', employee.userId);
+        if (buUpdErr) {
+          console.warn('business_users update notice:', buUpdErr.message);
+        }
       }
     }
 
@@ -664,7 +945,8 @@ export const staffRbacService = {
 
   async resetEmployeePassword(
     employee: Employee,
-    newPassword?: string
+    newPassword?: string,
+    businessId?: string
   ): Promise<{ success: boolean; message: string }> {
     const email = employee.email || (employee.username ? `${employee.username}@amardokanpro.internal` : '');
 
@@ -685,10 +967,103 @@ export const staffRbacService = {
     }
 
     try {
-      if (!email || email.endsWith('@amardokanpro.internal')) {
+      const cleanPass = (newPassword || '').trim();
+      if (cleanPass.length < 6) {
+        return {
+          success: false,
+          message: 'New password must be at least 6 characters.',
+        };
+      }
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token;
+      const validBizId = sanitizeUuid(businessId);
+
+      if (!accessToken) {
+        return {
+          success: false,
+          message: 'Your Admin session has expired. Please sign in again before resetting passwords.',
+        };
+      }
+
+      if (!validBizId) {
+        return {
+          success: false,
+          message: 'Active business context not found. Please reload and try again.',
+        };
+      }
+
+      // 1. Try local Express backend endpoint (/api/staff/reset-password) if configured with service key
+      if (typeof fetch !== 'undefined') {
+        try {
+          const res = await fetch('/api/staff/reset-password', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              businessId: validBizId,
+              employeeId: sanitizeUuid(employee.id),
+              userId: sanitizeUuid(employee.userId),
+              email: employee.email,
+              username: employee.username,
+              newPassword: cleanPass,
+            }),
+          });
+          const json = await res.json().catch(() => null);
+          if (res.ok && json?.success) {
+            return {
+              success: true,
+              message:
+                json.message ||
+                `Password updated successfully for ${employee.name} (${employee.employeeCode || employee.username}).`,
+            };
+          }
+          if (res.status !== 404 && res.status !== 501 && json?.code !== 'SERVICE_ROLE_NOT_CONFIGURED') {
+            return { success: false, message: json?.error || 'Failed to update employee password.' };
+          }
+        } catch {
+          // Fall through to Supabase Edge Function
+        }
+      }
+
+      // 2. Call Supabase Edge Function (`manage-staff-user`) using Admin session JWT
+      const { data: fnData, error: fnErr } = await supabase.functions.invoke('manage-staff-user', {
+        body: {
+          action: 'reset_password',
+          businessId: validBizId,
+          employeeId: sanitizeUuid(employee.id),
+          userId: sanitizeUuid(employee.userId),
+          email: employee.email,
+          username: employee.username,
+          newPassword: cleanPass,
+        },
+      });
+
+      if (!fnErr && fnData?.success) {
         return {
           success: true,
-          message: `Internal credential reset logged for ${employee.name}. For real email accounts, use a valid email address to send a Supabase Auth reset link.`,
+          message:
+            fnData.message ||
+            `Password updated successfully for ${employee.name} (${employee.employeeCode || employee.username}).`,
+        };
+      }
+
+      const parsedErr = await inspectEdgeFunctionError(fnErr, fnData);
+      if (!parsedErr.isUnavailable && parsedErr.message) {
+        return {
+          success: false,
+          message: parsedErr.message,
+        };
+      }
+
+      // 3. Fallback only when Edge Function is not deployed yet
+      if (!email || email.endsWith('@amardokanpro.internal')) {
+        return {
+          success: false,
+          message:
+            'Edge Function "manage-staff-user" is not deployed yet (or SUPABASE_SERVICE_ROLE_KEY is missing on the server). Deploy the Edge Function using the Supabase CLI to reset staff passwords directly.',
         };
       }
 
@@ -699,7 +1074,7 @@ export const staffRbacService = {
 
       return {
         success: true,
-        message: `Secure password reset link sent via Supabase Auth to ${email}.`,
+        message: `Edge Function not deployed yet; sent a password reset link via email to ${email}.`,
       };
     } catch (err: any) {
       return {
@@ -711,19 +1086,32 @@ export const staffRbacService = {
 
   /**
    * Resolves email, username, or Employee ID (e.g. EMP-001) into an email for login.
+   * Uses anon-safe SECURITY DEFINER RPC first so staff can log in before authentication.
    */
   async resolveLoginIdentifier(identifier: string): Promise<string> {
     const trimmed = identifier.trim();
-    if (!trimmed || trimmed.includes('@')) {
-      return trimmed;
-    }
+    if (!trimmed) return '';
 
     const cleanLower = trimmed.toLowerCase().replace(/\s+/g, '_');
     const cleanCode = trimmed.toUpperCase();
 
     if (isSupabaseConfigured) {
       try {
-        // Check user_profiles by username
+        const { data: resolvedEmail, error: rpcErr } = await supabase.rpc('resolve_staff_login_email', {
+          p_identifier: trimmed,
+        });
+        if (!rpcErr && typeof resolvedEmail === 'string' && resolvedEmail.trim()) {
+          return resolvedEmail.trim();
+        }
+      } catch {
+        // Fallback below
+      }
+
+      if (trimmed.includes('@')) {
+        return trimmed.toLowerCase();
+      }
+
+      try {
         const { data: prof } = await supabase
           .from('user_profiles')
           .select('email')
@@ -731,7 +1119,6 @@ export const staffRbacService = {
           .maybeSingle();
         if (prof?.email) return prof.email;
 
-        // Check employees by employee_code or username
         const { data: emp } = await supabase
           .from('employees')
           .select('email')
@@ -741,6 +1128,8 @@ export const staffRbacService = {
       } catch {
         // Fallback below
       }
+    } else if (trimmed.includes('@')) {
+      return trimmed.toLowerCase();
     }
 
     return `${cleanLower}@amardokanpro.internal`;
@@ -888,12 +1277,12 @@ export const staffRbacService = {
     const existing = cacheGet<UserActivityLog[]>(cacheKey, []);
     cacheSet(cacheKey, [logItem, ...existing].slice(0, 500));
 
-    if (isSupabaseConfigured && businessId) {
+    if (isSupabaseConfigured && isValidUuid(businessId)) {
       try {
         await supabase.from('user_activity_logs').insert({
           business_id: businessId,
-          user_id: entry.userId || null,
-          employee_id: entry.employeeId && !entry.employeeId.startsWith('emp-') ? entry.employeeId : null,
+          user_id: sanitizeUuid(entry.userId),
+          employee_id: sanitizeUuid(entry.employeeId),
           employee_code: entry.employeeCode || null,
           employee_name: entry.employeeName,
           role_key: entry.roleKey,
