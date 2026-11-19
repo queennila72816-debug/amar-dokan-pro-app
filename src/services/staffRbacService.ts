@@ -947,7 +947,15 @@ export const staffRbacService = {
     employee: Employee,
     newPassword?: string,
     businessId?: string
-  ): Promise<{ success: boolean; message: string }> {
+  ): Promise<{
+    success: boolean;
+    message: string;
+    repaired?: boolean;
+    userId?: string;
+    email?: string | null;
+    username?: string | null;
+    employeeCode?: string | null;
+  }> {
     const email = employee.email || (employee.username ? `${employee.username}@amardokanpro.internal` : '');
 
     if (!isSupabaseConfigured) {
@@ -962,7 +970,7 @@ export const staffRbacService = {
       }
       return {
         success: true,
-        message: `Password credentials updated for ${employee.name} (${employee.employeeCode || employee.username}).`,
+        message: `Password credentials updated for ${employee.name} (${employee.employeeCode || employee.username || employee.name}).`,
       };
     }
 
@@ -1015,9 +1023,14 @@ export const staffRbacService = {
           if (res.ok && json?.success) {
             return {
               success: true,
+              repaired: Boolean(json.repaired),
+              userId: json.userId || employee.userId,
+              email: json.email ?? employee.email ?? null,
+              username: json.username ?? employee.username ?? null,
+              employeeCode: json.employeeCode ?? employee.employeeCode ?? null,
               message:
                 json.message ||
-                `Password updated successfully for ${employee.name} (${employee.employeeCode || employee.username}).`,
+                `Password updated successfully for ${employee.name} (${employee.employeeCode || employee.username || ''}).`,
             };
           }
           if (res.status !== 404 && res.status !== 501 && json?.code !== 'SERVICE_ROLE_NOT_CONFIGURED') {
@@ -1044,9 +1057,14 @@ export const staffRbacService = {
       if (!fnErr && fnData?.success) {
         return {
           success: true,
+          repaired: Boolean(fnData.repaired),
+          userId: fnData.userId || employee.userId,
+          email: fnData.email ?? employee.email ?? null,
+          username: fnData.username ?? employee.username ?? null,
+          employeeCode: fnData.employeeCode ?? employee.employeeCode ?? null,
           message:
             fnData.message ||
-            `Password updated successfully for ${employee.name} (${employee.employeeCode || employee.username}).`,
+            `Password updated successfully for ${employee.name} (${employee.employeeCode || employee.username || ''}).`,
         };
       }
 
@@ -1063,7 +1081,7 @@ export const staffRbacService = {
         return {
           success: false,
           message:
-            'Edge Function "manage-staff-user" is not deployed yet (or SUPABASE_SERVICE_ROLE_KEY is missing on the server). Deploy the Edge Function using the Supabase CLI to reset staff passwords directly.',
+            'Edge Function "manage-staff-user" is not deployed yet (or SUPABASE_SERVICE_ROLE_KEY is missing on the server). Deploy the Edge Function using the Supabase CLI to link & reset staff passwords directly.',
         };
       }
 
@@ -1083,6 +1101,123 @@ export const staffRbacService = {
       };
     }
   },
+
+  async repairEmployeeAuthLinks(businessId: string): Promise<{
+    success: boolean;
+    alreadyValidCount: number;
+    repairedCount: number;
+    unlinkedRemaining: number;
+    repairedEmployees: Array<{ id: string; name: string; userId?: string; email?: string }>;
+    unlinkedEmployees: Array<{ id: string; name: string; employeeCode?: string | null }>;
+    message: string;
+  }> {
+    const validBizId = sanitizeUuid(businessId);
+    if (!isSupabaseConfigured || !validBizId) {
+      return {
+        success: true,
+        alreadyValidCount: 0,
+        repairedCount: 0,
+        unlinkedRemaining: 0,
+        repairedEmployees: [],
+        unlinkedEmployees: [],
+        message: 'Local mode active; Auth linking applies to Supabase Cloud accounts.',
+      };
+    }
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+    if (!accessToken) {
+      throw new Error('Your Admin session has expired. Please sign in again.');
+    }
+
+    // 1. Try local Express backend (/api/staff/repair-links)
+    if (typeof fetch !== 'undefined') {
+      try {
+        const res = await fetch('/api/staff/repair-links', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ businessId: validBizId }),
+        });
+        const json = await res.json().catch(() => null);
+        if (res.ok && json?.success) {
+          return {
+            success: true,
+            alreadyValidCount: Number(json.alreadyValidCount || 0),
+            repairedCount: Number(json.repairedCount || 0),
+            unlinkedRemaining: Number(json.unlinkedRemaining || 0),
+            repairedEmployees: json.repairedEmployees || [],
+            unlinkedEmployees: json.unlinkedEmployees || [],
+            message: `Synced ${json.alreadyValidCount || 0} valid accounts, repaired ${json.repairedCount || 0} links, ${json.unlinkedRemaining || 0} need initial password setup (use Reset Password).`,
+          };
+        }
+        if (res.status !== 404 && res.status !== 501 && json?.code !== 'SERVICE_ROLE_NOT_CONFIGURED') {
+          throw new Error(json?.error || 'Failed to repair employee Auth links.');
+        }
+      } catch (err: any) {
+        if (err instanceof Error && !err.message.includes('Failed to fetch')) {
+          throw err;
+        }
+      }
+    }
+
+    // 2. Try Supabase Edge Function (`manage-staff-user`)
+    const { data: fnData, error: fnErr } = await supabase.functions.invoke('manage-staff-user', {
+      body: { action: 'repair_employee_links', businessId: validBizId },
+    });
+
+    if (!fnErr && fnData?.success) {
+      return {
+        success: true,
+        alreadyValidCount: Number(fnData.alreadyValidCount || 0),
+        repairedCount: Number(fnData.repairedCount || 0),
+        unlinkedRemaining: Number(fnData.unlinkedRemaining || 0),
+        repairedEmployees: fnData.repairedEmployees || [],
+        unlinkedEmployees: fnData.unlinkedEmployees || [],
+        message: `Synced ${fnData.alreadyValidCount || 0} valid accounts, repaired ${fnData.repairedCount || 0} links, ${fnData.unlinkedRemaining || 0} need initial password setup (use Reset Password).`,
+      };
+    }
+
+    const parsedErr = await inspectEdgeFunctionError(fnErr, fnData);
+    if (!parsedErr.isUnavailable && parsedErr.message) {
+      throw new Error(parsedErr.message);
+    }
+
+    // 3. Fallback to SQL SECURITY DEFINER RPC (`repair_existing_employee_auth_links`)
+    const { data: rpcRes, error: rpcErr } = await supabase.rpc('repair_existing_employee_auth_links', {
+      p_business_id: validBizId,
+    });
+    if (rpcErr) {
+      throw new Error(
+        formatSupabaseError(
+          rpcErr,
+          'Edge Function "manage-staff-user" is not deployed yet and SQL repair RPC was not found.'
+        )
+      );
+    }
+
+    const repairedCount = Number(rpcRes?.repaired_count || 0);
+    const syncedCount = Number(rpcRes?.synced_count || 0);
+    const unlinkedRemaining = Number(rpcRes?.unlinked_remaining || 0);
+    return {
+      success: true,
+      alreadyValidCount: syncedCount,
+      repairedCount,
+      unlinkedRemaining,
+      repairedEmployees: (rpcRes?.repaired_employees || []).map((name: string, idx: number) => ({
+        id: String(idx),
+        name,
+      })),
+      unlinkedEmployees: (rpcRes?.unlinked_employees || []).map((name: string, idx: number) => ({
+        id: String(idx),
+        name,
+      })),
+      message: `Synced ${syncedCount} valid accounts, repaired ${repairedCount} links, ${unlinkedRemaining} still need an initial login password (use Reset Password).`,
+    };
+  },
+
 
   /**
    * Resolves email, username, or Employee ID (e.g. EMP-001) into an email for login.

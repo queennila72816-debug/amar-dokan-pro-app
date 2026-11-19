@@ -204,7 +204,7 @@ interface AppContextType {
 
   // Employees & Payroll
   employees: Employee[];
-  addEmployee: (employee: Omit<Employee, 'id'>) => Promise<void>;
+  addEmployee: (employee: Omit<Employee, 'id'> & { password?: string }) => Promise<void>;
   updateEmployee: (id: string, employee: Partial<Employee>) => Promise<void>;
   disburseSalary: (employeeId: string, month: string, accountId: string, amount: number) => Promise<void>;
 
@@ -246,7 +246,25 @@ interface AppContextType {
   createStaffAccount: (payload: CreateEmployeePayload) => Promise<Employee>;
   updateStaffAccount: (employee: Employee, updates: UpdateEmployeePayload) => Promise<void>;
   changeStaffStatus: (employee: Employee, newStatus: AccountStatus) => Promise<void>;
-  resetStaffAccountPassword: (employee: Employee, newPassword?: string) => Promise<{ success: boolean; message: string }>;
+  resetStaffAccountPassword: (
+    employee: Employee,
+    newPassword?: string
+  ) => Promise<{
+    success: boolean;
+    message: string;
+    repaired?: boolean;
+    userId?: string;
+    email?: string | null;
+    username?: string | null;
+    employeeCode?: string | null;
+  }>;
+  repairStaffAuthLinks: () => Promise<{
+    success: boolean;
+    alreadyValidCount: number;
+    repairedCount: number;
+    unlinkedRemaining: number;
+    message: string;
+  }>;
   createCustomRole: (name: string, description: string, permissions: RolePermissionMatrix) => Promise<RoleDefinition>;
   updateRolePermissionsMatrix: (roleId: string, permissions: RolePermissionMatrix) => Promise<void>;
   deleteCustomRole: (roleId: string) => Promise<{ success: boolean; message?: string }>;
@@ -3633,42 +3651,68 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Employees
-  const addEmployee = async (empData: Omit<Employee, 'id'>): Promise<void> => {
-    let newEmp: Employee;
+  const addEmployee = async (empData: Omit<Employee, 'id'> & { password?: string }): Promise<void> => {
     if (isSupabaseConfigured) {
       ensureCloudContext();
+      if (!enforcePermission('user_management', 'create', 'Add Employee')) {
+        throw new Error('Permission denied: Only authorized Admins can create employee accounts.');
+      }
       const normRoleKey = normalizeRoleKey(empData.roleKey || empData.role);
-      const { data, error } = await supabase
-        .from('employees')
-        .insert({
-          business_id: activeBusinessId,
-          branch_id: sanitizeUuid(empData.branchId || activeBranchId),
-          user_id: sanitizeUuid(empData.userId),
-          name: empData.name,
-          mobile: empData.mobile,
-          position: empData.position,
-          role: empData.role,
-          role_key: normRoleKey,
-          salary: empData.salary,
-          joining_date: empData.joiningDate,
-          status: empData.status,
-          account_status: empData.accountStatus || empData.status || 'active',
-          created_by: sanitizeUuid(user?.id),
-        })
-        .select()
-        .single();
-      if (error) throw raiseDbError(error, 'Failed to add employee.');
-      newEmp = {
-        ...empData,
-        id: data.id,
-        userId: data.user_id || undefined,
-        roleKey: data.role_key || normRoleKey,
-        accountStatus: data.account_status || empData.accountStatus || 'active',
-      };
-    } else {
-      newEmp = { ...empData, id: `emp-${Date.now()}` };
+      const matchedRole =
+        roles.find(r => r.id === empData.roleId) ||
+        roles.find(r => r.roleKey === normRoleKey);
+      const cleanUsername = (
+        empData.username?.trim() ||
+        empData.name
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '_')
+          .replace(/^_+|_+$/g, '') ||
+        `emp_${Date.now().toString(36)}`
+      )
+        .toLowerCase()
+        .replace(/\s+/g, '_');
+      const rawPass = (empData.password || '').trim();
+      if (rawPass.length < 6) {
+        throw new Error('Login Password (minimum 6 characters) is required so the employee gets a linked Supabase Auth login.');
+      }
+      const empCode =
+        empData.employeeCode?.trim().toUpperCase() ||
+        `EMP-${String(employees.length + 1).padStart(3, '0')}`;
+      const branchId = empData.branchId || activeBranchId || branches[0]?.id || '';
+      const branchName = branches.find(b => b.id === branchId)?.name || empData.branchName;
+
+      const created = await staffRbacService.createEmployeeAccount(
+        {
+          fullName: empData.name.trim(),
+          employeeCode: empCode,
+          phone: empData.mobile.trim(),
+          email: empData.email?.trim() || `${cleanUsername}@amardokanpro.internal`,
+          username: cleanUsername,
+          password: rawPass,
+          roleId: matchedRole?.id || empData.roleId || '',
+          roleKey: normRoleKey,
+          roleName: matchedRole?.name || empData.roleName || empData.position || normRoleKey,
+          position: empData.position?.trim() || matchedRole?.name || normRoleKey,
+          salary: Number(empData.salary) || 0,
+          joiningDate: empData.joiningDate || new Date().toISOString().slice(0, 10),
+          accountStatus: (empData.accountStatus || empData.status || 'active') as AccountStatus,
+          branchId,
+          branchName,
+        },
+        activeBusinessId,
+        user?.id
+      );
+
+      setEmployees(prev => [created, ...prev.filter(e => e.id !== created.id)]);
+      addAuditLog('EMPLOYEE_CREATED', 'employee', created.id, `Employee & Auth user created: ${created.name}`);
+      if (normRoleKey === 'salesman') {
+        reloadSellers().catch(() => {});
+      }
+      return;
     }
 
+    const newEmp: Employee = { ...empData, id: `emp-${Date.now()}` };
     setEmployees(prev => [...prev, newEmp]);
     addAuditLog('EMPLOYEE_CREATED', 'employee', newEmp.id, `Employee added: ${newEmp.name}`);
   };
@@ -3869,7 +3913,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const resetStaffAccountPassword = async (
     employee: Employee,
     newPassword?: string
-  ): Promise<{ success: boolean; message: string }> => {
+  ): Promise<{
+    success: boolean;
+    message: string;
+    repaired?: boolean;
+    userId?: string;
+    email?: string | null;
+    username?: string | null;
+    employeeCode?: string | null;
+  }> => {
     if (!enforcePermission('user_management', 'edit', 'Reset Employee Password')) {
       return { success: false, message: 'Permission denied: Only Admins can reset employee passwords.' };
     }
@@ -3878,15 +3930,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       newPassword,
       activeBusinessId || undefined
     );
+    if (res.success && res.userId) {
+      setEmployees(prev =>
+        prev.map(e =>
+          e.id === employee.id
+            ? {
+                ...e,
+                userId: res.userId || e.userId,
+                email: res.email || e.email,
+                username: res.username || e.username,
+              }
+            : e
+        )
+      );
+      if (res.repaired) {
+        reloadRbacData().catch(() => {});
+        reloadSellers().catch(() => {});
+      }
+    }
     logUserActivity(
       'PASSWORD_RESET',
       'user_management',
       'edit',
-      `Password reset triggered for ${employee.name} (${employee.employeeCode || employee.email})`,
+      `Password reset triggered for ${employee.name} (${employee.employeeCode || employee.email || employee.username || employee.id})`,
       'employee',
       employee.id
     );
     return res;
+  };
+
+  const repairStaffAuthLinks = async () => {
+    if (!enforcePermission('user_management', 'edit', 'Repair Employee Auth Links')) {
+      throw new Error('Permission denied: Only Business Owners / Admins can repair employee Auth links.');
+    }
+    const result = await staffRbacService.repairEmployeeAuthLinks(activeBusinessId || '');
+    await reloadRbacData();
+    reloadSellers().catch(() => {});
+    logUserActivity(
+      'EMPLOYEE_UPDATED',
+      'user_management',
+      'edit',
+      result.message,
+      'business',
+      activeBusinessId || undefined
+    );
+    return result;
   };
 
   const createCustomRole = async (
@@ -4571,6 +4659,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateStaffAccount,
         changeStaffStatus,
         resetStaffAccountPassword,
+        repairStaffAuthLinks,
         createCustomRole,
         updateRolePermissionsMatrix,
         deleteCustomRole,

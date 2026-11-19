@@ -41,14 +41,31 @@ export const EmployeesView: React.FC = () => {
   // Form Fields
   const [name, setName] = useState('');
   const [mobile, setMobile] = useState('');
+  const [username, setUsername] = useState('');
+  const [usernameEdited, setUsernameEdited] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [addFormError, setAddFormError] = useState<string | null>(null);
   const [position, setPosition] = useState('');
   const [role, setRole] = useState<UserRole>('salesman');
   const [salary, setSalary] = useState<number | ''>('');
   const [joiningDate, setJoiningDate] = useState(new Date().toISOString().slice(0, 10));
 
+  const generateTempPassword = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#';
+    let pass = '';
+    for (let i = 0; i < 10; i++) pass += chars[Math.floor(Math.random() * chars.length)];
+    return pass;
+  };
+
   const handleOpenAdd = () => {
     setName('');
     setMobile('');
+    setUsername('');
+    setUsernameEdited(false);
+    setEmail('');
+    setPassword(generateTempPassword());
+    setAddFormError(null);
     setPosition('');
     setRole('salesman');
     setSalary('');
@@ -58,13 +75,32 @@ export const EmployeesView: React.FC = () => {
 
   const handleSubmitAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim() || !mobile.trim() || !salary || isSubmitting) return;
+    if (!name.trim() || !mobile.trim() || salary === '' || isSubmitting) return;
+    if (password.trim().length < 6) {
+      setAddFormError('Login password must be at least 6 characters.');
+      return;
+    }
 
+    setAddFormError(null);
     setIsSubmitting(true);
     try {
+      const cleanUser = (
+        username.trim() ||
+        name
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '_')
+          .replace(/^_+|_+$/g, '')
+      )
+        .toLowerCase()
+        .replace(/\s+/g, '_');
+
       await addEmployee({
         name: name.trim(),
         mobile: mobile.trim(),
+        username: cleanUser,
+        email: email.trim() || undefined,
+        password: password.trim(),
         position: position.trim() || 'Staff',
         role,
         salary: Number(salary),
@@ -75,7 +111,7 @@ export const EmployeesView: React.FC = () => {
 
       setIsAddModalOpen(false);
     } catch (err: any) {
-      alert(err?.message || 'Failed to save employee to database.');
+      setAddFormError(err?.message || 'Failed to save employee to database.');
     } finally {
       setIsSubmitting(false);
     }
@@ -323,28 +359,95 @@ export const EmployeesView: React.FC = () => {
             </div>
 
             <div className="space-y-3 text-xs">
+              {addFormError && (
+                <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs">
+                  {addFormError}
+                </div>
+              )}
+
               <div>
                 <label className="block font-medium text-slate-700 mb-1">{'Name *'}</label>
                 <input
                   type="text"
                   required
                   value={name}
-                  onChange={(e) => setName(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setName(val);
+                    if (!usernameEdited) {
+                      const suggested = val
+                        .trim()
+                        .toLowerCase()
+                        .replace(/[^a-z0-9]+/g, '_')
+                        .replace(/^_+|_+$/g, '');
+                      setUsername(suggested);
+                    }
+                  }}
                   placeholder="e.g. Tanvir Hasan"
                   className="w-full p-2 border border-slate-200 rounded-lg"
                 />
               </div>
 
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">{'Mobile *'}</label>
-                <input
-                  type="text"
-                  required
-                  value={mobile}
-                  onChange={(e) => setMobile(e.target.value)}
-                  placeholder="017xxxxxxxx"
-                  className="w-full p-2 border border-slate-200 rounded-lg font-mono"
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">{'Mobile *'}</label>
+                  <input
+                    type="text"
+                    required
+                    value={mobile}
+                    onChange={(e) => setMobile(e.target.value)}
+                    placeholder="017xxxxxxxx"
+                    className="w-full p-2 border border-slate-200 rounded-lg font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">{'Login Username *'}</label>
+                  <input
+                    type="text"
+                    required
+                    value={username}
+                    onChange={(e) => {
+                      setUsernameEdited(true);
+                      setUsername(e.target.value.toLowerCase().replace(/\s+/g, '_'));
+                    }}
+                    placeholder="e.g. raju_pos"
+                    className="w-full p-2 border border-slate-200 rounded-lg font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">{'Email (Optional)'}</label>
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="Optional login email"
+                    className="w-full p-2 border border-slate-200 rounded-lg"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">{'Initial Password *'}</label>
+                  <div className="flex gap-1">
+                    <input
+                      type="text"
+                      required
+                      minLength={6}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="Min 6 chars"
+                      className="flex-1 min-w-0 p-2 border border-slate-200 rounded-lg font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setPassword(generateTempPassword())}
+                      className="px-2 py-1 text-[10px] font-semibold bg-slate-100 hover:bg-slate-200 rounded-lg shrink-0"
+                    >
+                      Gen
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">

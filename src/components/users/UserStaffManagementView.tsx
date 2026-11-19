@@ -113,6 +113,7 @@ export const UserStaffManagementView: React.FC = () => {
     updateStaffAccount,
     changeStaffStatus,
     resetStaffAccountPassword,
+    repairStaffAuthLinks,
     createCustomRole,
     updateRolePermissionsMatrix,
     deleteCustomRole,
@@ -128,6 +129,7 @@ export const UserStaffManagementView: React.FC = () => {
 
   const [subTab, setSubTab] = useState<ActiveSubTab>('overview');
   const [bannerMsg, setBannerMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isRepairingLinks, setIsRepairingLinks] = useState(false);
 
   // Employee directory filters
   const [empSearch, setEmpSearch] = useState('');
@@ -558,8 +560,40 @@ export const UserStaffManagementView: React.FC = () => {
     try {
       const res = await resetStaffAccountPassword(resetTargetEmp, resetNewPass.trim());
       setResetResult(res);
+      if (res.success && (res.userId || res.email || res.username)) {
+        setResetTargetEmp(prev =>
+          prev
+            ? {
+                ...prev,
+                userId: res.userId || prev.userId,
+                email: res.email || prev.email,
+                username: res.username || prev.username,
+              }
+            : null
+        );
+      }
     } finally {
       setIsResettingPass(false);
+    }
+  };
+
+  const handleRepairAuthLinks = async () => {
+    if (!canEditStaff || isRepairingLinks) return;
+    setIsRepairingLinks(true);
+    setBannerMsg(null);
+    try {
+      const res = await repairStaffAuthLinks();
+      setBannerMsg({
+        type: 'success',
+        text: res.message,
+      });
+    } catch (err: any) {
+      setBannerMsg({
+        type: 'error',
+        text: err?.message || 'Failed to audit/repair employee Auth links.',
+      });
+    } finally {
+      setIsRepairingLinks(false);
     }
   };
 
@@ -1146,6 +1180,23 @@ export const UserStaffManagementView: React.FC = () => {
                 ))}
               </select>
             )}
+
+            {canEditStaff && employees.some(e => !e.userId) && (
+              <button
+                type="button"
+                onClick={handleRepairAuthLinks}
+                disabled={isRepairingLinks}
+                title="Match & link unlinked employees to existing Supabase Auth accounts"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded-lg transition-colors shrink-0 disabled:opacity-60"
+              >
+                {isRepairingLinks ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                <span>Sync Auth Links</span>
+              </button>
+            )}
           </div>
 
           {/* Employees Directory Table */}
@@ -1199,7 +1250,15 @@ export const UserStaffManagementView: React.FC = () => {
                             <div className="text-[11px] text-slate-500 mt-0.5 truncate max-w-[200px]">
                               {emp.username ? `@${emp.username}` : ''}{' '}
                               {emp.email ? `(${emp.email})` : ''}
+                              {!emp.username && !emp.email && (
+                                <span className="text-slate-400 italic">No login email/username</span>
+                              )}
                             </div>
+                            {!emp.userId && (
+                              <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-semibold">
+                                Auth Unlinked — click Reset Password to activate
+                              </span>
+                            )}
                           </td>
 
                           <td className="px-4 py-3">
@@ -2126,8 +2185,16 @@ export const UserStaffManagementView: React.FC = () => {
             </div>
             <form onSubmit={handleResetPasswordSubmit} className="p-5 space-y-3">
               <div className="text-xs text-slate-600">
-                Account: <span className="font-semibold text-slate-900">{resetTargetEmp.email || resetTargetEmp.username}</span>
+                Account:{' '}
+                <span className="font-semibold text-slate-900">
+                  {resetTargetEmp.email || resetTargetEmp.username || resetTargetEmp.employeeCode || resetTargetEmp.name}
+                </span>
               </div>
+              {!resetTargetEmp.userId && (
+                <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-800">
+                  This employee does not have a linked Supabase Auth login yet. Resetting their password will automatically create/link a confirmed login account while keeping their salary and history intact.
+                </div>
+              )}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">New Temporary Password</label>
                 <div className="flex gap-1.5">
