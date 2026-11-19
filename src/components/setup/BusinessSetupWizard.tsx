@@ -34,7 +34,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
 
   // Form Fields
-  const [shopName, setShopName] = useState('');
+  const [shopName, setShopName] = useState(user?.user_metadata?.shop_name || '');
   const [ownerName, setOwnerName] = useState(
     user?.user_metadata?.full_name || ''
   );
@@ -101,6 +101,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
 
   const handleFinalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loading) return;
     setErrorMsg(null);
     setLoading(true);
 

@@ -57,7 +57,7 @@ const TAB_TO_MODULE_MAP: Record<string, LegacyAppModule> = {
 };
 
 const MainLayout: React.FC = () => {
-  const { canAccess, currentUserRole, user, isLoading, isBusinessConfigured, isAuthenticatedAdmin, signOut, dbError, clearDbError } = useApp();
+  const { canAccess, currentUserRole, user, isLoading, isBusinessConfigured, isAuthenticatedAdmin, signOut, dbError, clearDbError, initError, retryInitialization } = useApp();
 
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
@@ -179,6 +179,36 @@ const MainLayout: React.FC = () => {
   // If Supabase is configured and the user is not authenticated, show login/signup screen.
   if (isSupabaseConfigured && !user) {
     return <AuthModal onSuccess={() => {}} />;
+  }
+
+  // If initialization failed while checking existing business membership, show retry screen instead of forcing setup
+  if (isSupabaseConfigured && user && !isBusinessConfigured && initError) {
+    return (
+      <div className="min-h-screen bg-[#0B1428] flex flex-col items-center justify-center p-4 text-white text-center">
+        <div className="w-16 h-16 rounded-[14px] bg-rose-500/15 text-[#F06464] border border-rose-500/30 flex items-center justify-center mb-4">
+          <AlertTriangle className="w-8 h-8" />
+        </div>
+        <h2 className="text-xl font-bold mb-2">Unable to Load Business Workspace</h2>
+        <p className="text-sm text-slate-300 max-w-md mb-6">{initError}</p>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => retryInitialization()}
+            className="px-5 py-2.5 bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white text-xs font-bold rounded-[10px] transition-all cursor-pointer"
+          >
+            Retry Connection
+          </button>
+          <button
+            type="button"
+            onClick={() => signOut()}
+            className="flex items-center gap-2 px-4 py-2.5 bg-[#101B35] hover:bg-[#1B2C52] text-white text-xs font-semibold rounded-[10px] border border-white/15 transition-colors cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Sign Out</span>
+          </button>
+        </div>
+      </div>
+    );
   }
 
   // If business is not yet configured, show First-Time Business Setup Wizard only to Store Admin

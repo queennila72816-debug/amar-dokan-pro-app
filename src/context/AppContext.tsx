@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import {
   Product,
   Category,
@@ -74,6 +74,8 @@ interface AppContextType {
   migrateLegacyData: () => Promise<boolean>;
   dbError: string | null;
   clearDbError: () => void;
+  initError: string | null;
+  retryInitialization: () => Promise<void>;
 
   // Business Setup State
   isBusinessConfigured: boolean;
@@ -285,6 +287,17 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 
 const STORAGE_KEY = 'AMAR_DOKAN_PRO_STORAGE_V1';
 
+const generateClientUuid = (): string => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, ch => {
+    const r = (Math.random() * 16) | 0;
+    const v = ch === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+};
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Authentication & Membership State
   const [session, setSession] = useState<Session | null>(null);
@@ -293,6 +306,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isMigrated, setIsMigrated] = useState<boolean>(false);
   const [dbError, setDbError] = useState<string | null>(null);
+  const [initError, setInitError] = useState<string | null>(null);
+  const initializedUserIdRef = useRef<string | null>(null);
 
   // Business State
   const [isBusinessConfigured, setIsBusinessConfigured] = useState<boolean>(false);
@@ -416,10 +431,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         .single();
       if (bizErr) throw bizErr;
 
+      // 2. Fetch Branches
+      const { data: branchData, error: brErr } = await supabase
+        .from('branches')
+        .select('*')
+        .eq('business_id', businessId)
+        .order('is_main', { ascending: false })
+        .order('created_at', { ascending: true });
+      if (brErr) throw brErr;
+
+      const hasBranches = Boolean(branchData && branchData.length > 0);
       if (bizData) {
-        const configured = Boolean(
-          bizData.name && bizData.name.trim().length > 0 && bizData.name !== 'My Amar Dokan'
+        const normalizedBusinessName = String(bizData.name || '').trim().toLowerCase();
+        const hasRealName = Boolean(
+          normalizedBusinessName &&
+          normalizedBusinessName !== 'my amar dokan' &&
+          normalizedBusinessName !== 'amar dokan'
         );
+        const configured = hasRealName || hasBranches;
         setIsBusinessConfigured(configured);
         let cachedBizSettings: Partial<ShopSettings> = {};
         try {
@@ -456,15 +485,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }),
         });
       }
-
-      // 2. Fetch Branches
-      const { data: branchData, error: brErr } = await supabase
-        .from('branches')
-        .select('*')
-        .eq('business_id', businessId)
-        .order('is_main', { ascending: false })
-        .order('created_at', { ascending: true });
-      if (brErr) throw brErr;
 
       if (branchData && branchData.length > 0) {
         const loadedBranches: Branch[] = branchData.map((b: any) => ({
@@ -712,6 +732,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const initializeUserBusiness = useCallback(
     async (authUser: User) => {
       try {
+        setInitError(null);
+
         // 0. Verify employee account status
         const accessCheck = await staffRbacService.verifyEmployeeAccess(authUser.id);
         if (!accessCheck.allowed) {
@@ -722,6 +744,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (isSupabaseConfigured) {
             await supabase.auth.signOut();
           }
+          initializedUserIdRef.current = null;
           setSession(null);
           setUser(null);
           setActiveBusinessId('');
@@ -759,34 +782,85 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
 
         // 2. Check business membership
+        // Read membership independently from related tables. A joined select can
+        // return a null business relation when the businesses SELECT policy or
+        // relationship metadata differs, incorrectly sending an existing owner
+        // back to the first setup step.
         const { data: memberships, error: memErr } = await supabase
           .from('business_users')
-          .select('*, businesses(*), branches(*)')
-          .eq('user_id', authUser.id);
+          .select('*')
+          .eq('user_id', authUser.id)
+          .order('created_at', { ascending: false });
 
         if (memErr) throw memErr;
 
         if (memberships && memberships.length > 0) {
-          const primary = memberships[0];
-          if (primary.status && primary.status !== 'active') {
+          const activeMemberships = memberships.filter((m: any) => !m.status || m.status === 'active');
+          if (activeMemberships.length === 0) {
+            const primaryBlocked = memberships[0];
             setAuthBlockedReason(
-              `Your staff account is currently ${primary.status}. Please contact the Store Owner.`
+              `Your staff account is currently ${primaryBlocked.status}. Please contact the Store Owner.`
             );
             await supabase.auth.signOut();
+            initializedUserIdRef.current = null;
             setSession(null);
             setUser(null);
             return;
           }
 
+          // Prefer an active membership that already has a configured business/branch
+          let primary = activeMemberships.find((m: any) => Boolean(m.branch_id)) || activeMemberships[0];
+          const membershipBizIds = Array.from(
+            new Set(activeMemberships.map((m: any) => m.business_id).filter(Boolean))
+          );
+
+          const { data: bizRows, error: bizErr } = await supabase
+            .from('businesses')
+            .select('id, name')
+            .in('id', membershipBizIds);
+          if (bizErr) throw bizErr;
+
+          const bizById = new Map<string, { id: string; name?: string }>(
+            (bizRows || []).map((b: any) => [b.id, b])
+          );
+
+          const configuredMembership = activeMemberships.find((m: any) => {
+            const b = bizById.get(m.business_id);
+            const normalized = String(b?.name || '').trim().toLowerCase();
+            return (
+              Boolean(normalized) &&
+              normalized !== 'my amar dokan' &&
+              normalized !== 'amar dokan'
+            );
+          });
+          if (configuredMembership) {
+            primary = configuredMembership;
+          }
+
           const bizId = primary.business_id;
+          const biz = bizById.get(bizId);
           const branchId = accessCheck.employee?.branchId || primary.branch_id || '';
           const rawRoleKey = accessCheck.roleKey || normalizeRoleKey(primary.role);
           const role = roleKeyToLegacyUserRole(rawRoleKey);
 
-          const biz = primary.businesses;
-          const isConfigured = Boolean(
-            biz && biz.name && biz.name.trim().length > 0 && biz.name !== 'My Amar Dokan'
+          const normalizedBusinessName = String(biz?.name || '').trim().toLowerCase();
+          const hasRealName = Boolean(
+            normalizedBusinessName &&
+            normalizedBusinessName !== 'my amar dokan' &&
+            normalizedBusinessName !== 'amar dokan'
           );
+
+          let hasLinkedBranch = Boolean(branchId);
+          if (!hasRealName && !hasLinkedBranch) {
+            const { data: branchRows } = await supabase
+              .from('branches')
+              .select('id')
+              .eq('business_id', bizId)
+              .limit(1);
+            hasLinkedBranch = Boolean(branchRows && branchRows.length > 0);
+          }
+
+          const isConfigured = hasRealName || hasLinkedBranch;
 
           setActiveBusinessId(bizId);
           setAuthenticatedRoleKey(rawRoleKey);
@@ -865,13 +939,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setStockTransfers([]);
         }
       } catch (err: any) {
-        setDbError(formatSupabaseError(err, 'Failed to initialize your business account.'));
+        const message = formatSupabaseError(err, 'Failed to initialize your business account.');
+        setDbError(message);
+        setInitError(message);
       } finally {
         setIsLoading(false);
       }
     },
     [loadBusinessData]
   );
+
+  const retryInitialization = useCallback(async () => {
+    if (!isSupabaseConfigured || !user) return;
+    setIsLoading(true);
+    setInitError(null);
+    await initializeUserBusiness(user);
+  }, [user, initializeUserBusiness]);
 
   // Initialize Auth & Supabase Session
   useEffect(() => {
@@ -896,13 +979,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setUser(initialSession?.user ?? null);
 
         if (initialSession?.user) {
+          initializedUserIdRef.current = initialSession.user.id;
           await initializeUserBusiness(initialSession.user);
         } else {
+          initializedUserIdRef.current = null;
           setIsLoading(false);
         }
       } catch (err: any) {
         if (!isMounted) return;
-        setDbError(formatSupabaseError(err, 'Unable to connect to Supabase authentication.'));
+        const message = formatSupabaseError(err, 'Unable to connect to Supabase authentication.');
+        setDbError(message);
+        setInitError(message);
         setIsLoading(false);
       }
     }
@@ -917,10 +1004,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setUser(newSession?.user ?? null);
 
       if (event === 'SIGNED_IN' && newSession?.user) {
+        // Avoid unmounting active UI (such as BusinessSetupWizard steps) when Supabase
+        // re-emits SIGNED_IN on initial hydration, tab focus, or token refresh for the same user.
+        if (initializedUserIdRef.current === newSession.user.id) {
+          return;
+        }
+        initializedUserIdRef.current = newSession.user.id;
         setIsLoading(true);
         await initializeUserBusiness(newSession.user);
         if (isMounted) setIsLoading(false);
       } else if (event === 'SIGNED_OUT') {
+        initializedUserIdRef.current = null;
         setActiveBusinessId('');
         setActiveBranchId('');
         setProducts([]);
@@ -935,6 +1029,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setStockMovements([]);
         setStockTransfers([]);
         setIsBusinessConfigured(false);
+        setInitError(null);
         setIsLoading(false);
       }
     });
@@ -1138,6 +1233,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const signOut = async () => {
     logUserActivity('LOGOUT', 'user_management', 'logout', 'User signed out');
+    initializedUserIdRef.current = null;
     if (isSupabaseConfigured) {
       await supabase.auth.signOut();
     }
@@ -1149,6 +1245,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActiveBusinessId('');
     setActiveBranchId('');
     setIsBusinessConfigured(false);
+    setInitError(null);
     setDbError(null);
   };
 
@@ -1229,20 +1326,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
-  // Business Setup (Strict creation order: businesses -> user_profiles -> business_users -> branches -> accounts)
+  // Business Setup (Do NOT toggle global isLoading so BusinessSetupWizard stays mounted on its active step)
   const completeBusinessSetup = async (setupData: BusinessSetupData) => {
-    setIsLoading(true);
     setDbError(null);
     try {
       let bizId = activeBusinessId;
       let mainBranchId = '';
       const now = new Date().toISOString();
 
-      if (isSupabaseConfigured && user) {
+      if (isSupabaseConfigured) {
+        if (!user) {
+          throw new Error('Your session has expired. Please sign in again before completing setup.');
+        }
+
+        // 0. Check if user already has an existing membership to prevent duplicate business rows
+        const { data: existingMemberships, error: existingMemErr } = await supabase
+          .from('business_users')
+          .select('business_id, branch_id, role, status')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false });
+        if (existingMemErr) throw existingMemErr;
+
+        const blockedMem = (existingMemberships || []).find(
+          (m: any) => m.status && m.status !== 'active'
+        );
+        const activeMem = (existingMemberships || []).find(
+          (m: any) => !m.status || m.status === 'active'
+        );
+
+        if (!activeMem && blockedMem) {
+          throw new Error(`Your account is currently ${blockedMem.status}. Please contact the Store Owner.`);
+        }
+
+        if (!bizId && activeMem?.business_id) {
+          bizId = activeMem.business_id;
+        }
+
+        // 1. Upsert user profile (RLS allows id = auth.uid())
+        const { error: profErr } = await supabase.from('user_profiles').upsert({
+          id: user.id,
+          email: user.email || '',
+          full_name: setupData.ownerName,
+          mobile: setupData.phone,
+          updated_at: now,
+        });
+        if (profErr) throw profErr;
+
+        // 2. Create or update business & link owner membership in RLS-safe order
         if (!bizId) {
-          const { data: newBiz, error: bErr } = await supabase
+          // Generate UUID client-side and insert WITHOUT .select() (no RETURNING),
+          // because businesses_select RLS requires an active business_users row first.
+          const newBizId = generateClientUuid();
+          const { error: bErr } = await supabase
             .from('businesses')
             .insert({
+              id: newBizId,
               name: setupData.shopName,
               owner_name: setupData.ownerName,
               tagline: '',
@@ -1256,12 +1394,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               vat_registration_no: setupData.vatRegistrationNo || null,
               language: 'en',
               is_active: true,
-            })
-            .select()
-            .single();
+            });
           if (bErr) throw bErr;
-          bizId = newBiz.id;
+          bizId = newBizId;
+
+          const { error: memErr } = await supabase.from('business_users').insert({
+            business_id: bizId,
+            user_id: user.id,
+            role: 'owner',
+            status: 'active',
+          });
+          if (memErr) throw memErr;
         } else {
+          // Ensure owner membership exists before updating businesses (satisfies businesses UPDATE RLS)
+          if (!activeMem || activeMem.business_id !== bizId) {
+            const { error: memErr } = await supabase.from('business_users').insert({
+              business_id: bizId,
+              user_id: user.id,
+              role: 'owner',
+              status: 'active',
+            });
+            if (memErr) throw memErr;
+          }
+
           const { error: uBizErr } = await supabase
             .from('businesses')
             .update({
@@ -1275,60 +1430,112 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               financial_year: setupData.financialYear,
               vat_tax_rate: setupData.vatTaxRate,
               vat_registration_no: setupData.vatRegistrationNo || null,
+              is_active: true,
               updated_at: now,
             })
             .eq('id', bizId);
           if (uBizErr) throw uBizErr;
         }
 
-        // Upsert user profile
-        const { error: profErr } = await supabase.from('user_profiles').upsert({
-          id: user.id,
-          email: user.email || '',
-          full_name: setupData.ownerName,
-          mobile: setupData.phone,
-          updated_at: now,
-        });
-        if (profErr) throw profErr;
-
-        // Upsert owner membership FIRST so RLS helper is_business_owner_or_admin(bizId) succeeds immediately
-        const { error: memErr } = await supabase.from('business_users').upsert(
-          {
-            business_id: bizId,
-            user_id: user.id,
-            role: 'owner',
-            status: 'active',
-          },
-          { onConflict: 'business_id,user_id' }
-        );
-        if (memErr) throw memErr;
-
-        // Create primary branch
-        const { data: newBranch, error: brErr } = await supabase
+        // 3. Create or reuse primary branch (now that business_users membership satisfies RLS)
+        const { data: existingBranches, error: existingBrErr } = await supabase
           .from('branches')
-          .insert({
-            business_id: bizId,
-            name: setupData.branchName,
-            location: setupData.address,
-            mobile: setupData.phone,
-            is_main: true,
-          })
-          .select()
-          .single();
-        if (brErr) throw brErr;
-        mainBranchId = newBranch.id;
+          .select('*')
+          .eq('business_id', bizId)
+          .order('is_main', { ascending: false })
+          .order('created_at', { ascending: true });
+        if (existingBrErr) throw existingBrErr;
 
-        // Link main branch to membership
-        await supabase
+        if (existingBranches && existingBranches.length > 0) {
+          const primaryBranch = existingBranches[0];
+          mainBranchId = primaryBranch.id;
+          const { error: updBrErr } = await supabase
+            .from('branches')
+            .update({
+              name: setupData.branchName,
+              location: setupData.address,
+              mobile: setupData.phone,
+              is_main: true,
+              updated_at: now,
+            })
+            .eq('id', mainBranchId)
+            .eq('business_id', bizId);
+          if (updBrErr) throw updBrErr;
+        } else {
+          const { data: newBranch, error: brErr } = await supabase
+            .from('branches')
+            .insert({
+              business_id: bizId,
+              name: setupData.branchName,
+              location: setupData.address,
+              mobile: setupData.phone,
+              is_main: true,
+            })
+            .select()
+            .single();
+          if (brErr) throw brErr;
+          mainBranchId = newBranch.id;
+        }
+
+        // 4. Link main branch to owner membership
+        const { error: branchLinkErr } = await supabase
           .from('business_users')
-          .update({ branch_id: mainBranchId })
+          .update({ branch_id: mainBranchId, updated_at: now })
           .eq('business_id', bizId)
           .eq('user_id', user.id);
+        if (branchLinkErr) throw branchLinkErr;
 
-        // Insert initial accounts
-        const createdAccounts: Account[] = [];
+        // 5. Verify business, owner membership, and main branch are persisted and readable
+        const [
+          { data: savedBusiness, error: verifyBizErr },
+          { data: savedMembership, error: verifyMemErr },
+          { data: savedBranch, error: verifyBrErr },
+        ] = await Promise.all([
+          supabase.from('businesses').select('id, name').eq('id', bizId).maybeSingle(),
+          supabase
+            .from('business_users')
+            .select('business_id, user_id, branch_id, role, status')
+            .eq('business_id', bizId)
+            .eq('user_id', user.id)
+            .maybeSingle(),
+          supabase
+            .from('branches')
+            .select('id, name, location, mobile, is_main')
+            .eq('id', mainBranchId)
+            .maybeSingle(),
+        ]);
+        if (verifyBizErr) throw verifyBizErr;
+        if (verifyMemErr) throw verifyMemErr;
+        if (verifyBrErr) throw verifyBrErr;
+
+        if (!savedBusiness?.id || !String(savedBusiness.name || '').trim()) {
+          throw new Error(
+            'Business setup was saved, but the business profile could not be verified. Please check your Supabase businesses table permissions.'
+          );
+        }
+        if (!savedMembership?.business_id || savedMembership.status === 'inactive') {
+          throw new Error(
+            'Business profile was saved, but the owner membership is missing or inactive. Please check business_users permissions.'
+          );
+        }
+        if (!savedBranch?.id) {
+          throw new Error(
+            'Business profile was saved, but the primary branch could not be verified. Please check branches permissions.'
+          );
+        }
+
+        // 6. Insert initial accounts (avoid duplicating on retry)
+        const existingAccounts = await financeService.fetchAccounts(bizId).catch(() => [] as Account[]);
+        const createdAccounts: Account[] = [...existingAccounts];
         if (setupData.initialAccounts && setupData.initialAccounts.length > 0) {
           for (const acc of setupData.initialAccounts) {
+            const alreadyExists = existingAccounts.some(
+              e =>
+                e.name.trim().toLowerCase() === acc.name.trim().toLowerCase() &&
+                e.accountType === acc.accountType
+            );
+            if (alreadyExists) continue;
+
             const { data: accRes, error: aErr } = await supabase
               .from('accounts')
               .insert({
@@ -1354,7 +1561,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         }
 
-        // Seed default system roles in RBAC table
+        // 7. Seed default system roles in RBAC table
         try {
           const seededRoles = await staffRbacService.fetchRolesAndPermissions(bizId);
           setRoles(seededRoles);
@@ -1364,11 +1571,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setActiveBranchId(mainBranchId);
         setBranches([
           {
-            id: mainBranchId,
-            name: setupData.branchName,
-            location: setupData.address,
-            mobile: setupData.phone,
-            isMain: true,
+            id: savedBranch.id,
+            name: savedBranch.name,
+            location: savedBranch.location || '',
+            mobile: savedBranch.mobile || '',
+            isMain: Boolean(savedBranch.is_main),
           },
         ]);
         setAccounts(createdAccounts);
@@ -1419,9 +1626,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
 
       setSettings(updatedSettings);
-      setIsBusinessConfigured(true);
+      setCurrentEmployee(null);
       setCurrentUserRoleState('owner');
       setAuthenticatedRoleKey('super_admin');
+      setInitError(null);
+      setIsBusinessConfigured(true);
 
       localStorage.setItem(`${STORAGE_KEY}_IS_CONFIGURED`, 'true');
       localStorage.setItem(`${STORAGE_KEY}_CURRENT_BIZ_ID`, bizId);
@@ -1463,11 +1672,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         localStorage.removeItem(`AMAR_DOKAN_COMBO_USAGE_V1_default-business`);
       } catch {}
 
-      addAuditLog('BUSINESS_SETUP_COMPLETED', 'business', bizId, `Business setup completed for ${setupData.shopName}`);
+      const setupAuditLog: AuditLog = {
+        id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        date: new Date().toISOString(),
+        userRole: 'owner',
+        action: 'BUSINESS_SETUP_COMPLETED',
+        entityType: 'business',
+        entityId: bizId,
+        details: `Business setup completed for ${setupData.shopName}`,
+        branchId: mainBranchId,
+      };
+      setAuditLogs([setupAuditLog]);
+      auditService.logAction(setupAuditLog, bizId, user?.id);
     } catch (err: any) {
       throw raiseDbError(err, 'Failed to complete business setup.');
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -4252,6 +4470,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         migrateLegacyData,
         dbError,
         clearDbError,
+        initError,
+        retryInitialization,
         isBusinessConfigured,
         completeBusinessSetup,
         settings,
