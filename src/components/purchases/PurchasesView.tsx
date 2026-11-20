@@ -5,6 +5,8 @@ import { Purchase, PurchaseItem, PaymentMethod } from '../../types';
 import { formatCurrency, formatDate, toBnNumber } from '../../utils/formatters';
 import { getShopLogo, printPurchaseOrder } from '../../utils/printEngine';
 import { ComboboxOption, SearchableCombobox } from '../common/SearchableCombobox';
+import { ProductThumbnail } from '../common/ProductThumbnail';
+import { resolveProductImage } from '../../utils/productImageResolver';
 import {
   Truck,
   Plus,
@@ -491,19 +493,35 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({ isAddModalOpen: pr
                 </div>
 
                 <div className="space-y-2">
-                  {items.map((item, idx) => (
-                    <div key={idx} className="grid grid-cols-12 gap-2 items-center bg-white p-2 rounded-lg border border-slate-200">
-                      <div className="col-span-5">
-                        <SearchableCombobox
-                          ariaLabel={'Select Product'}
-                          options={productOptions}
-                          value={item.productId}
-                          onChange={(selectedProdId) => handleItemChange(idx, 'productId', selectedProdId)}
-                          placeholder={'Type to search product...'}
-                          emptyMessage={'No matching products found'}
-                          size="sm"
-                        />
-                      </div>
+                  {items.map((item, idx) => {
+                    const matchedProd = products.find(p => p.id === item.productId);
+                    const thumbSrc =
+                      item.imageUrl ||
+                      resolveProductImage(matchedProd, {
+                        colorId: item.colorId,
+                        variantId: item.variantId,
+                        colorName: item.colorName,
+                      });
+                    return (
+                      <div key={idx} className="grid grid-cols-12 gap-2 items-center bg-white p-2 rounded-lg border border-slate-200">
+                        <div className="col-span-5 flex items-center gap-2 min-w-0">
+                          <ProductThumbnail
+                            src={thumbSrc}
+                            alt={item.productName || 'Product'}
+                            size="xs"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <SearchableCombobox
+                              ariaLabel={'Select Product'}
+                              options={productOptions}
+                              value={item.productId}
+                              onChange={(selectedProdId) => handleItemChange(idx, 'productId', selectedProdId)}
+                              placeholder={'Type to search product...'}
+                              emptyMessage={'No matching products found'}
+                              size="sm"
+                            />
+                          </div>
+                        </div>
 
                       <div className="col-span-2">
                         <input
@@ -543,7 +561,8 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({ isAddModalOpen: pr
                         )}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
 
@@ -761,14 +780,34 @@ export const PurchasesView: React.FC<PurchasesViewProps> = ({ isAddModalOpen: pr
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {selectedPurchase.items.map((item, idx) => (
-                      <tr key={idx}>
-                        <td className="p-2 font-medium text-slate-900">{item.productName}</td>
-                        <td className="p-2 text-center font-mono-num">{toBnNumber(item.quantity)}</td>
-                        <td className="p-2 text-right font-mono-num">{formatCurrency(item.purchasePrice, lang)}</td>
-                        <td className="p-2 text-right font-mono-num font-bold">{formatCurrency(item.total, lang)}</td>
-                      </tr>
-                    ))}
+                    {selectedPurchase.items.map((item, idx) => {
+                      const matchedProd = products.find(p => p.id === item.productId);
+                      const thumbSrc =
+                        item.imageUrl ||
+                        resolveProductImage(matchedProd, {
+                          colorId: item.colorId,
+                          variantId: item.variantId,
+                          colorName: item.colorName,
+                        });
+                      return (
+                        <tr key={idx}>
+                          <td className="p-2 font-medium text-slate-900">
+                            <div className="flex items-center gap-2">
+                              <ProductThumbnail src={thumbSrc} alt={item.productName} size="xs" />
+                              <div>
+                                <span className="block">{item.productName}</span>
+                                {item.variantDetails && (
+                                  <span className="text-[10px] text-slate-500">{item.variantDetails}</span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                          <td className="p-2 text-center font-mono-num">{toBnNumber(item.quantity)}</td>
+                          <td className="p-2 text-right font-mono-num">{formatCurrency(item.purchasePrice, lang)}</td>
+                          <td className="p-2 text-right font-mono-num font-bold">{formatCurrency(item.total, lang)}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

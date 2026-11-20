@@ -57,7 +57,7 @@ const TAB_TO_MODULE_MAP: Record<string, LegacyAppModule> = {
 };
 
 const MainLayout: React.FC = () => {
-  const { canAccess, currentUserRole, user, isLoading, isBusinessConfigured, isAuthenticatedAdmin, signOut, dbError, clearDbError, initError, retryInitialization } = useApp();
+  const { canAccess, currentUserRole, user, isLoading, isBusinessConfigured, isAuthenticatedAdmin, signOut, dbError, clearDbError, initError, retryInitialization, setPendingPosSelection, setPendingCatalogProductId } = useApp();
 
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
@@ -291,6 +291,10 @@ const MainLayout: React.FC = () => {
           <ProductsView
             isAddModalOpen={isAddProductOpen}
             onCloseAddModal={() => setIsAddProductOpen(false)}
+            onOpenCatalogForProduct={(productId: string) => {
+              setPendingCatalogProductId(productId);
+              handleTabChange('catalog');
+            }}
           />
         );
 
@@ -349,7 +353,18 @@ const MainLayout: React.FC = () => {
         return <ExchangeReturnView />;
 
       case 'catalog':
-        return <ProductCatalogView onSelectForPOS={() => setActiveTab('pos')} />;
+        return (
+          <ProductCatalogView
+            onSelectForPOS={(product, variant, colorId) => {
+              setPendingPosSelection({
+                productId: product.id,
+                variantId: variant?.id,
+                colorId: colorId || variant?.colorId,
+              });
+              handleTabChange('pos');
+            }}
+          />
+        );
 
       case 'barcodes':
         return <BarcodeLabelStudio />;

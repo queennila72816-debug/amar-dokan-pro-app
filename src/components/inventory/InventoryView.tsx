@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { StockAdjustment } from '../../types';
 import { formatCurrency, formatDate, exportToCSV, toBnNumber } from '../../utils/formatters';
+import { ProductThumbnail } from '../common/ProductThumbnail';
+import { resolveProductImage } from '../../utils/productImageResolver';
 import {
   Boxes,
   AlertTriangle,
@@ -292,12 +294,21 @@ export const InventoryView: React.FC = () => {
                   return (
                     <tr key={p.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="px-4 py-3 font-semibold text-slate-900">
-                        {p.name}
-                        {p.hasVariants && (
-                          <div className="text-[10px] text-slate-500 font-normal">
-                            {p.variants?.map(v => `${v.color} ${v.size} (${v.stock})`).join(', ')}
+                        <div className="flex items-center gap-2.5">
+                          <ProductThumbnail
+                            src={resolveProductImage(p)}
+                            alt={p.name}
+                            size="xs"
+                          />
+                          <div className="min-w-0">
+                            <span className="block truncate">{p.name}</span>
+                            {p.hasVariants && (
+                              <div className="text-[10px] text-slate-500 font-normal">
+                                {p.variants?.map(v => `${v.color} ${v.size} (${v.stock})`).join(', ')}
+                              </div>
+                            )}
                           </div>
-                        )}
+                        </div>
                       </td>
                       <td className="px-4 py-3 font-mono text-slate-600">{p.code}</td>
                       <td className="px-4 py-3 text-center font-mono-num font-bold text-slate-900">

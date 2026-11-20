@@ -21,8 +21,17 @@ import {
   Printer,
   Sparkles,
   Eye,
+  Camera,
 } from 'lucide-react';
 import { VariantMatrixGenerator } from './VariantMatrixGenerator';
+import { ProductThumbnail } from '../common/ProductThumbnail';
+import { ColorImageWorkspace } from '../catalog/ColorImageWorkspace';
+import {
+  getColorUploadCoverage,
+  inferColorHex,
+  resolveProductColors,
+  resolveProductImage,
+} from '../../utils/productImageResolver';
 import { BarcodeSvg } from '../barcodes/BarcodeSvg';
 import { BarcodeFormat } from '../../utils/barcodeGenerator';
 import {
@@ -37,9 +46,14 @@ import { LabelConfig, LabelTemplateId } from '../../types';
 interface ProductsViewProps {
   isAddModalOpen?: boolean;
   onCloseAddModal?: () => void;
+  onOpenCatalogForProduct?: (productId: string) => void;
 }
 
-export const ProductsView: React.FC<ProductsViewProps> = ({ isAddModalOpen: propIsAddModalOpen, onCloseAddModal: propOnCloseAddModal }) => {
+export const ProductsView: React.FC<ProductsViewProps> = ({
+  isAddModalOpen: propIsAddModalOpen,
+  onCloseAddModal: propOnCloseAddModal,
+  onOpenCatalogForProduct,
+}) => {
   const { products, categories, addCategory, addProduct, updateProduct, deleteProduct, isAdmin, settings, hasPermission } = useApp();
   const canCreateProduct = hasPermission('product_management', 'create');
   const canEditProduct = hasPermission('product_management', 'edit');
@@ -62,6 +76,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({ isAddModalOpen: prop
   // Modal States
   const [isModalOpen, setIsModalOpen] = useState(propIsAddModalOpen || false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [photoManagerProductId, setPhotoManagerProductId] = useState<string | null>(null);
   const [barcodeModalProduct, setBarcodeModalProduct] = useState<Product | null>(null);
   const [selectedVariantId, setSelectedVariantId] = useState<string>('base');
   const [labelCopies, setLabelCopies] = useState<number>(1);
@@ -531,12 +546,12 @@ export const ProductsView: React.FC<ProductsViewProps> = ({ isAddModalOpen: prop
                       className={`transition-colors ${product.isActive === false ? 'bg-slate-50/60 opacity-60' : 'hover:bg-slate-50/80'}`}
                     >
                     <td className="px-4 py-3">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-2.5">
                         {product.hasVariants && product.variants && product.variants.length > 0 && (
                           <button
                             type="button"
                             onClick={() => toggleExpandVariants(product.id)}
-                            className="p-1 hover:bg-slate-200 rounded text-slate-500 cursor-pointer"
+                            className="p-1 hover:bg-slate-200 rounded text-slate-500 cursor-pointer shrink-0"
                             title="Expand variant breakdown"
                           >
                             {expandedProductIds[product.id] ? (
@@ -546,27 +561,54 @@ export const ProductsView: React.FC<ProductsViewProps> = ({ isAddModalOpen: prop
                             )}
                           </button>
                         )}
-                        <span className="font-semibold text-slate-900 leading-tight">
-                          {product.name}
-                        </span>
-                        {product.isActive === false && (
-                          <span className="text-[10px] bg-slate-200 text-slate-700 px-1 py-0.2 rounded font-medium">
-                            {'Archived'}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[11px] text-slate-600 flex items-center gap-2 mt-0.5">
-                        {product.brand && <span>Brand: {product.brand}</span>}
-                        {product.hasVariants && (
-                          <span
-                            onClick={() => toggleExpandVariants(product.id)}
-                            className="text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 px-1.5 py-0.2 rounded font-medium text-[10px] cursor-pointer flex items-center gap-1"
-                          >
-                            <span>{product.variants?.length} Variants</span>
-                            {expandedProductIds[product.id] ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                          </span>
-                        )}
-                        {product.model && <span>Model: {product.model}</span>}
+                        <ProductThumbnail
+                          src={resolveProductImage(product)}
+                          alt={product.name}
+                          size="sm"
+                        />
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-semibold text-slate-900 leading-tight">
+                              {product.name}
+                            </span>
+                            {product.isActive === false && (
+                              <span className="text-[10px] bg-slate-200 text-slate-700 px-1 py-0.2 rounded font-medium">
+                                {'Archived'}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[11px] text-slate-600 flex flex-wrap items-center gap-2 mt-0.5">
+                            {product.brand && <span>Brand: {product.brand}</span>}
+                            {product.hasVariants && (
+                              <span
+                                onClick={() => toggleExpandVariants(product.id)}
+                                className="text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 px-1.5 py-0.2 rounded font-medium text-[10px] cursor-pointer flex items-center gap-1"
+                              >
+                                <span>{product.variants?.length} Variants</span>
+                                {expandedProductIds[product.id] ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                              </span>
+                            )}
+                            {(() => {
+                              const colors = resolveProductColors(product);
+                              const cov = getColorUploadCoverage(product);
+                              if (colors.length === 0 && cov.totalImages === 0) return null;
+                              return (
+                                <span className="inline-flex items-center gap-1 text-[10px] text-teal-700 font-medium">
+                                  {colors.slice(0, 4).map(c => (
+                                    <span
+                                      key={c.id}
+                                      title={c.colorName}
+                                      className="w-2.5 h-2.5 rounded-full border border-slate-300"
+                                      style={{ backgroundColor: c.colorHex }}
+                                    />
+                                  ))}
+                                  <span>{cov.totalImages} photo{cov.totalImages === 1 ? '' : 's'}</span>
+                                </span>
+                              );
+                            })()}
+                            {product.model && <span>Model: {product.model}</span>}
+                          </div>
+                        </div>
                       </div>
                     </td>
 
@@ -627,6 +669,16 @@ export const ProductsView: React.FC<ProductsViewProps> = ({ isAddModalOpen: prop
 
                     <td className="px-4 py-3 text-right whitespace-nowrap">
                       <div className="flex items-center justify-end gap-1.5">
+                        {canEditProduct && (
+                          <button
+                            type="button"
+                            onClick={() => setPhotoManagerProductId(product.id)}
+                            className="p-1 text-teal-600 hover:text-teal-800 hover:bg-teal-50 rounded transition-colors cursor-pointer"
+                            title="Manage Color Photos"
+                          >
+                            <Camera className="w-4 h-4" />
+                          </button>
+                        )}
                         {canPrintBarcode && (
                           <button
                             onClick={() => {
@@ -728,14 +780,29 @@ export const ProductsView: React.FC<ProductsViewProps> = ({ isAddModalOpen: prop
                                 key={v.id}
                                 className="p-2 rounded-lg bg-slate-50 border border-slate-200 flex flex-col justify-between space-y-1 text-xs"
                               >
-                                <div className="flex items-center justify-between">
-                                  <span className="font-bold text-slate-900">{v.color || 'Standard'}</span>
-                                  <span className="font-mono font-bold text-[10px] px-1.5 py-0.2 bg-purple-100 text-purple-800 rounded">
-                                    {v.size || 'Free'}
-                                  </span>
-                                </div>
-                                <div className="text-[10px] text-slate-500 font-mono truncate" title={v.sku}>
-                                  SKU: {v.sku}
+                                <div className="flex items-center gap-2">
+                                  <ProductThumbnail
+                                    src={resolveProductImage(product, {
+                                      colorId: v.colorId,
+                                      variantId: v.id,
+                                      colorName: v.color,
+                                    })}
+                                    alt={`${product.name} ${v.color || ''}`}
+                                    colorHex={v.color ? inferColorHex(v.color, v.colorHex) : undefined}
+                                    colorName={v.color}
+                                    size="xs"
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-center justify-between gap-1">
+                                      <span className="font-bold text-slate-900 truncate">{v.color || 'Standard'}</span>
+                                      <span className="font-mono font-bold text-[10px] px-1.5 py-0.2 bg-purple-100 text-purple-800 rounded">
+                                        {v.size || 'Free'}
+                                      </span>
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 font-mono truncate" title={v.sku}>
+                                      {v.sku}
+                                    </div>
+                                  </div>
                                 </div>
                                 <div className="flex items-center justify-between pt-1 border-t border-slate-200 text-[11px]">
                                   <span className="font-bold text-slate-900">
@@ -1179,14 +1246,29 @@ export const ProductsView: React.FC<ProductsViewProps> = ({ isAddModalOpen: prop
 
               {/* Live Barcode Card */}
               <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex flex-col items-center justify-center space-y-1.5 text-center">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  {getBusinessDisplayName(settings)}
-                </span>
-                {targetVariantLabel && (
-                  <span className="px-2 py-0.5 bg-purple-100 text-purple-800 rounded text-[10px] font-bold font-mono">
-                    {targetVariantLabel}
-                  </span>
-                )}
+                <div className="flex items-center gap-2.5">
+                  <ProductThumbnail
+                    src={resolveProductImage(barcodeModalProduct, {
+                      colorId: activeVariant?.colorId,
+                      variantId: activeVariant?.id,
+                      colorName: activeVariant?.color,
+                    })}
+                    alt={barcodeModalProduct.name}
+                    colorHex={activeVariant?.color ? inferColorHex(activeVariant.color, activeVariant.colorHex) : undefined}
+                    colorName={activeVariant?.color}
+                    size="sm"
+                  />
+                  <div className="text-left">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">
+                      {getBusinessDisplayName(settings)}
+                    </span>
+                    {targetVariantLabel && (
+                      <span className="px-2 py-0.5 bg-purple-100 text-purple-800 rounded text-[10px] font-bold font-mono inline-block mt-0.5">
+                        {targetVariantLabel}
+                      </span>
+                    )}
+                  </div>
+                </div>
                 <BarcodeSvg
                   value={targetBarcode}
                   width={220}
@@ -1320,6 +1402,55 @@ export const ProductsView: React.FC<ProductsViewProps> = ({ isAddModalOpen: prop
           showScaleGuidance={labelPreviewPayload.showScaleGuidance}
           onClose={() => setLabelPreviewPayload(null)}
         />
+      )}
+
+      {/* Inline Color Photo Studio Modal for selected Product */}
+      {photoManagerProductId && (
+        <div
+          onClick={() => setPhotoManagerProductId(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/65 backdrop-blur-xs overflow-y-auto"
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            className="bg-slate-50 dark:bg-[#0B1428] rounded-2xl shadow-2xl border border-slate-200 dark:border-[#1F3158] w-full max-w-5xl max-h-[90vh] overflow-y-auto p-4 md:p-5 space-y-3 my-4"
+          >
+            <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-200 dark:border-[#1F3158]">
+              <div className="flex items-center gap-2">
+                <Camera className="w-5 h-5 text-[#087F8C]" />
+                <h3 className="text-sm font-bold text-[#172033] dark:text-white">
+                  Color Photo Manager
+                </h3>
+              </div>
+              <div className="flex items-center gap-2">
+                {onOpenCatalogForProduct && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const pid = photoManagerProductId;
+                      setPhotoManagerProductId(null);
+                      onOpenCatalogForProduct(pid);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-[#087F8C]/10 text-[#087F8C] dark:text-[#5EEAD4] text-xs font-bold cursor-pointer"
+                  >
+                    Open in Apparel Photo Catalog
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPhotoManagerProductId(null)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            <ColorImageWorkspace
+              initialProductId={photoManagerProductId}
+              compact
+            />
+          </div>
+        </div>
       )}
     </div>
   );

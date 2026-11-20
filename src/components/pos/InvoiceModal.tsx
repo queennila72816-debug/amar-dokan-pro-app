@@ -12,6 +12,8 @@ import {
 } from '../../utils/printEngine';
 import { PrintPreviewModal } from '../printing/PrintPreviewModal';
 import { BarcodeSvg } from '../barcodes/BarcodeSvg';
+import { ProductThumbnail } from '../common/ProductThumbnail';
+import { inferColorHex, resolveProductImage } from '../../utils/productImageResolver';
 import {
   Printer,
   Share2,
@@ -29,7 +31,7 @@ interface InvoiceModalProps {
 }
 
 export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, settings }) => {
-  const { hasPermission, branches, activeBranchId } = useApp();
+  const { hasPermission, branches, activeBranchId, products } = useApp();
   const canPrintInvoice = hasPermission('invoice_printing', 'print');
   const defaultPaper = getPrinterSettings(settings).invoicePaperSize || settings.invoiceFormat || 'thermal';
   const [format, setFormat] = useState<InvoicePaperSize>(defaultPaper);
@@ -403,15 +405,35 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {sale.items.map((item, idx) => (
+                      {sale.items.map((item, idx) => {
+                        const matchedProd = products.find(p => p.id === item.productId);
+                        const thumbUrl =
+                          item.imageUrl ||
+                          resolveProductImage(matchedProd, {
+                            colorId: item.colorId,
+                            variantId: item.variantId,
+                            colorName: item.colorName,
+                          });
+                        return (
                         <tr key={idx} className="text-slate-800">
                           <td className="py-2 text-slate-400">{idx + 1}</td>
                           <td className="py-2">
-                            <span className="font-semibold block">{item.productName}</span>
-                            <span className="text-[10px] text-slate-500 font-mono">
-                              {item.sku ? `SKU: ${item.sku}` : ''}
-                              {item.variantDetails ? `${item.sku ? ' · ' : ''}${item.variantDetails}` : ''}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <ProductThumbnail
+                                src={thumbUrl}
+                                alt={item.productName}
+                                colorHex={item.colorName ? inferColorHex(item.colorName) : undefined}
+                                colorName={item.colorName}
+                                size="xs"
+                              />
+                              <div>
+                                <span className="font-semibold block">{item.productName}</span>
+                                <span className="text-[10px] text-slate-500 font-mono">
+                                  {item.sku ? `SKU: ${item.sku}` : ''}
+                                  {item.variantDetails ? `${item.sku ? ' · ' : ''}${item.variantDetails}` : ''}
+                                </span>
+                              </div>
+                            </div>
                           </td>
                           <td className="py-2 text-center font-mono-num">{item.quantity}</td>
                           <td className="py-2 text-right font-mono-num">{formatCurrency(item.unitPrice, lang)}</td>
@@ -422,7 +444,8 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                             {formatCurrency(item.total, lang)}
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

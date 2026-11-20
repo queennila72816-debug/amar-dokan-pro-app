@@ -1,615 +1,831 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  Camera,
+  Eye,
+  EyeOff,
+  Grid as GridIcon,
+  Images,
+  List,
+  Palette,
+  Search,
+  Shirt,
+  ShoppingBag,
+  Sparkles,
+  Tag,
+} from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Product, ProductVariant } from '../../types';
 import { formatCurrency } from '../../utils/formatters';
-import { isSalesmanOrCashierRole } from '../../utils/rbacDefaults';
+import { MODULE_THEMES } from '../../config/moduleTheme';
+import { ColorImageWorkspace } from './ColorImageWorkspace';
+import { ProductDetailGalleryModal } from './ProductDetailGalleryModal';
+import { ProductThumbnail } from '../common/ProductThumbnail';
 import {
-  Grid,
-  List,
-  Eye,
-  EyeOff,
-  Search,
-  Filter,
-  Package,
-  Layers,
-  Sparkles,
-  ShoppingBag,
-  Maximize2,
-  X,
-  ChevronLeft,
-  ChevronRight,
-  Check,
-  Tag,
-  ShieldAlert,
-  Percent,
-} from 'lucide-react';
+  getColorUploadCoverage,
+  normalizeColorKey,
+  resolveProductColors,
+  resolveProductImage,
+} from '../../utils/productImageResolver';
 
 interface ProductCatalogViewProps {
-  onSelectForPOS?: (product: Product, variant?: ProductVariant) => void;
+  onSelectForPOS?: (product: Product, variant?: ProductVariant, colorId?: string) => void;
 }
 
 export const ProductCatalogView: React.FC<ProductCatalogViewProps> = ({ onSelectForPOS }) => {
-  const { products, categories, settings, isAdmin, currentUserRole } = useApp();
+  const {
+    products,
+    categories,
+    hasPermission,
+    isAdmin,
+    pendingCatalogProductId,
+    setPendingCatalogProductId,
+  } = useApp();
 
-  // Mode: Grid vs List
+  const canManageCatalog =
+    isAdmin ||
+    hasPermission('product_management', 'create') ||
+    hasPermission('product_management', 'edit');
+
+  const [activeSubTab, setActiveSubTab] = useState<'gallery' | 'studio'>('gallery');
+  const [studioProductId, setStudioProductId] = useState<string | null>(null);
+
+  const [searchTerm, setSearchTerm] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('All');
+  const [selectedColorFilter, setSelectedColorFilter] = useState<string>('All');
+  const [selectedSizeFilter, setSelectedSizeFilter] = useState<string>('All');
+  const [stockFilter, setStockFilter] = useState<'all' | 'in_stock' | 'low_stock' | 'out_of_stock'>('all');
+  const [photoFilter, setPhotoFilter] = useState<'all' | 'has_photos' | 'missing_photos'>('all');
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [showcaseMode, setShowcaseMode] = useState(false);
 
-  // Customer Showcase Mode (Default true for sales floor safety)
-  const [isShowcaseMode, setIsShowcaseMode] = useState<boolean>(() => {
-    if (isSalesmanOrCashierRole(currentUserRole)) return true;
-    return false;
-  });
+  // Per-card active color selection so users can switch color swatches live on any gallery card
+  const [cardSelectedColor, setCardSelectedColor] = useState<Record<string, string>>({});
+  const [detailModalTarget, setDetailModalTarget] = useState<{
+    product: Product;
+    colorId?: string;
+  } | null>(null);
 
-  // Filters
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
-  const [selectedSize, setSelectedSize] = useState<string>('all');
-  const [selectedColor, setSelectedColor] = useState<string>('all');
-  const [stockAvailability, setStockAvailability] = useState<'all' | 'in_stock' | 'out_of_stock'>('all');
+  // Handle handoff from Products & Variants ("Manage Color Photos")
+  useEffect(() => {
+    if (pendingCatalogProductId) {
+      setStudioProductId(pendingCatalogProductId);
+      setActiveSubTab('studio');
+      setPendingCatalogProductId(null);
+    }
+  }, [pendingCatalogProductId, setPendingCatalogProductId]);
 
-  // Photo Lightbox modal state
-  const [activeGalleryProduct, setActiveGalleryProduct] = useState<Product | null>(null);
-  const [activeImageIndex, setActiveImageIndex] = useState<number>(0);
+  const activeProducts = useMemo(
+    () => products.filter(p => p.isActive !== false),
+    [products]
+  );
 
-  // Clothing standard sizes & colors extracted from products
+  // Aggregate unique colors & sizes across active products for filters
+  const availableColors = useMemo(() => {
+    const map = new Map<string, { name: string; hex: string }>();
+    activeProducts.forEach(p => {
+      resolveProductColors(p).forEach(c => {
+        const key = normalizeColorKey(c.colorName);
+        if (key && !map.has(key)) {
+          map.set(key, { name: c.colorName, hex: c.colorHex });
+        }
+      });
+    });
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [activeProducts]);
+
   const availableSizes = useMemo(() => {
     const set = new Set<string>();
-    products.forEach(p => {
-      if (p.size) set.add(p.size);
-      if (p.variants) {
-        p.variants.forEach(v => v.size && set.add(v.size));
-      }
+    activeProducts.forEach(p => {
+      if (p.size) set.add(p.size.trim());
+      (p.variants || []).forEach(v => {
+        if (v.size?.trim()) set.add(v.size.trim());
+      });
     });
-    return ['all', ...Array.from(set)];
-  }, [products]);
+    return Array.from(set).sort();
+  }, [activeProducts]);
 
-  const availableColors = useMemo(() => {
-    const set = new Set<string>();
-    products.forEach(p => {
-      if (p.color) set.add(p.color);
-      if (p.variants) {
-        p.variants.forEach(v => v.color && set.add(v.color));
-      }
+  // Catalog KPI Summary
+  const summary = useMemo(() => {
+    let totalColors = 0;
+    let uploadedColors = 0;
+    let totalPhotos = 0;
+    let productsWithPhotos = 0;
+
+    activeProducts.forEach(p => {
+      const cov = getColorUploadCoverage(p);
+      totalColors += cov.totalColors;
+      uploadedColors += cov.colorsWithImages;
+      totalPhotos += cov.totalImages;
+      if (cov.totalImages > 0) productsWithPhotos += 1;
     });
-    return ['all', ...Array.from(set)];
-  }, [products]);
 
-  // Filtered Products
+    const missingPhotoProducts = Math.max(0, activeProducts.length - productsWithPhotos);
+    const coveragePct =
+      activeProducts.length > 0
+        ? Math.round((productsWithPhotos / activeProducts.length) * 100)
+        : 0;
+
+    return {
+      totalProducts: activeProducts.length,
+      totalColors,
+      uploadedColors,
+      totalPhotos,
+      missingPhotoProducts,
+      coveragePct,
+    };
+  }, [activeProducts]);
+
   const filteredProducts = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
+    const q = searchTerm.trim().toLowerCase();
+    return activeProducts.filter(p => {
+      const colors = resolveProductColors(p);
+      const coverage = getColorUploadCoverage(p);
 
-    return products.filter(p => {
-      if (p.isActive === false) return false;
-
-      const matchCat = selectedCategory === 'all' || p.category === selectedCategory;
-
-      const matchSearch =
+      const matchesSearch =
         !q ||
         p.name.toLowerCase().includes(q) ||
         p.code.toLowerCase().includes(q) ||
-        p.barcode.includes(q) ||
-        (p.brand && p.brand.toLowerCase().includes(q)) ||
-        (p.variants && p.variants.some(v => (v.color && v.color.toLowerCase().includes(q)) || (v.size && v.size.toLowerCase().includes(q))));
+        (p.barcode || '').toLowerCase().includes(q) ||
+        p.category.toLowerCase().includes(q) ||
+        colors.some(c => c.colorName.toLowerCase().includes(q)) ||
+        (p.variants || []).some(
+          v =>
+            v.sku.toLowerCase().includes(q) ||
+            (v.color || '').toLowerCase().includes(q) ||
+            (v.size || '').toLowerCase().includes(q)
+        );
 
-      const matchSize =
-        selectedSize === 'all' ||
-        p.size === selectedSize ||
-        (p.variants && p.variants.some(v => v.size === selectedSize));
+      const matchesCategory =
+        selectedCategory === 'All' || p.category === selectedCategory;
 
-      const matchColor =
-        selectedColor === 'all' ||
-        p.color?.toLowerCase() === selectedColor.toLowerCase() ||
-        (p.variants && p.variants.some(v => v.color?.toLowerCase() === selectedColor.toLowerCase()));
+      const matchesColor =
+        selectedColorFilter === 'All' ||
+        colors.some(
+          c => normalizeColorKey(c.colorName) === normalizeColorKey(selectedColorFilter)
+        );
 
-      const matchStock =
-        stockAvailability === 'all' ||
-        (stockAvailability === 'in_stock' && p.currentStock > 0) ||
-        (stockAvailability === 'out_of_stock' && p.currentStock <= 0);
+      const matchesSize =
+        selectedSizeFilter === 'All' ||
+        p.size?.trim() === selectedSizeFilter ||
+        (p.variants || []).some(v => v.size?.trim() === selectedSizeFilter);
 
-      return matchCat && matchSearch && matchSize && matchColor && matchStock;
+      const matchesStock =
+        stockFilter === 'all' ||
+        (stockFilter === 'in_stock' && p.currentStock > p.minStockAlert) ||
+        (stockFilter === 'low_stock' &&
+          p.currentStock > 0 &&
+          p.currentStock <= p.minStockAlert) ||
+        (stockFilter === 'out_of_stock' && p.currentStock <= 0);
+
+      const matchesPhoto =
+        photoFilter === 'all' ||
+        (photoFilter === 'has_photos' && coverage.totalImages > 0) ||
+        (photoFilter === 'missing_photos' &&
+          (coverage.totalImages === 0 || coverage.missingColors > 0));
+
+      return (
+        matchesSearch &&
+        matchesCategory &&
+        matchesColor &&
+        matchesSize &&
+        matchesStock &&
+        matchesPhoto
+      );
     });
-  }, [products, searchQuery, selectedCategory, selectedSize, selectedColor, stockAvailability]);
+  }, [
+    activeProducts,
+    searchTerm,
+    selectedCategory,
+    selectedColorFilter,
+    selectedSizeFilter,
+    stockFilter,
+    photoFilter,
+  ]);
 
-  // Open Image Gallery Lightbox
-  const handleOpenGallery = (prod: Product, startIndex: number = 0) => {
-    setActiveGalleryProduct(prod);
-    setActiveImageIndex(startIndex);
-  };
-
-  // Get product image list
-  const getProductImages = (prod: Product): string[] => {
-    if (prod.images && prod.images.length > 0) {
-      return prod.images;
-    }
-    if (prod.image) {
-      return [prod.image];
-    }
-    // High quality aesthetic fallback for apparel
-    return ['https://images.unsplash.com/photo-1596755094514-f87e34085b2c?auto=format&fit=crop&w=600&q=80'];
+  const openColorStudioForProduct = (productId: string) => {
+    setStudioProductId(productId);
+    setActiveSubTab('studio');
   };
 
   return (
-    <div className="space-y-6">
-      {/* Top Banner & Customer Showcase Toggle */}
-      <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="space-y-4">
+      {/* Header & Mode Controls */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2">
-            <span className="p-2 rounded-xl bg-indigo-50 text-indigo-700">
-              <ShoppingBag className="w-5 h-5" />
-            </span>
-            <h1 className="text-xl font-bold text-slate-900">Apparel Visual Catalog</h1>
-          </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Browse collection photos, size curves, and colorways. Safe to present to customers in Showcase Mode.
+          <h1
+            className={`text-xl md:text-2xl font-bold flex items-center gap-2 ${MODULE_THEMES.catalog.headerAccentText}`}
+          >
+            <Images className="w-6 h-6" />
+            <span>Apparel Photo Catalog</span>
+          </h1>
+          <p className="text-xs text-[#64748B] dark:text-slate-400 mt-0.5">
+            Color-linked visual lookbook &amp; manual photo management synced across POS, Inventory &amp; Invoices
           </p>
         </div>
 
-        {/* Showcase Mode Toggle */}
-        <div className="flex items-center gap-3">
-          <div
-            onClick={() => {
-              if (!isSalesmanOrCashierRole(currentUserRole)) {
-                setIsShowcaseMode(!isShowcaseMode);
-              }
-            }}
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-xs font-bold transition-all ${
-              isSalesmanOrCashierRole(currentUserRole) ? 'cursor-not-allowed' : 'cursor-pointer'
-            } ${
-              isShowcaseMode
-                ? 'bg-emerald-50 text-emerald-800 border-emerald-300 ring-2 ring-emerald-500/20'
-                : 'bg-slate-100 text-slate-700 border-slate-300'
-            }`}
-          >
-            {isShowcaseMode ? (
-              <>
-                <Eye className="w-4 h-4 text-emerald-600" />
-                <span>Showcase Mode (Customer-Safe)</span>
-              </>
-            ) : (
-              <>
-                <EyeOff className="w-4 h-4 text-slate-500" />
-                <span>Admin View (Costs &amp; Margins Visible)</span>
-              </>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Sub-tab Switcher */}
+          <div className="inline-flex bg-white dark:bg-[#101B35] border border-[#E2E8F0] dark:border-[#1F3158] rounded-[10px] p-1">
+            <button
+              type="button"
+              onClick={() => setActiveSubTab('gallery')}
+              className={`px-3 py-1.5 rounded-[7px] text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                activeSubTab === 'gallery'
+                  ? 'bg-[#087F8C] text-white'
+                  : 'text-[#64748B] dark:text-slate-300 hover:text-[#172033] dark:hover:text-white'
+              }`}
+            >
+              <GridIcon className="w-3.5 h-3.5" />
+              <span>Catalog Gallery</span>
+            </button>
+            {canManageCatalog && (
+              <button
+                type="button"
+                onClick={() => setActiveSubTab('studio')}
+                className={`px-3 py-1.5 rounded-[7px] text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  activeSubTab === 'studio'
+                    ? 'bg-[#087F8C] text-white'
+                    : 'text-[#64748B] dark:text-slate-300 hover:text-[#172033] dark:hover:text-white'
+                }`}
+              >
+                <Camera className="w-3.5 h-3.5" />
+                <span>Color Photo Studio</span>
+              </button>
             )}
           </div>
 
-          {/* View Mode Toggle */}
-          <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
+          {activeSubTab === 'gallery' && (
             <button
-              onClick={() => setViewMode('grid')}
-              className={`p-1.5 rounded-lg text-xs transition-colors ${
-                viewMode === 'grid' ? 'bg-white shadow-xs text-slate-900' : 'text-slate-500 hover:text-slate-700'
+              type="button"
+              onClick={() => setShowcaseMode(prev => !prev)}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-[10px] text-xs font-bold border transition-all cursor-pointer ${
+                showcaseMode
+                  ? 'bg-[#0B1428] border-[#0B1428] text-white shadow-xs'
+                  : 'bg-white dark:bg-[#101B35] border-[#E2E8F0] dark:border-[#1F3158] text-[#172033] dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-[#162344]'
               }`}
             >
-              <Grid className="w-4 h-4" />
+              {showcaseMode ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              <span>{showcaseMode ? 'Customer Showcase (Active)' : 'Showcase Mode'}</span>
             </button>
-            <button
-              onClick={() => setViewMode('list')}
-              className={`p-1.5 rounded-lg text-xs transition-colors ${
-                viewMode === 'list' ? 'bg-white shadow-xs text-slate-900' : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              <List className="w-4 h-4" />
-            </button>
+          )}
+        </div>
+      </div>
+
+      {/* KPI Metrics Row */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="adp-card p-3.5">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B] dark:text-slate-400">
+            Catalog Styles
+          </div>
+          <div className="text-xl font-black font-mono-num text-[#172033] dark:text-white mt-1">
+            {summary.totalProducts}
+          </div>
+          <div className="text-[11px] text-[#64748B] dark:text-slate-400 mt-0.5 font-mono-num">
+            {summary.coveragePct}% with photos
+          </div>
+        </div>
+
+        <div className="adp-card p-3.5">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B] dark:text-slate-400">
+            Color Swatches
+          </div>
+          <div className="text-xl font-black font-mono-num text-[#087F8C] dark:text-[#5EEAD4] mt-1">
+            {summary.uploadedColors} / {summary.totalColors}
+          </div>
+          <div className="text-[11px] text-[#64748B] dark:text-slate-400 mt-0.5">
+            Colors linked to images
+          </div>
+        </div>
+
+        <div className="adp-card p-3.5">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B] dark:text-slate-400">
+            Cloud Photos
+          </div>
+          <div className="text-xl font-black font-mono-num text-[#172033] dark:text-white mt-1">
+            {summary.totalPhotos}
+          </div>
+          <div className="text-[11px] text-emerald-700 dark:text-emerald-400 mt-0.5">
+            Permanent product + color IDs
+          </div>
+        </div>
+
+        <div className="adp-card p-3.5">
+          <div className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B] dark:text-slate-400">
+            Needs Photos
+          </div>
+          <div className="text-xl font-black font-mono-num text-amber-700 dark:text-amber-400 mt-1">
+            {summary.missingPhotoProducts}
+          </div>
+          <div className="text-[11px] text-[#64748B] dark:text-slate-400 mt-0.5">
+            Products awaiting upload
           </div>
         </div>
       </div>
 
-      {/* Filter Toolbar */}
-      <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3">
-          {/* Search */}
-          <div className="lg:col-span-4 relative">
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Search shirt, panjabi, color, SKU..."
-              className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-            />
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-          </div>
-
-          {/* Category Filter */}
-          <div className="lg:col-span-2">
-            <select
-              value={selectedCategory}
-              onChange={e => setSelectedCategory(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white"
-            >
-              <option value="all">All Categories</option>
-              {categories.map(c => (
-                <option key={c.id} value={c.name}>{c.name}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Size Filter */}
-          <div className="lg:col-span-2">
-            <select
-              value={selectedSize}
-              onChange={e => setSelectedSize(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white"
-            >
-              <option value="all">All Sizes</option>
-              {availableSizes.filter(s => s !== 'all').map(s => (
-                <option key={s} value={s}>{s}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Color Filter */}
-          <div className="lg:col-span-2">
-            <select
-              value={selectedColor}
-              onChange={e => setSelectedColor(e.target.value)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white"
-            >
-              <option value="all">All Colors</option>
-              {availableColors.filter(c => c !== 'all').map(c => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Stock Filter */}
-          <div className="lg:col-span-2">
-            <select
-              value={stockAvailability}
-              onChange={e => setStockAvailability(e.target.value as any)}
-              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white"
-            >
-              <option value="all">All Stock Status</option>
-              <option value="in_stock">In Stock Only</option>
-              <option value="out_of_stock">Out of Stock</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      {/* Catalog Display */}
-      {viewMode === 'grid' ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-          {filteredProducts.map(product => {
-            const images = getProductImages(product);
-            const mainImg = images[0];
-            const hasStock = product.currentStock > 0;
-
-            return (
-              <div
-                key={product.id}
-                className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs hover:shadow-md transition-all flex flex-col group"
+      {activeSubTab === 'studio' ? (
+        <ColorImageWorkspace initialProductId={studioProductId} />
+      ) : (
+        <>
+          {showcaseMode && (
+            <div className="px-4 py-2.5 rounded-xl bg-[#0B1428] text-white text-xs font-medium flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-[#D6AD60] shrink-0" />
+                <span>
+                  Customer Showcase Mode active — wholesale costs and profit margins are hidden for safe customer browsing.
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowcaseMode(false)}
+                className="text-[11px] font-bold text-[#D6AD60] hover:underline cursor-pointer shrink-0"
               >
-                {/* Photo Header */}
-                <div className="relative aspect-4/3 bg-slate-100 overflow-hidden cursor-pointer" onClick={() => handleOpenGallery(product)}>
-                  <img
-                    src={mainImg}
-                    alt={product.name}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                    loading="lazy"
-                  />
+                Exit
+              </button>
+            </div>
+          )}
 
-                  {/* Multiple Photos Badge */}
-                  {images.length > 1 && (
-                    <span className="absolute bottom-2 right-2 px-2 py-0.5 rounded-md bg-black/60 backdrop-blur-xs text-white text-[10px] font-semibold flex items-center gap-1">
-                      <Sparkles className="w-3 h-3" />
-                      <span>{images.length} photos</span>
-                    </span>
-                  )}
+          {/* Filter & Search Toolbar */}
+          <div className="adp-card p-3.5 space-y-3">
+            <div className="flex flex-col lg:flex-row gap-2.5">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-[#64748B] dark:text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  placeholder="Search by product name, code, SKU, barcode, or color..."
+                  value={searchTerm}
+                  onChange={e => setSearchTerm(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 border border-[#E2E8F0] dark:border-[#1F3158] rounded-[10px] text-xs bg-white dark:bg-[#0E182E] text-[#172033] dark:text-white focus:outline-none focus:ring-2 focus:ring-[#087F8C]/25 focus:border-[#087F8C]"
+                />
+              </div>
 
-                  {/* Stock Badge */}
-                  <span
-                    className={`absolute top-2 left-2 px-2.5 py-1 rounded-full text-[10px] font-bold shadow-xs ${
-                      product.currentStock <= 0
-                        ? 'bg-rose-600 text-white'
-                        : product.currentStock <= product.minStockAlert
-                        ? 'bg-amber-500 text-white'
-                        : 'bg-emerald-600 text-white'
-                    }`}
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                <select
+                  aria-label="Filter by category"
+                  value={selectedCategory}
+                  onChange={e => setSelectedCategory(e.target.value)}
+                  className="px-2.5 py-2 border border-[#E2E8F0] dark:border-[#1F3158] rounded-[10px] text-xs bg-white dark:bg-[#0E182E] text-[#172033] dark:text-white"
+                >
+                  <option value="All">All Categories</option>
+                  {categories.map(c => (
+                    <option key={c.id} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  aria-label="Filter by color"
+                  value={selectedColorFilter}
+                  onChange={e => setSelectedColorFilter(e.target.value)}
+                  className="px-2.5 py-2 border border-[#E2E8F0] dark:border-[#1F3158] rounded-[10px] text-xs bg-white dark:bg-[#0E182E] text-[#172033] dark:text-white"
+                >
+                  <option value="All">All Colors</option>
+                  {availableColors.map(c => (
+                    <option key={c.name} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  aria-label="Filter by size"
+                  value={selectedSizeFilter}
+                  onChange={e => setSelectedSizeFilter(e.target.value)}
+                  className="px-2.5 py-2 border border-[#E2E8F0] dark:border-[#1F3158] rounded-[10px] text-xs bg-white dark:bg-[#0E182E] text-[#172033] dark:text-white"
+                >
+                  <option value="All">All Sizes</option>
+                  {availableSizes.map(sz => (
+                    <option key={sz} value={sz}>
+                      Size: {sz}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  aria-label="Filter by stock status"
+                  value={stockFilter}
+                  onChange={e => setStockFilter(e.target.value as any)}
+                  className="px-2.5 py-2 border border-[#E2E8F0] dark:border-[#1F3158] rounded-[10px] text-xs bg-white dark:bg-[#0E182E] text-[#172033] dark:text-white"
+                >
+                  <option value="all">All Stock</option>
+                  <option value="in_stock">In Stock</option>
+                  <option value="low_stock">Low Stock</option>
+                  <option value="out_of_stock">Out of Stock</option>
+                </select>
+
+                <div className="flex items-center gap-1.5">
+                  <select
+                    aria-label="Filter by photo status"
+                    value={photoFilter}
+                    onChange={e => setPhotoFilter(e.target.value as any)}
+                    className="flex-1 px-2.5 py-2 border border-[#E2E8F0] dark:border-[#1F3158] rounded-[10px] text-xs bg-white dark:bg-[#0E182E] text-[#172033] dark:text-white"
                   >
-                    {product.currentStock <= 0 ? 'Out of Stock' : `${product.currentStock} in stock`}
-                  </span>
+                    <option value="all">All Photos</option>
+                    <option value="has_photos">Has Photos</option>
+                    <option value="missing_photos">Missing Photos</option>
+                  </select>
 
-                  {/* Expand preview button */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleOpenGallery(product);
-                    }}
-                    className="absolute top-2 right-2 p-1.5 rounded-full bg-white/80 hover:bg-white text-slate-700 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
-                  >
-                    <Maximize2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-
-                {/* Details */}
-                <div className="p-4 flex-1 flex flex-col justify-between space-y-3">
-                  <div>
-                    <div className="flex items-center justify-between text-[11px] text-slate-400 font-mono">
-                      <span>{product.category}</span>
-                      <span>{product.code}</span>
-                    </div>
-
-                    <h3 className="font-bold text-sm text-slate-900 line-clamp-1 mt-1">
-                      {product.name}
-                    </h3>
-
-                    {/* Variant tags */}
-                    {product.hasVariants && product.variants && product.variants.length > 0 ? (
-                      <div className="mt-2 space-y-1.5">
-                        <div className="flex flex-wrap gap-1">
-                          {Array.from(new Set(product.variants.map(v => v.size).filter(Boolean))).map(s => (
-                            <span key={s} className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-bold font-mono">
-                              {s}
-                            </span>
-                          ))}
-                        </div>
-                        <div className="flex flex-wrap gap-1">
-                          {Array.from(new Set(product.variants.map(v => v.color).filter(Boolean))).map(c => (
-                            <span key={c} className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[10px] font-medium">
-                              {c}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-2 text-[11px] text-slate-500">
-                        {product.color && <span className="mr-2">Color: {product.color}</span>}
-                        {product.size && <span>Size: {product.size}</span>}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Pricing Section */}
-                  <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
-                    <div>
-                      <span className="text-[10px] text-slate-400 block">Retail Price</span>
-                      <span className="text-base font-extrabold text-slate-900 font-mono-num">
-                        {formatCurrency(product.salePrice, 'en')}
-                      </span>
-                    </div>
-
-                    {/* Internal Cost info (ONLY IF NOT IN SHOWCASE MODE) */}
-                    {!isShowcaseMode && (
-                      <div className="text-right">
-                        <span className="text-[10px] text-slate-400 block">Landed Cost</span>
-                        <span className="text-xs font-semibold text-slate-600 font-mono-num">
-                          {formatCurrency(product.totalUnitCost || product.purchasePrice, 'en')}
-                        </span>
-                        {product.salePrice > (product.totalUnitCost || product.purchasePrice) && (
-                          <span className="text-[9px] text-emerald-600 font-bold block">
-                            +{Math.round(((product.salePrice - (product.totalUnitCost || product.purchasePrice)) / product.salePrice) * 100)}% margin
-                          </span>
-                        )}
-                      </div>
-                    )}
+                  <div className="inline-flex border border-[#E2E8F0] dark:border-[#1F3158] rounded-[10px] p-0.5 bg-slate-50 dark:bg-[#0E182E] shrink-0">
+                    <button
+                      type="button"
+                      aria-label="Grid view"
+                      onClick={() => setViewMode('grid')}
+                      className={`p-1.5 rounded-[7px] cursor-pointer ${
+                        viewMode === 'grid'
+                          ? 'bg-white dark:bg-[#162344] text-[#087F8C] shadow-xs'
+                          : 'text-slate-400'
+                      }`}
+                    >
+                      <GridIcon className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="List view"
+                      onClick={() => setViewMode('list')}
+                      className={`p-1.5 rounded-[7px] cursor-pointer ${
+                        viewMode === 'list'
+                          ? 'bg-white dark:bg-[#162344] text-[#087F8C] shadow-xs'
+                          : 'text-slate-400'
+                      }`}
+                    >
+                      <List className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
               </div>
-            );
-          })}
-        </div>
-      ) : (
-        /* List Mode */
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
-                <tr>
-                  <th className="py-3 px-4">Photo</th>
-                  <th className="py-3 px-4">Product Name</th>
-                  <th className="py-3 px-4">SKU / Code</th>
-                  <th className="py-3 px-4">Category</th>
-                  <th className="py-3 px-4">Available Variants</th>
-                  <th className="py-3 px-4">Selling Price</th>
-                  {!isShowcaseMode && <th className="py-3 px-4">Unit Cost</th>}
-                  <th className="py-3 px-4">Stock</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {filteredProducts.map(p => {
-                  const imgs = getProductImages(p);
-                  return (
-                    <tr key={p.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="py-2.5 px-4">
-                        <img
-                          src={imgs[0]}
-                          alt={p.name}
-                          onClick={() => handleOpenGallery(p)}
-                          className="w-12 h-12 object-cover rounded-lg border border-slate-200 cursor-pointer hover:scale-105 transition-transform"
-                        />
-                      </td>
-                      <td className="py-2.5 px-4">
-                        <div className="font-bold text-slate-900">{p.name}</div>
-                        {p.brand && <div className="text-[10px] text-slate-400">{p.brand}</div>}
-                      </td>
-                      <td className="py-2.5 px-4 font-mono font-medium text-slate-700">
-                        {p.code}
-                      </td>
-                      <td className="py-2.5 px-4 text-slate-600">
-                        {p.category}
-                      </td>
-                      <td className="py-2.5 px-4">
-                        {p.hasVariants && p.variants ? (
-                          <div className="flex flex-wrap gap-1 max-w-xs">
-                            {p.variants.slice(0, 4).map(v => (
-                              <span key={v.id} className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-mono">
-                                {[v.color, v.size].filter(Boolean).join('-')}
-                              </span>
-                            ))}
-                            {p.variants.length > 4 && (
-                              <span className="text-[10px] text-slate-400">+{p.variants.length - 4} more</span>
-                            )}
-                          </div>
-                        ) : (
-                          <span className="text-slate-400">-</span>
-                        )}
-                      </td>
-                      <td className="py-2.5 px-4 font-bold text-slate-900 font-mono-num">
-                        {formatCurrency(p.salePrice, 'en')}
-                      </td>
-                      {!isShowcaseMode && (
-                        <td className="py-2.5 px-4 font-mono text-slate-600">
-                          {formatCurrency(p.totalUnitCost || p.purchasePrice, 'en')}
-                        </td>
-                      )}
-                      <td className="py-2.5 px-4 font-mono">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            p.currentStock <= 0
-                              ? 'bg-rose-100 text-rose-700'
-                              : p.currentStock <= p.minStockAlert
-                              ? 'bg-amber-100 text-amber-700'
-                              : 'bg-emerald-100 text-emerald-800'
-                          }`}
-                        >
-                          {p.currentStock} pcs
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            </div>
           </div>
-        </div>
-      )}
 
-      {/* Photo Lightbox Modal */}
-      {activeGalleryProduct && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
-          <div className="bg-white rounded-3xl overflow-hidden max-w-4xl w-full max-h-[90vh] flex flex-col md:flex-row shadow-2xl border border-slate-200">
-            {/* Gallery Image Display */}
-            <div className="flex-1 bg-black flex flex-col items-center justify-center relative min-h-[350px] p-4">
-              {(() => {
-                const images = getProductImages(activeGalleryProduct);
-                const currentImg = images[activeImageIndex] || images[0];
+          {/* Empty State */}
+          {filteredProducts.length === 0 ? (
+            <div className="adp-card p-12 text-center space-y-2">
+              <Shirt className="w-10 h-10 text-slate-300 dark:text-slate-600 mx-auto" />
+              <div className="text-sm font-bold text-[#172033] dark:text-white">
+                No matching products in catalog
+              </div>
+              <p className="text-xs text-[#64748B] dark:text-slate-400">
+                Try clearing search or filter criteria, or add products in Products &amp; Variants.
+              </p>
+            </div>
+          ) : viewMode === 'grid' ? (
+            /* Grid Gallery View */
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+              {filteredProducts.map(prod => {
+                const colors = resolveProductColors(prod);
+                const selectedColorId =
+                  cardSelectedColor[prod.id] &&
+                  colors.some(c => c.id === cardSelectedColor[prod.id])
+                    ? cardSelectedColor[prod.id]
+                    : colors[0]?.id;
+                const activeColor = colors.find(c => c.id === selectedColorId);
+                const previewUrl = resolveProductImage(prod, {
+                  colorId: activeColor?.id,
+                  colorName: activeColor?.colorName,
+                });
+                const cov = getColorUploadCoverage(prod);
+
+                const effectiveCost = prod.totalUnitCost || prod.purchasePrice;
+                const marginPct =
+                  prod.salePrice > 0
+                    ? Math.round(((prod.salePrice - effectiveCost) / prod.salePrice) * 100)
+                    : 0;
+
+                const matchingVariantForPos =
+                  activeColor && prod.variants
+                    ? prod.variants.find(
+                        v =>
+                          v.colorId === activeColor.id ||
+                          normalizeColorKey(v.color) === normalizeColorKey(activeColor.colorName)
+                      )
+                    : undefined;
 
                 return (
-                  <>
-                    <img
-                      src={currentImg}
-                      alt={activeGalleryProduct.name}
-                      className="max-h-[70vh] max-w-full object-contain rounded-xl"
-                    />
-
-                    {/* Navigation buttons */}
-                    {images.length > 1 && (
-                      <div className="absolute inset-y-0 inset-x-2 flex items-center justify-between pointer-events-none">
-                        <button
-                          onClick={() => setActiveImageIndex((activeImageIndex - 1 + images.length) % images.length)}
-                          className="pointer-events-auto p-2 rounded-full bg-white/20 hover:bg-white/40 text-white backdrop-blur-xs transition-colors"
-                        >
-                          <ChevronLeft className="w-5 h-5" />
-                        </button>
-                        <button
-                          onClick={() => setActiveImageIndex((activeImageIndex + 1) % images.length)}
-                          className="pointer-events-auto p-2 rounded-full bg-white/20 hover:bg-white/40 text-white backdrop-blur-xs transition-colors"
-                        >
-                          <ChevronRight className="w-5 h-5" />
-                        </button>
-                      </div>
-                    )}
-
-                    {/* Image thumbnails bar */}
-                    {images.length > 1 && (
-                      <div className="flex items-center gap-2 mt-4 overflow-x-auto max-w-full pb-1">
-                        {images.map((img, i) => (
-                          <img
-                            key={i}
-                            src={img}
-                            alt=""
-                            onClick={() => setActiveImageIndex(i)}
-                            className={`w-12 h-12 object-cover rounded-lg cursor-pointer border-2 transition-all ${
-                              activeImageIndex === i ? 'border-indigo-500 scale-105' : 'border-transparent opacity-60 hover:opacity-100'
-                            }`}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </>
-                );
-              })()}
-            </div>
-
-            {/* Sidebar Details */}
-            <div className="w-full md:w-80 p-6 flex flex-col justify-between space-y-4 bg-white overflow-y-auto">
-              <div>
-                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                  <span className="text-[11px] font-mono text-slate-400">
-                    {activeGalleryProduct.code}
-                  </span>
-                  <button
-                    onClick={() => setActiveGalleryProduct(null)}
-                    className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600"
+                  <div
+                    key={prod.id}
+                    className="adp-card overflow-hidden flex flex-col justify-between transition-all hover:shadow-md"
                   >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
+                    {/* Card Image Stage */}
+                    <div
+                      onClick={() =>
+                        setDetailModalTarget({ product: prod, colorId: activeColor?.id })
+                      }
+                      className="relative aspect-[4/3] bg-[#F8FAFC] dark:bg-[#0E182E] border-b border-slate-100 dark:border-[#1F3158] overflow-hidden cursor-pointer group"
+                    >
+                      {previewUrl ? (
+                        <img
+                          src={previewUrl}
+                          alt={`${prod.name}${activeColor ? ` - ${activeColor.colorName}` : ''}`}
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        />
+                      ) : (
+                        <div className="w-full h-full flex flex-col items-center justify-center gap-1.5 text-slate-400 dark:text-slate-500 p-4 text-center">
+                          <Shirt className="w-10 h-10" strokeWidth={1.4} />
+                          <span className="text-[11px] font-medium">No photo uploaded</span>
+                        </div>
+                      )}
 
-                <div className="mt-3">
-                  <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[10px] font-bold">
-                    {activeGalleryProduct.category}
-                  </span>
-                  <h2 className="text-lg font-bold text-slate-900 mt-1">
-                    {activeGalleryProduct.name}
-                  </h2>
-                </div>
+                      {/* Top Overlay Metadata */}
+                      <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between gap-2 pointer-events-none">
+                        <span className="px-2 py-0.5 rounded-md bg-slate-950/75 text-white text-[10px] font-semibold">
+                          {prod.category}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-md bg-slate-950/75 text-white text-[10px] font-mono-num font-bold">
+                          {cov.totalImages} photo{cov.totalImages === 1 ? '' : 's'}
+                        </span>
+                      </div>
 
-                {activeGalleryProduct.description && (
-                  <p className="text-xs text-slate-600 mt-2 line-clamp-3">
-                    {activeGalleryProduct.description}
-                  </p>
-                )}
-
-                {/* Variants Curve */}
-                {activeGalleryProduct.hasVariants && activeGalleryProduct.variants && (
-                  <div className="mt-4 space-y-2">
-                    <label className="text-xs font-bold text-slate-800 block">Available Sizes &amp; Colors</label>
-                    <div className="grid grid-cols-2 gap-1.5 max-h-40 overflow-y-auto pr-1">
-                      {activeGalleryProduct.variants.map(v => (
-                        <div
-                          key={v.id}
-                          className="p-2 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-between text-[11px]"
-                        >
-                          <div>
-                            <div className="font-bold text-slate-900">{v.color || 'Standard'}</div>
-                            <div className="text-[10px] font-mono text-slate-500">Size: {v.size || 'Free'}</div>
-                          </div>
+                      {activeColor && (
+                        <div className="absolute bottom-2.5 left-2.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-slate-950/75 text-white text-[10px] font-semibold pointer-events-none">
                           <span
-                            className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
-                              v.stock <= 0 ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-800'
+                            className="w-2.5 h-2.5 rounded-full border border-white/60"
+                            style={{ backgroundColor: activeColor.colorHex }}
+                          />
+                          <span>{activeColor.colorName}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Card Details */}
+                    <div className="p-3.5 flex-1 flex flex-col justify-between gap-3">
+                      <div className="space-y-1.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <h3
+                            onClick={() =>
+                              setDetailModalTarget({ product: prod, colorId: activeColor?.id })
+                            }
+                            className="text-sm font-bold text-[#172033] dark:text-white leading-snug line-clamp-2 cursor-pointer hover:text-[#087F8C]"
+                          >
+                            {prod.name}
+                          </h3>
+                        </div>
+
+                        <div className="text-[11px] text-[#64748B] dark:text-slate-400 font-mono flex items-center justify-between gap-2">
+                          <span>{prod.code}</span>
+                          <span
+                            className={`font-semibold ${
+                              prod.currentStock <= 0
+                                ? 'text-rose-600 dark:text-rose-400'
+                                : prod.currentStock <= prod.minStockAlert
+                                ? 'text-amber-600 dark:text-amber-400'
+                                : 'text-emerald-700 dark:text-emerald-400'
                             }`}
                           >
-                            {v.stock} pcs
+                            Stock: {prod.currentStock}
                           </span>
                         </div>
-                      ))}
+
+                        {/* Interactive Color Swatches */}
+                        {colors.length > 0 && (
+                          <div className="pt-1">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              {colors.map(c => {
+                                const isSel = activeColor?.id === c.id;
+                                const colorImg = resolveProductImage(prod, {
+                                  colorId: c.id,
+                                  colorName: c.colorName,
+                                  fallbackToProductPrimary: false,
+                                });
+                                return (
+                                  <button
+                                    key={c.id}
+                                    type="button"
+                                    title={`${c.colorName}${colorImg ? ' (Photo linked)' : ' (No photo)'}`}
+                                    onClick={() =>
+                                      setCardSelectedColor(prev => ({ ...prev, [prod.id]: c.id }))
+                                    }
+                                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border text-[10px] font-medium cursor-pointer transition-all ${
+                                      isSel
+                                        ? 'border-[#087F8C] bg-[#087F8C]/10 text-[#087F8C] dark:text-[#5EEAD4]'
+                                        : 'border-slate-200 dark:border-[#1F3158] text-[#64748B] dark:text-slate-300 hover:border-slate-300'
+                                    }`}
+                                  >
+                                    <span
+                                      className="w-2.5 h-2.5 rounded-full border border-slate-300 dark:border-slate-600 shrink-0"
+                                      style={{ backgroundColor: c.colorHex }}
+                                    />
+                                    <span className="truncate max-w-[68px]">{c.colorName}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-2.5 pt-2 border-t border-slate-100 dark:border-[#1F3158]">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="text-base font-black font-mono-num text-[#172033] dark:text-white">
+                            {formatCurrency(prod.salePrice, 'en')}
+                          </span>
+                          {!showcaseMode && (
+                            <span className="text-[11px] text-[#64748B] dark:text-slate-400 font-mono-num">
+                              Cost {formatCurrency(effectiveCost, 'en')} · {marginPct}%
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setDetailModalTarget({ product: prod, colorId: activeColor?.id })
+                            }
+                            className="flex-1 py-1.5 px-2 rounded-[8px] border border-[#E2E8F0] dark:border-[#1F3158] bg-slate-50 dark:bg-[#0E182E] hover:bg-slate-100 dark:hover:bg-[#162344] text-[11px] font-bold text-[#172033] dark:text-white cursor-pointer flex items-center justify-center gap-1"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>View</span>
+                          </button>
+
+                          {canManageCatalog && (
+                            <button
+                              type="button"
+                              onClick={() => openColorStudioForProduct(prod.id)}
+                              title="Upload & manage color photos"
+                              className="py-1.5 px-2.5 rounded-[8px] border border-[#E2E8F0] dark:border-[#1F3158] bg-white dark:bg-[#101B35] hover:border-[#087F8C] text-[11px] font-bold text-[#087F8C] dark:text-[#5EEAD4] cursor-pointer flex items-center gap-1"
+                            >
+                              <Camera className="w-3.5 h-3.5" />
+                              <span>Photos</span>
+                            </button>
+                          )}
+
+                          {onSelectForPOS && (
+                            <button
+                              type="button"
+                              disabled={prod.currentStock <= 0}
+                              onClick={() =>
+                                onSelectForPOS(prod, matchingVariantForPos, activeColor?.id)
+                              }
+                              title="Send selected product & color to POS"
+                              className="py-1.5 px-2.5 rounded-[8px] bg-[#087F8C] hover:bg-[#066974] text-white text-[11px] font-bold cursor-pointer disabled:opacity-45 flex items-center gap-1"
+                            >
+                              <ShoppingBag className="w-3.5 h-3.5" />
+                              <span>POS</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </div>
-                )}
-              </div>
+                );
+              })}
+            </div>
+          ) : (
+            /* List View */
+            <div className="adp-card overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-[#F8FAFC] dark:bg-[#0E182E] border-b border-[#E2E8F0] dark:border-[#1F3158] text-[#64748B] dark:text-slate-400">
+                      <th className="py-3 px-4 font-bold uppercase text-[11px]">Product</th>
+                      <th className="py-3 px-3 font-bold uppercase text-[11px]">Available Colors</th>
+                      <th className="py-3 px-3 font-bold uppercase text-[11px] text-center">Photos</th>
+                      <th className="py-3 px-3 font-bold uppercase text-[11px] text-right">Stock</th>
+                      <th className="py-3 px-3 font-bold uppercase text-[11px] text-right">Price</th>
+                      {!showcaseMode && (
+                        <th className="py-3 px-3 font-bold uppercase text-[11px] text-right">Cost</th>
+                      )}
+                      <th className="py-3 px-4 font-bold uppercase text-[11px] text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-[#1F3158]">
+                    {filteredProducts.map(prod => {
+                      const colors = resolveProductColors(prod);
+                      const selectedColorId =
+                        cardSelectedColor[prod.id] &&
+                        colors.some(c => c.id === cardSelectedColor[prod.id])
+                          ? cardSelectedColor[prod.id]
+                          : colors[0]?.id;
+                      const activeColor = colors.find(c => c.id === selectedColorId);
+                      const thumbUrl = resolveProductImage(prod, {
+                        colorId: activeColor?.id,
+                        colorName: activeColor?.colorName,
+                      });
+                      const cov = getColorUploadCoverage(prod);
 
-              {/* Price & Action */}
-              <div className="pt-4 border-t border-slate-100 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-500">Customer Price</span>
-                  <span className="text-xl font-extrabold text-slate-900 font-mono-num">
-                    {formatCurrency(activeGalleryProduct.salePrice, 'en')}
-                  </span>
-                </div>
-
-                <button
-                  onClick={() => setActiveGalleryProduct(null)}
-                  className="w-full py-2.5 text-xs font-bold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl"
-                >
-                  Close Showcase View
-                </button>
+                      return (
+                        <tr
+                          key={prod.id}
+                          className="hover:bg-[#F8FAFC] dark:hover:bg-[#162344]/60 transition-colors"
+                        >
+                          <td className="py-2.5 px-4">
+                            <div className="flex items-center gap-3">
+                              <ProductThumbnail
+                                src={thumbUrl}
+                                alt={prod.name}
+                                colorHex={activeColor?.colorHex}
+                                colorName={activeColor?.colorName}
+                                size="sm"
+                              />
+                              <div>
+                                <div className="font-bold text-[#172033] dark:text-white">
+                                  {prod.name}
+                                </div>
+                                <div className="text-[11px] font-mono text-[#64748B] dark:text-slate-400">
+                                  {prod.code} · {prod.category}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className="flex flex-wrap gap-1">
+                              {colors.length === 0 ? (
+                                <span className="text-slate-400">—</span>
+                              ) : (
+                                colors.map(c => (
+                                  <button
+                                    key={c.id}
+                                    type="button"
+                                    onClick={() =>
+                                      setCardSelectedColor(prev => ({ ...prev, [prod.id]: c.id }))
+                                    }
+                                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] cursor-pointer ${
+                                      activeColor?.id === c.id
+                                        ? 'border-[#087F8C] bg-[#087F8C]/10 text-[#087F8C] font-bold'
+                                        : 'border-slate-200 dark:border-[#1F3158] text-slate-600 dark:text-slate-300'
+                                    }`}
+                                  >
+                                    <span
+                                      className="w-2 h-2 rounded-full border border-slate-300"
+                                      style={{ backgroundColor: c.colorHex }}
+                                    />
+                                    <span>{c.colorName}</span>
+                                  </button>
+                                ))
+                              )}
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3 text-center font-mono-num">
+                            <span
+                              className={`font-bold ${
+                                cov.totalImages > 0
+                                  ? 'text-emerald-700 dark:text-emerald-400'
+                                  : 'text-amber-600 dark:text-amber-400'
+                              }`}
+                            >
+                              {cov.totalImages}
+                            </span>
+                            {cov.totalColors > 0 && (
+                              <span className="text-[10px] text-slate-400 block">
+                                {cov.colorsWithImages}/{cov.totalColors} colors
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono-num font-bold text-[#172033] dark:text-white">
+                            {prod.currentStock} {prod.unit}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono-num font-bold text-[#172033] dark:text-white">
+                            {formatCurrency(prod.salePrice, 'en')}
+                          </td>
+                          {!showcaseMode && (
+                            <td className="py-2.5 px-3 text-right font-mono-num text-[#64748B] dark:text-slate-400">
+                              {formatCurrency(prod.totalUnitCost || prod.purchasePrice, 'en')}
+                            </td>
+                          )}
+                          <td className="py-2.5 px-4 text-right">
+                            <div className="inline-flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setDetailModalTarget({ product: prod, colorId: activeColor?.id })
+                                }
+                                className="px-2.5 py-1 rounded-lg border border-slate-200 dark:border-[#1F3158] text-[11px] font-semibold hover:bg-slate-100 dark:hover:bg-[#162344] cursor-pointer"
+                              >
+                                Details
+                              </button>
+                              {canManageCatalog && (
+                                <button
+                                  type="button"
+                                  onClick={() => openColorStudioForProduct(prod.id)}
+                                  className="px-2.5 py-1 rounded-lg bg-[#087F8C] text-white text-[11px] font-bold hover:bg-[#066974] cursor-pointer"
+                                >
+                                  Manage Photos
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             </div>
-          </div>
-        </div>
+          )}
+        </>
       )}
+
+      {/* Product Gallery Detail Modal */}
+      <ProductDetailGalleryModal
+        product={detailModalTarget?.product || null}
+        initialColorId={detailModalTarget?.colorId}
+        showcaseMode={showcaseMode}
+        canManagePhotos={canManageCatalog}
+        onClose={() => setDetailModalTarget(null)}
+        onManagePhotos={productId => openColorStudioForProduct(productId)}
+        onAddToPOS={onSelectForPOS}
+      />
     </div>
   );
 };

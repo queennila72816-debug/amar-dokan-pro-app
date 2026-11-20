@@ -15,6 +15,8 @@ import {
   PrintPreviewPayload,
 } from '../../utils/printEngine';
 import { PrintPreviewModal } from '../printing/PrintPreviewModal';
+import { ProductThumbnail } from '../common/ProductThumbnail';
+import { inferColorHex, resolveProductImage } from '../../utils/productImageResolver';
 import {
   Printer,
   Barcode,
@@ -38,6 +40,7 @@ interface PrintItem {
   variantDetails?: string;
   size?: string;
   color?: string;
+  thumbnailUrl?: string;
   sku: string;
   barcode: string;
   price: number;
@@ -71,14 +74,25 @@ const LabelQueueRow: React.FC<LabelQueueRowProps> = React.memo(
           />
         </td>
         <td className="py-2.5 px-3">
-          <div className="font-bold text-slate-900">{item.productName}</div>
-          {item.variantDetails ? (
-            <span className="inline-block mt-0.5 px-2 py-0.5 rounded bg-purple-100 text-purple-800 font-medium text-[10px]">
-              {item.variantDetails}
-            </span>
-          ) : (
-            <span className="text-[10px] text-slate-400">Standard Product</span>
-          )}
+          <div className="flex items-center gap-2.5">
+            <ProductThumbnail
+              src={item.thumbnailUrl}
+              alt={item.productName}
+              colorHex={item.color ? inferColorHex(item.color) : undefined}
+              colorName={item.color}
+              size="xs"
+            />
+            <div>
+              <div className="font-bold text-slate-900">{item.productName}</div>
+              {item.variantDetails ? (
+                <span className="inline-block mt-0.5 px-2 py-0.5 rounded bg-purple-100 text-purple-800 font-medium text-[10px]">
+                  {item.variantDetails}
+                </span>
+              ) : (
+                <span className="text-[10px] text-slate-400">Standard Product</span>
+              )}
+            </div>
+          </div>
         </td>
         <td className="py-2.5 px-3 font-mono">
           <div className="font-semibold text-slate-800">{item.sku}</div>
@@ -201,6 +215,11 @@ export const BarcodeLabelStudio: React.FC = () => {
             variantDetails: variantLabel,
             size: v.size,
             color: v.color,
+            thumbnailUrl: resolveProductImage(p, {
+              colorId: v.colorId,
+              variantId: v.id,
+              colorName: v.color,
+            }),
             sku: v.sku || `${p.code}-${v.id}`,
             barcode: v.barcode || p.barcode || v.sku || p.code,
             price: v.salePrice !== undefined ? v.salePrice : p.salePrice,
@@ -217,6 +236,7 @@ export const BarcodeLabelStudio: React.FC = () => {
           variantDetails: p.size || p.color ? [p.color, p.size].filter(Boolean).join(' / ') : undefined,
           size: p.size,
           color: p.color,
+          thumbnailUrl: resolveProductImage(p, { colorName: p.color }),
           sku: p.code,
           barcode: p.barcode || p.code,
           price: p.salePrice,

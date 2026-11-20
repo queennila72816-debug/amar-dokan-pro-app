@@ -1044,6 +1044,252 @@ export function createApp() {
     });
   });
 
+  const authorizeCatalogPermission = async (
+    supabaseAdmin: SupabaseClient,
+    callerId: string,
+    businessId: string,
+    action: 'can_create' | 'can_edit' | 'can_delete'
+  ): Promise<boolean> => {
+    const [{ data: buRow }, { data: empRow }] = await Promise.all([
+      supabaseAdmin
+        .from('business_users')
+        .select('role, status')
+        .eq('business_id', businessId)
+        .eq('user_id', callerId)
+        .maybeSingle(),
+      supabaseAdmin
+        .from('employees')
+        .select('role, role_id, role_key, account_status')
+        .eq('business_id', businessId)
+        .eq('user_id', callerId)
+        .maybeSingle(),
+    ]);
+
+    if (!buRow && !empRow) return false;
+    const empStatus = empRow?.account_status;
+    const buStatus = buRow?.status || 'active';
+    if (
+      (empStatus && empStatus !== 'active') ||
+      ['inactive', 'suspended', 'blocked'].includes(buStatus)
+    ) {
+      return false;
+    }
+
+    const effectiveRoleKey = normalizeRoleKey(
+      empRow?.role_key || empRow?.role || buRow?.role || ''
+    );
+    if (effectiveRoleKey === 'super_admin') return true;
+    if (['salesman', 'cashier'].includes(effectiveRoleKey)) return false;
+
+    let roleId = empRow?.role_id || null;
+    if (!roleId && effectiveRoleKey) {
+      const { data: ur } = await supabaseAdmin
+        .from('user_roles')
+        .select('id')
+        .eq('business_id', businessId)
+        .eq('role_key', effectiveRoleKey)
+        .maybeSingle();
+      roleId = ur?.id || null;
+    }
+    if (!roleId) return false;
+
+    const { data: perm } = await supabaseAdmin
+      .from('role_permissions')
+      .select('can_create, can_edit, can_delete')
+      .eq('role_id', roleId)
+      .eq('permission_key', 'product_management')
+      .maybeSingle();
+
+    if (!perm) return false;
+    return Boolean(perm[action] || perm.can_edit);
+  };
+
+  app.post('/api/catalog/ensure-bucket', async (req, res) => {
+    const supabaseAdmin = getSupabaseAdminClient();
+    if (!supabaseAdmin) {
+      return res.status(501).json({
+        code: 'SERVICE_ROLE_NOT_CONFIGURED',
+        error: 'Server SUPABASE_SERVICE_ROLE_KEY is not configured.',
+      });
+    }
+
+    const authResult = await authenticateCaller(req, supabaseAdmin);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ error: authResult.error });
+    }
+
+    const businessId = sanitizeUuid(req.body?.businessId);
+    if (!businessId) {
+      return res.status(400).json({ error: 'Invalid or missing active businessId.' });
+    }
+
+    const authorized = await authorizeCatalogPermission(
+      supabaseAdmin,
+      authResult.user.id,
+      businessId,
+      'can_edit'
+    );
+    if (!authorized) {
+      return res.status(403).json({
+        error: 'Permission denied: you do not have permission to manage product catalog media.',
+      });
+    }
+
+    try {
+      const { data: existing } = await supabaseAdmin.storage.getBucket('product-images');
+      if (!existing) {
+        const { error: createErr } = await supabaseAdmin.storage.createBucket('product-images', {
+          public: true,
+          fileSizeLimit: 5 * 1024 * 1024,
+          allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+        });
+        if (createErr && !createErr.message.toLowerCase().includes('already exists')) {
+          return res.status(500).json({ error: createErr.message });
+        }
+      }
+      return res.status(200).json({ success: true, bucket: 'product-images' });
+    } catch (err: unknown) {
+      return res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to verify product-images storage bucket.',
+      });
+    }
+  });
+
+  app.post(
+    '/api/catalog/upload-image',
+    express.raw({
+      type: ['image/jpeg', 'image/png', 'image/webp', 'application/octet-stream'],
+      limit: '6mb',
+    }),
+    async (req, res) => {
+      const supabaseAdmin = getSupabaseAdminClient();
+      if (!supabaseAdmin) {
+        return res.status(501).json({
+          code: 'SERVICE_ROLE_NOT_CONFIGURED',
+          error: 'Server SUPABASE_SERVICE_ROLE_KEY is not configured.',
+        });
+      }
+
+      const authResult = await authenticateCaller(req, supabaseAdmin);
+      if ('error' in authResult) {
+        return res.status(authResult.status).json({ error: authResult.error });
+      }
+
+      const businessId = sanitizeUuid(req.headers['x-business-id']);
+      const storagePath = String(req.headers['x-storage-path'] || '').replace(/^\/+/, '');
+      const mimeType = String(req.headers['x-file-mime'] || req.headers['content-type'] || '')
+        .split(';')[0]
+        .trim()
+        .toLowerCase();
+
+      if (!businessId || !storagePath || !storagePath.startsWith(`${businessId}/`)) {
+        return res.status(400).json({ error: 'Invalid businessId or storage path.' });
+      }
+
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(mimeType)) {
+        return res.status(400).json({
+          error: 'Unsupported image format. Only JPG, JPEG, PNG, and WEBP are allowed.',
+        });
+      }
+
+      const bodyBuffer = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
+      if (bodyBuffer.length === 0 || bodyBuffer.length > 5 * 1024 * 1024) {
+        return res.status(400).json({
+          error: 'Image size must be greater than 0 bytes and at most 5 MB.',
+        });
+      }
+
+      const authorized = await authorizeCatalogPermission(
+        supabaseAdmin,
+        authResult.user.id,
+        businessId,
+        'can_create'
+      );
+      if (!authorized) {
+        return res.status(403).json({
+          error: 'Permission denied: you do not have permission to upload product photos.',
+        });
+      }
+
+      try {
+        const { data: existing } = await supabaseAdmin.storage.getBucket('product-images');
+        if (!existing) {
+          await supabaseAdmin.storage.createBucket('product-images', {
+            public: true,
+            fileSizeLimit: 5 * 1024 * 1024,
+            allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp'],
+          });
+        }
+
+        const { error: uploadErr } = await supabaseAdmin.storage
+          .from('product-images')
+          .upload(storagePath, bodyBuffer, {
+            contentType: mimeType,
+            upsert: true,
+            cacheControl: '3600',
+          });
+
+        if (uploadErr) {
+          return res.status(500).json({ error: uploadErr.message });
+        }
+
+        const { data: urlData } = supabaseAdmin.storage
+          .from('product-images')
+          .getPublicUrl(storagePath);
+
+        return res.status(200).json({
+          success: true,
+          storagePath,
+          publicUrl: urlData.publicUrl,
+        });
+      } catch (err: unknown) {
+        return res.status(500).json({
+          error: err instanceof Error ? err.message : 'Failed to upload product image.',
+        });
+      }
+    }
+  );
+
+  app.post('/api/catalog/delete-storage-object', async (req, res) => {
+    const supabaseAdmin = getSupabaseAdminClient();
+    if (!supabaseAdmin) {
+      return res.status(501).json({
+        code: 'SERVICE_ROLE_NOT_CONFIGURED',
+        error: 'Server SUPABASE_SERVICE_ROLE_KEY is not configured.',
+      });
+    }
+
+    const authResult = await authenticateCaller(req, supabaseAdmin);
+    if ('error' in authResult) {
+      return res.status(authResult.status).json({ error: authResult.error });
+    }
+
+    const businessId = sanitizeUuid(req.body?.businessId);
+    const storagePath = String(req.body?.storagePath || '').replace(/^\/+/, '');
+    if (!businessId || !storagePath || !storagePath.startsWith(`${businessId}/`)) {
+      return res.status(400).json({ error: 'Invalid businessId or storagePath.' });
+    }
+
+    const authorized = await authorizeCatalogPermission(
+      supabaseAdmin,
+      authResult.user.id,
+      businessId,
+      'can_delete'
+    );
+    if (!authorized) {
+      return res.status(403).json({
+        error: 'Permission denied to delete product images.',
+      });
+    }
+
+    const { error } = await supabaseAdmin.storage.from('product-images').remove([storagePath]);
+    if (error) {
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.status(200).json({ success: true });
+  });
+
   return app;
 }
 

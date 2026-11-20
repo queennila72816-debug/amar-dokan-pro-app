@@ -1,41 +1,63 @@
 import { supabase, isSupabaseConfigured, sanitizeUuid, isValidUuid } from '../lib/supabase';
-import { Product, ProductVariant } from '../types';
+import { Product, ProductColor, ProductColorImage, ProductVariant } from '../types';
+import { catalogImageService } from './catalogImageService';
+import { normalizeColorKey, sortColorImages } from '../utils/productImageResolver';
 
-const mapDbProductToProduct = (p: any): Product => ({
-  id: p.id,
-  name: p.name,
-  code: p.sku,
-  barcode: p.barcode || '',
-  category: p.category_name || 'General',
-  subcategory: p.subcategory || undefined,
-  brand: p.brand || undefined,
-  description: p.description || undefined,
-  image: p.image_url || undefined,
-  purchasePrice: Number(p.purchase_price || 0),
-  salePrice: Number(p.sale_price || 0),
-  wholesalePrice: p.wholesale_price != null ? Number(p.wholesale_price) : undefined,
-  minSalePrice: p.min_sale_price != null ? Number(p.min_sale_price) : undefined,
-  currentStock: Number(p.current_stock || 0),
-  minStockAlert: Number(p.min_stock_alert || 5),
-  unit: p.unit || 'pcs',
-  businessType: p.business_type,
-  hasVariants: Boolean(p.has_variants),
-  variants: Array.isArray(p.product_variants)
-    ? p.product_variants.map((v: any): ProductVariant => ({
-        id: v.id,
-        color: v.color || undefined,
-        colorHex: v.color_hex || undefined,
-        size: v.size || undefined,
-        sku: v.sku,
-        barcode: v.barcode || undefined,
-        stock: Number(v.stock || 0),
-        additionalPrice: Number(v.additional_price || 0),
-        purchasePrice: v.purchase_price != null ? Number(v.purchase_price) : undefined,
-        salePrice: v.sale_price != null ? Number(v.sale_price) : undefined,
-        minStockAlert: v.min_stock_alert != null ? Number(v.min_stock_alert) : undefined,
-        status: v.is_active === false ? 'inactive' : 'active',
-      }))
-    : undefined,
+const mapDbProductToProduct = (
+  p: any,
+  colorsByProduct?: Map<string, ProductColor[]>,
+  imagesByProduct?: Map<string, ProductColorImage[]>
+): Product => {
+  const colors = colorsByProduct?.get(p.id) || [];
+  const images = sortColorImages(imagesByProduct?.get(p.id) || []);
+  const colorByNorm = new Map(colors.map(c => [normalizeColorKey(c.normalizedName || c.colorName), c.id]));
+
+  const primaryImg =
+    images.find(i => i.isPrimary)?.imageUrl ||
+    images[0]?.imageUrl ||
+    p.image_url ||
+    undefined;
+
+  return {
+    id: p.id,
+    name: p.name,
+    code: p.sku,
+    barcode: p.barcode || '',
+    category: p.category_name || 'General',
+    subcategory: p.subcategory || undefined,
+    brand: p.brand || undefined,
+    description: p.description || undefined,
+    image: primaryImg,
+    primaryImageUrl: primaryImg,
+    images: images.length > 0 ? images.map(i => i.imageUrl) : p.image_url ? [p.image_url] : undefined,
+    productColors: colors,
+    productImages: images,
+    purchasePrice: Number(p.purchase_price || 0),
+    salePrice: Number(p.sale_price || 0),
+    wholesalePrice: p.wholesale_price != null ? Number(p.wholesale_price) : undefined,
+    minSalePrice: p.min_sale_price != null ? Number(p.min_sale_price) : undefined,
+    currentStock: Number(p.current_stock || 0),
+    minStockAlert: Number(p.min_stock_alert || 5),
+    unit: p.unit || 'pcs',
+    businessType: p.business_type,
+    hasVariants: Boolean(p.has_variants),
+    variants: Array.isArray(p.product_variants)
+      ? p.product_variants.map((v: any): ProductVariant => ({
+          id: v.id,
+          colorId: v.color_id || (v.color ? colorByNorm.get(normalizeColorKey(v.color)) : undefined),
+          color: v.color || undefined,
+          colorHex: v.color_hex || undefined,
+          size: v.size || undefined,
+          sku: v.sku,
+          barcode: v.barcode || undefined,
+          stock: Number(v.stock || 0),
+          additionalPrice: Number(v.additional_price || 0),
+          purchasePrice: v.purchase_price != null ? Number(v.purchase_price) : undefined,
+          salePrice: v.sale_price != null ? Number(v.sale_price) : undefined,
+          minStockAlert: v.min_stock_alert != null ? Number(v.min_stock_alert) : undefined,
+          status: v.is_active === false ? 'inactive' : 'active',
+        }))
+      : undefined,
   landedCostPerUnit: p.landed_cost_per_unit != null ? Number(p.landed_cost_per_unit) : undefined,
   allocatedOpExPerUnit: p.allocated_opex_per_unit != null ? Number(p.allocated_opex_per_unit) : undefined,
   totalUnitCost: p.total_unit_cost != null ? Number(p.total_unit_cost) : undefined,
@@ -52,7 +74,37 @@ const mapDbProductToProduct = (p: any): Product => ({
   createdAt: p.created_at,
   updatedAt: p.updated_at,
   isActive: p.is_active !== false,
-});
+  };
+};
+
+async function syncVariantColorsSafely(
+  businessId: string,
+  productId: string,
+  variants: ProductVariant[]
+): Promise<Map<string, string>> {
+  const colorIdByNorm = new Map<string, string>();
+  const seen = new Set<string>();
+
+  for (const v of variants) {
+    const cleanColor = (v.color || '').trim();
+    const key = normalizeColorKey(cleanColor);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    try {
+      const ensured = await catalogImageService.ensureProductColor({
+        businessId,
+        productId,
+        colorName: cleanColor,
+        colorHex: v.colorHex,
+      });
+      colorIdByNorm.set(key, ensured.id);
+    } catch {
+      // Non-fatal if product_colors migration hasn't been applied yet
+      break;
+    }
+  }
+  return colorIdByNorm;
+}
 
 export const productService = {
   async fetchProducts(businessId?: string): Promise<Product[]> {
@@ -69,10 +121,38 @@ export const productService = {
       query = query.eq('business_id', businessId);
     }
 
-    const { data, error } = await query;
+    const [{ data, error }, media] = await Promise.all([
+      query,
+      businessId
+        ? catalogImageService.fetchCatalogMedia(businessId).catch(() => ({
+            colors: [] as ProductColor[],
+            images: [] as ProductColorImage[],
+            schemaReady: false,
+          }))
+        : Promise.resolve({
+            colors: [] as ProductColor[],
+            images: [] as ProductColorImage[],
+            schemaReady: false,
+          }),
+    ]);
+
     if (error) throw error;
 
-    return (data || []).map(mapDbProductToProduct);
+    const colorsByProduct = new Map<string, ProductColor[]>();
+    media.colors.forEach(c => {
+      const list = colorsByProduct.get(c.productId) || [];
+      list.push(c);
+      colorsByProduct.set(c.productId, list);
+    });
+
+    const imagesByProduct = new Map<string, ProductColorImage[]>();
+    media.images.forEach(img => {
+      const list = imagesByProduct.get(img.productId) || [];
+      list.push(img);
+      imagesByProduct.set(img.productId, list);
+    });
+
+    return (data || []).map(p => mapDbProductToProduct(p, colorsByProduct, imagesByProduct));
   },
 
   async insertProduct(
@@ -128,21 +208,31 @@ export const productService = {
     if (error) throw error;
 
     if (product.hasVariants && product.variants && product.variants.length > 0) {
-      const variantPayloads = product.variants.map((v, idx) => ({
-        product_id: data.id,
-        business_id: businessId,
-        color: v.color || null,
-        color_hex: v.colorHex || null,
-        size: v.size || null,
-        sku: v.sku || `${product.code}-V${idx + 1}`,
-        barcode: v.barcode || null,
-        stock: Number(v.stock || 0),
-        additional_price: Number(v.additionalPrice || 0),
-        purchase_price: v.purchasePrice ?? null,
-        sale_price: v.salePrice ?? null,
-        min_stock_alert: v.minStockAlert ?? null,
-        is_active: v.status !== 'inactive',
-      }));
+      const colorIdMap = await syncVariantColorsSafely(businessId, data.id, product.variants);
+      const variantPayloads = product.variants.map((v, idx) => {
+        const syncedColorId =
+          v.colorId && isValidUuid(v.colorId)
+            ? v.colorId
+            : v.color
+            ? colorIdMap.get(normalizeColorKey(v.color))
+            : undefined;
+        return {
+          product_id: data.id,
+          business_id: businessId,
+          color: v.color || null,
+          color_hex: v.colorHex || null,
+          ...(syncedColorId ? { color_id: syncedColorId } : {}),
+          size: v.size || null,
+          sku: v.sku || `${product.code}-V${idx + 1}`,
+          barcode: v.barcode || null,
+          stock: Number(v.stock || 0),
+          additional_price: Number(v.additionalPrice || 0),
+          purchase_price: v.purchasePrice ?? null,
+          sale_price: v.salePrice ?? null,
+          min_stock_alert: v.minStockAlert ?? null,
+          is_active: v.status !== 'inactive',
+        };
+      });
 
       const { data: insertedVariants, error: variantErr } = await supabase
         .from('product_variants')
@@ -157,7 +247,16 @@ export const productService = {
       data.product_variants = insertedVariants || [];
     }
 
-    return mapDbProductToProduct(data);
+    const media = await catalogImageService
+      .fetchCatalogMedia(businessId)
+      .catch(() => ({ colors: [] as ProductColor[], images: [] as ProductColorImage[] }));
+    const cMap = new Map<string, ProductColor[]>([
+      [data.id, media.colors.filter(c => c.productId === data.id)],
+    ]);
+    const iMap = new Map<string, ProductColorImage[]>([
+      [data.id, media.images.filter(i => i.productId === data.id)],
+    ]);
+    return mapDbProductToProduct(data, cMap, iMap);
   },
 
   async updateProduct(
@@ -230,9 +329,17 @@ export const productService = {
         if (delErr) throw delErr;
       }
 
+      const colorIdMap = await syncVariantColorsSafely(targetBizId, id, incoming);
+
       for (let i = 0; i < incoming.length; i++) {
         const v = incoming[i];
-        const vPayload = {
+        const syncedColorId =
+          v.colorId && isValidUuid(v.colorId)
+            ? v.colorId
+            : v.color
+            ? colorIdMap.get(normalizeColorKey(v.color))
+            : undefined;
+        const vPayload: any = {
           product_id: id,
           business_id: targetBizId,
           color: v.color || null,
@@ -248,6 +355,9 @@ export const productService = {
           is_active: v.status !== 'inactive',
           updated_at: new Date().toISOString(),
         };
+        if (syncedColorId) {
+          vPayload.color_id = syncedColorId;
+        }
 
         if (isValidUuid(v.id) && existingIds.includes(v.id)) {
           const { error: updVErr } = await supabase
@@ -269,10 +379,28 @@ export const productService = {
         .eq('id', id)
         .single();
       if (refErr) throw refErr;
-      return mapDbProductToProduct(refreshed);
+      const media = await catalogImageService
+        .fetchCatalogMedia(targetBizId)
+        .catch(() => ({ colors: [] as ProductColor[], images: [] as ProductColorImage[] }));
+      const cMap = new Map<string, ProductColor[]>([
+        [id, media.colors.filter(c => c.productId === id)],
+      ]);
+      const iMap = new Map<string, ProductColorImage[]>([
+        [id, media.images.filter(i => i.productId === id)],
+      ]);
+      return mapDbProductToProduct(refreshed, cMap, iMap);
     }
 
-    return mapDbProductToProduct(data);
+    const media = await catalogImageService
+      .fetchCatalogMedia(businessId || data.business_id)
+      .catch(() => ({ colors: [] as ProductColor[], images: [] as ProductColorImage[] }));
+    const cMap = new Map<string, ProductColor[]>([
+      [id, media.colors.filter(c => c.productId === id)],
+    ]);
+    const iMap = new Map<string, ProductColorImage[]>([
+      [id, media.images.filter(i => i.productId === id)],
+    ]);
+    return mapDbProductToProduct(data, cMap, iMap);
   },
 
   async softDeleteProduct(productId: string, businessId?: string): Promise<boolean> {

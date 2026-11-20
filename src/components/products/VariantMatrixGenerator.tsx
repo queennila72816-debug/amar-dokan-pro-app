@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ProductVariant } from '../../types';
 import { generateClothingSku, generateRetailBarcode } from '../../utils/barcodeGenerator';
+import { inferColorHex } from '../../utils/productImageResolver';
 import {
   Grid,
   Plus,
@@ -106,6 +107,7 @@ export const VariantMatrixGenerator: React.FC<VariantMatrixGeneratorProps> = ({
         generated.push({
           id: `var-${Date.now()}-${count++}`,
           color,
+          colorHex: inferColorHex(color),
           size,
           sku,
           barcode,

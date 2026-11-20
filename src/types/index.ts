@@ -133,8 +133,39 @@ export interface Seller {
   updatedAt?: string;
 }
 
+export interface ProductColor {
+  id: string;
+  businessId?: string;
+  productId: string;
+  colorName: string;
+  normalizedName: string;
+  colorHex: string;
+  sortOrder: number;
+  isActive?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface ProductColorImage {
+  id: string;
+  businessId?: string;
+  productId: string;
+  colorId: string;
+  imageUrl: string;
+  storagePath: string;
+  fileName?: string;
+  fileSize?: number;
+  mimeType?: string;
+  isPrimary: boolean;
+  sortOrder: number;
+  uploadedBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface ProductVariant {
   id: string;
+  colorId?: string;
   color?: string;
   colorHex?: string;
   size?: string;
@@ -217,6 +248,9 @@ export interface Product {
 
   // Clothing & Fashion Attributes
   images?: string[];
+  productColors?: ProductColor[];
+  productImages?: ProductColorImage[];
+  primaryImageUrl?: string;
   clothingCategory?: string; // Shirts, Pants, T-Shirts, Three-Piece, Burqa, etc.
   color?: string;
   size?: string;
@@ -258,6 +292,9 @@ export interface SaleItem {
   total: number;
   variantId?: string;
   variantDetails?: string;
+  colorId?: string;
+  colorName?: string;
+  imageUrl?: string;
   category?: string;
   approvedDiscountBy?: string; // If seller discounted with admin approval
   comboOfferId?: string;
@@ -336,6 +373,9 @@ export interface PurchaseItem {
   productName: string;
   variantId?: string;
   variantDetails?: string;
+  colorId?: string;
+  colorName?: string;
+  imageUrl?: string;
   quantity: number;
   purchasePrice: number;
   total: number;

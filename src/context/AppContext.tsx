@@ -30,6 +30,8 @@ import {
   RoleDefinition,
   RolePermissionMatrix,
   UserActivityLog,
+  ProductColor,
+  ProductColorImage,
 } from '../types';
 import {
   initialSettings,
@@ -39,6 +41,8 @@ import {
 import { generateInvoiceNumber } from '../utils/formatters';
 import { auditService } from '../services/auditService';
 import { productService } from '../services/productService';
+import { catalogImageService, validateImageFile } from '../services/catalogImageService';
+import { inferColorHex, normalizeColorKey, sortColorImages } from '../utils/productImageResolver';
 import { salesService } from '../services/salesService';
 import { sellerService } from '../services/sellerService';
 import { staffRbacService, CreateEmployeePayload, UpdateEmployeePayload } from '../services/staffRbacService';
@@ -97,12 +101,56 @@ interface AppContextType {
   addCategory: (category: { name: string; description?: string }) => Promise<Category>;
   deleteCategory: (id: string) => Promise<void>;
 
-  // Products
+  // Products & Color Photo Catalog
   products: Product[];
   addProduct: (product: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>) => Promise<Product>;
   updateProduct: (id: string, product: Partial<Product>) => Promise<void>;
   deleteProduct: (id: string, permanent?: boolean) => Promise<void>;
   reloadProducts: () => Promise<void>;
+  pendingCatalogProductId: string | null;
+  setPendingCatalogProductId: (productId: string | null) => void;
+  pendingPosSelection: { productId: string; variantId?: string; colorId?: string } | null;
+  setPendingPosSelection: (selection: { productId: string; variantId?: string; colorId?: string } | null) => void;
+  addProductColor: (productId: string, colorName: string, colorHex?: string) => Promise<ProductColor>;
+  updateProductColor: (
+    productId: string,
+    colorId: string,
+    colorName: string,
+    colorHex?: string
+  ) => Promise<ProductColor>;
+  deleteProductColor: (productId: string, colorId: string) => Promise<void>;
+  uploadProductColorImage: (params: {
+    productId: string;
+    colorId: string;
+    file: File;
+    makePrimary?: boolean;
+    onProgress?: (pct: number) => void;
+  }) => Promise<ProductColorImage>;
+  replaceProductColorImage: (params: {
+    productId: string;
+    image: ProductColorImage;
+    file: File;
+    onProgress?: (pct: number) => void;
+  }) => Promise<ProductColorImage>;
+  setPrimaryProductColorImage: (params: {
+    productId: string;
+    colorId: string;
+    imageId: string;
+  }) => Promise<void>;
+  reorderProductColorImages: (params: {
+    productId: string;
+    colorId: string;
+    orderedImageIds: string[];
+  }) => Promise<void>;
+  reassignProductImageColor: (params: {
+    productId: string;
+    imageId: string;
+    targetColorId: string;
+  }) => Promise<void>;
+  deleteProductColorImage: (params: {
+    productId: string;
+    image: ProductColorImage;
+  }) => Promise<void>;
 
   // Sales & POS
   sales: Sale[];
@@ -1059,6 +1107,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       subscription.unsubscribe();
     };
   }, [initializeUserBusiness]);
+
+  const [pendingCatalogProductId, setPendingCatalogProductId] = useState<string | null>(null);
+  const [pendingPosSelection, setPendingPosSelection] = useState<{
+    productId: string;
+    variantId?: string;
+    colorId?: string;
+  } | null>(null);
 
   const reloadProducts = useCallback(async () => {
     if (activeBusinessId && isSupabaseConfigured) {
@@ -2060,6 +2115,459 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
       addAuditLog('PRODUCT_DEACTIVATED', 'product', id, `Product archived: ${prod.name}`);
     }
+  };
+
+  // Apparel Photo Catalog: Color & Image Management (Supabase Cloud Storage + Local fallback)
+  const readFileAsCompressedPreview = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('Failed to read local image file.'));
+      reader.readAsDataURL(file);
+    });
+
+  const addProductColor = async (
+    productId: string,
+    colorName: string,
+    colorHex?: string
+  ): Promise<ProductColor> => {
+    const cleanName = colorName.trim();
+    const norm = normalizeColorKey(cleanName);
+    if (!cleanName || !norm) throw new Error('Color name is required.');
+
+    if (isSupabaseConfigured) {
+      ensureCloudContext();
+      try {
+        const created = await catalogImageService.ensureProductColor({
+          businessId: activeBusinessId,
+          productId,
+          colorName: cleanName,
+          colorHex,
+        });
+        await reloadProducts();
+        addAuditLog('PRODUCT_COLOR_ADDED', 'product', productId, `Color added: ${cleanName}`);
+        return created;
+      } catch (err) {
+        throw raiseDbError(err, 'Failed to save product color.');
+      }
+    }
+
+    const newColor: ProductColor = {
+      id: `color-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      productId,
+      colorName: cleanName,
+      normalizedName: norm,
+      colorHex: inferColorHex(cleanName, colorHex),
+      sortOrder: 0,
+      isActive: true,
+      createdAt: new Date().toISOString(),
+    };
+    setProducts(prev =>
+      prev.map(p => {
+        if (p.id !== productId) return p;
+        const existing = p.productColors || [];
+        const dup = existing.find(c => normalizeColorKey(c.normalizedName || c.colorName) === norm);
+        if (dup) return p;
+        newColor.sortOrder = existing.length;
+        return {
+          ...p,
+          productColors: [...existing, newColor],
+          variants: p.variants?.map(v =>
+            normalizeColorKey(v.color) === norm ? { ...v, colorId: newColor.id, colorHex: newColor.colorHex } : v
+          ),
+        };
+      })
+    );
+    return newColor;
+  };
+
+  const updateProductColor = async (
+    productId: string,
+    colorId: string,
+    colorName: string,
+    colorHex?: string
+  ): Promise<ProductColor> => {
+    const cleanName = colorName.trim();
+    const norm = normalizeColorKey(cleanName);
+    if (!cleanName || !norm) throw new Error('Color name is required.');
+
+    if (isSupabaseConfigured) {
+      ensureCloudContext();
+      try {
+        const updated = await catalogImageService.updateProductColor({
+          businessId: activeBusinessId,
+          productId,
+          colorId,
+          colorName: cleanName,
+          colorHex,
+        });
+        await reloadProducts();
+        addAuditLog('PRODUCT_COLOR_UPDATED', 'product', productId, `Color updated to ${cleanName}`);
+        return updated;
+      } catch (err) {
+        throw raiseDbError(err, 'Failed to update product color.');
+      }
+    }
+
+    const hex = inferColorHex(cleanName, colorHex);
+    let resultColor: ProductColor = {
+      id: colorId,
+      productId,
+      colorName: cleanName,
+      normalizedName: norm,
+      colorHex: hex,
+      sortOrder: 0,
+      isActive: true,
+    };
+    setProducts(prev =>
+      prev.map(p => {
+        if (p.id !== productId) return p;
+        const nextColors = (p.productColors || []).map(c => {
+          if (c.id !== colorId) return c;
+          resultColor = { ...c, colorName: cleanName, normalizedName: norm, colorHex: hex };
+          return resultColor;
+        });
+        return {
+          ...p,
+          productColors: nextColors,
+          variants: p.variants?.map(v =>
+            v.colorId === colorId ? { ...v, color: cleanName, colorHex: hex } : v
+          ),
+        };
+      })
+    );
+    return resultColor;
+  };
+
+  const deleteProductColor = async (productId: string, colorId: string): Promise<void> => {
+    if (isSupabaseConfigured) {
+      ensureCloudContext();
+      try {
+        await catalogImageService.deleteProductColor({
+          businessId: activeBusinessId,
+          productId,
+          colorId,
+        });
+        await reloadProducts();
+        addAuditLog('PRODUCT_COLOR_DELETED', 'product', productId, `Deleted color ID ${colorId}`);
+        return;
+      } catch (err) {
+        throw raiseDbError(err, 'Failed to delete product color.');
+      }
+    }
+
+    setProducts(prev =>
+      prev.map(p => {
+        if (p.id !== productId) return p;
+        const nextColors = (p.productColors || []).filter(c => c.id !== colorId);
+        const nextImages = (p.productImages || []).filter(i => i.colorId !== colorId);
+        const primary = sortColorImages(nextImages)[0]?.imageUrl;
+        return {
+          ...p,
+          productColors: nextColors,
+          productImages: nextImages,
+          image: primary,
+          primaryImageUrl: primary,
+          images: nextImages.map(i => i.imageUrl),
+        };
+      })
+    );
+  };
+
+  const uploadProductColorImage = async (params: {
+    productId: string;
+    colorId: string;
+    file: File;
+    makePrimary?: boolean;
+    onProgress?: (pct: number) => void;
+  }): Promise<ProductColorImage> => {
+    const validation = validateImageFile(params.file);
+    if (!validation.valid) {
+      throw new Error(validation.error || 'Invalid image file.');
+    }
+
+    if (isSupabaseConfigured) {
+      ensureCloudContext();
+      try {
+        const uploaded = await catalogImageService.uploadColorImage({
+          businessId: activeBusinessId,
+          ...params,
+        });
+        await reloadProducts();
+        addAuditLog(
+          'PRODUCT_IMAGE_UPLOADED',
+          'product',
+          params.productId,
+          `Uploaded color image (${params.file.name})`
+        );
+        return uploaded;
+      } catch (err) {
+        throw raiseDbError(err, 'Failed to upload product color image.');
+      }
+    }
+
+    params.onProgress?.(35);
+    const dataUrl = await readFileAsCompressedPreview(params.file);
+    params.onProgress?.(100);
+    const newImg: ProductColorImage = {
+      id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      productId: params.productId,
+      colorId: params.colorId,
+      imageUrl: dataUrl,
+      storagePath: `local/${params.productId}/${params.colorId}/${params.file.name}`,
+      fileName: params.file.name,
+      fileSize: params.file.size,
+      mimeType: validation.mimeType,
+      isPrimary: Boolean(params.makePrimary),
+      sortOrder: 0,
+      createdAt: new Date().toISOString(),
+    };
+    setProducts(prev =>
+      prev.map(p => {
+        if (p.id !== params.productId) return p;
+        const existing = p.productImages || [];
+        const colorImgs = existing.filter(i => i.colorId === params.colorId);
+        const isFirst = colorImgs.length === 0 || Boolean(params.makePrimary);
+        newImg.isPrimary = isFirst;
+        newImg.sortOrder = colorImgs.length;
+        const updatedList = sortColorImages([
+          ...existing.map(i => (isFirst && i.colorId === params.colorId ? { ...i, isPrimary: false } : i)),
+          newImg,
+        ]);
+        const primary = updatedList.find(i => i.isPrimary)?.imageUrl || updatedList[0]?.imageUrl;
+        return {
+          ...p,
+          productImages: updatedList,
+          image: p.image || primary,
+          primaryImageUrl: p.primaryImageUrl || primary,
+          images: updatedList.map(i => i.imageUrl),
+        };
+      })
+    );
+    return newImg;
+  };
+
+  const replaceProductColorImage = async (params: {
+    productId: string;
+    image: ProductColorImage;
+    file: File;
+    onProgress?: (pct: number) => void;
+  }): Promise<ProductColorImage> => {
+    const validation = validateImageFile(params.file);
+    if (!validation.valid) {
+      throw new Error(validation.error || 'Invalid image file.');
+    }
+
+    if (isSupabaseConfigured) {
+      ensureCloudContext();
+      try {
+        const updated = await catalogImageService.replaceColorImage({
+          businessId: activeBusinessId,
+          ...params,
+        });
+        await reloadProducts();
+        addAuditLog(
+          'PRODUCT_IMAGE_REPLACED',
+          'product',
+          params.productId,
+          `Replaced product color image (${params.file.name})`
+        );
+        return updated;
+      } catch (err) {
+        throw raiseDbError(err, 'Failed to replace product image.');
+      }
+    }
+
+    params.onProgress?.(40);
+    const dataUrl = await readFileAsCompressedPreview(params.file);
+    params.onProgress?.(100);
+    const updatedImg: ProductColorImage = {
+      ...params.image,
+      imageUrl: dataUrl,
+      fileName: params.file.name,
+      fileSize: params.file.size,
+      mimeType: validation.mimeType,
+      updatedAt: new Date().toISOString(),
+    };
+    setProducts(prev =>
+      prev.map(p => {
+        if (p.id !== params.productId) return p;
+        const updatedList = sortColorImages(
+          (p.productImages || []).map(i => (i.id === params.image.id ? updatedImg : i))
+        );
+        const primary = updatedList.find(i => i.isPrimary)?.imageUrl || updatedList[0]?.imageUrl;
+        return {
+          ...p,
+          productImages: updatedList,
+          image: p.image === params.image.imageUrl ? dataUrl : primary,
+          primaryImageUrl: primary,
+          images: updatedList.map(i => i.imageUrl),
+        };
+      })
+    );
+    return updatedImg;
+  };
+
+  const setPrimaryProductColorImage = async (params: {
+    productId: string;
+    colorId: string;
+    imageId: string;
+  }): Promise<void> => {
+    if (isSupabaseConfigured) {
+      ensureCloudContext();
+      try {
+        await catalogImageService.setPrimaryColorImage({
+          businessId: activeBusinessId,
+          ...params,
+        });
+        await reloadProducts();
+        return;
+      } catch (err) {
+        throw raiseDbError(err, 'Failed to set primary color image.');
+      }
+    }
+
+    setProducts(prev =>
+      prev.map(p => {
+        if (p.id !== params.productId) return p;
+        const updatedList = sortColorImages(
+          (p.productImages || []).map(i =>
+            i.colorId === params.colorId ? { ...i, isPrimary: i.id === params.imageId } : i
+          )
+        );
+        return {
+          ...p,
+          productImages: updatedList,
+          images: updatedList.map(i => i.imageUrl),
+        };
+      })
+    );
+  };
+
+  const reorderProductColorImages = async (params: {
+    productId: string;
+    colorId: string;
+    orderedImageIds: string[];
+  }): Promise<void> => {
+    if (isSupabaseConfigured) {
+      ensureCloudContext();
+      try {
+        await catalogImageService.reorderColorImages({
+          businessId: activeBusinessId,
+          ...params,
+        });
+        await reloadProducts();
+        return;
+      } catch (err) {
+        throw raiseDbError(err, 'Failed to reorder color images.');
+      }
+    }
+
+    const orderMap = new Map(params.orderedImageIds.map((id, idx) => [id, idx]));
+    setProducts(prev =>
+      prev.map(p => {
+        if (p.id !== params.productId) return p;
+        const updatedList = sortColorImages(
+          (p.productImages || []).map(i =>
+            i.colorId === params.colorId && orderMap.has(i.id)
+              ? { ...i, sortOrder: orderMap.get(i.id)! }
+              : i
+          )
+        );
+        return {
+          ...p,
+          productImages: updatedList,
+          images: updatedList.map(i => i.imageUrl),
+        };
+      })
+    );
+  };
+
+  const reassignProductImageColor = async (params: {
+    productId: string;
+    imageId: string;
+    targetColorId: string;
+  }): Promise<void> => {
+    if (isSupabaseConfigured) {
+      ensureCloudContext();
+      try {
+        await catalogImageService.reassignImageColor({
+          businessId: activeBusinessId,
+          ...params,
+        });
+        await reloadProducts();
+        return;
+      } catch (err) {
+        throw raiseDbError(err, 'Failed to move image to target color.');
+      }
+    }
+
+    setProducts(prev =>
+      prev.map(p => {
+        if (p.id !== params.productId) return p;
+        const targetImgs = (p.productImages || []).filter(i => i.colorId === params.targetColorId);
+        const hasPrimary = targetImgs.some(i => i.isPrimary);
+        const updatedList = sortColorImages(
+          (p.productImages || []).map(i =>
+            i.id === params.imageId
+              ? { ...i, colorId: params.targetColorId, isPrimary: !hasPrimary, sortOrder: targetImgs.length }
+              : i
+          )
+        );
+        return {
+          ...p,
+          productImages: updatedList,
+          images: updatedList.map(i => i.imageUrl),
+        };
+      })
+    );
+  };
+
+  const deleteProductColorImage = async (params: {
+    productId: string;
+    image: ProductColorImage;
+  }): Promise<void> => {
+    if (isSupabaseConfigured) {
+      ensureCloudContext();
+      try {
+        await catalogImageService.deleteColorImage({
+          businessId: activeBusinessId,
+          ...params,
+        });
+        await reloadProducts();
+        addAuditLog(
+          'PRODUCT_IMAGE_DELETED',
+          'product',
+          params.productId,
+          `Deleted product image (${params.image.fileName || params.image.id})`
+        );
+        return;
+      } catch (err) {
+        throw raiseDbError(err, 'Failed to delete product image.');
+      }
+    }
+
+    setProducts(prev =>
+      prev.map(p => {
+        if (p.id !== params.productId) return p;
+        let remaining = (p.productImages || []).filter(i => i.id !== params.image.id);
+        if (params.image.isPrimary) {
+          const nextInColor = remaining.find(i => i.colorId === params.image.colorId);
+          if (nextInColor) {
+            remaining = remaining.map(i => (i.id === nextInColor.id ? { ...i, isPrimary: true } : i));
+          }
+        }
+        const sorted = sortColorImages(remaining);
+        const primary = sorted[0]?.imageUrl;
+        return {
+          ...p,
+          productImages: sorted,
+          image: primary,
+          primaryImageUrl: primary,
+          images: sorted.map(i => i.imageUrl),
+        };
+      })
+    );
   };
 
   // Helper: Account ID lookup
@@ -4664,6 +5172,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateProduct,
         deleteProduct,
         reloadProducts,
+        pendingCatalogProductId,
+        setPendingCatalogProductId,
+        pendingPosSelection,
+        setPendingPosSelection,
+        addProductColor,
+        updateProductColor,
+        deleteProductColor,
+        uploadProductColorImage,
+        replaceProductColorImage,
+        setPrimaryProductColorImage,
+        reorderProductColorImages,
+        reassignProductImageColor,
+        deleteProductColorImage,
         sales,
         recordSale,
         recordSaleReturn,
