@@ -366,7 +366,8 @@ export type LegacyAppModule =
   | 'returns'
   | 'reorder'
   | 'combos'
-  | 'users';
+  | 'users'
+  | 'billing';
 
 export function mapLegacyModuleToPermissionKeys(module: LegacyAppModule): PermissionModuleKey[] {
   switch (module) {
@@ -404,6 +405,8 @@ export function mapLegacyModuleToPermissionKeys(module: LegacyAppModule): Permis
     case 'branches':
     case 'settings':
       return ['application_settings'];
+    case 'billing':
+      return ['application_settings', 'accounts_transactions'];
     default:
       return ['dashboard'];
   }

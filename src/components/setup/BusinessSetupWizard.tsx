@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { BusinessType, BusinessSetupData } from '../../types';
+import { BusinessType, BusinessSetupData, SubscriptionPlan } from '../../types';
 import { APP_IDENTITY } from '../../config/appIdentity';
+import { subscriptionService } from '../../services/subscriptionService';
 import {
   Store,
   Building2,
@@ -19,25 +20,34 @@ import {
   Loader2,
   Plus,
   Trash2,
+  Crown,
+  ShieldCheck,
+  X,
 } from 'lucide-react';
 
 interface BusinessSetupWizardProps {
   onCompleted?: () => void;
+  mode?: 'initial' | 'additional';
+  onCancel?: () => void;
 }
 
-export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onCompleted }) => {
-  const { completeBusinessSetup, user } = useApp();
+export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
+  onCompleted,
+  mode = 'initial',
+  onCancel,
+}) => {
+  const { completeBusinessSetup, user, availablePlans } = useApp();
 
   const currentYear = new Date().getFullYear();
 
-  // Step state
-  const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
+  // Step state (1: Profile, 2: Contact, Mobile OTP & Branch, 3: Accounts, 4: SaaS Plan)
+  const [currentStep, setCurrentStep] = useState<1 | 2 | 3 | 4>(1);
 
   // Form Fields
-  const [shopName, setShopName] = useState(user?.user_metadata?.shop_name || '');
-  const [ownerName, setOwnerName] = useState(
-    user?.user_metadata?.full_name || ''
+  const [shopName, setShopName] = useState(
+    mode === 'additional' ? '' : user?.user_metadata?.shop_name || ''
   );
+  const [ownerName, setOwnerName] = useState(user?.user_metadata?.full_name || '');
   const [businessType, setBusinessType] = useState<BusinessType>('general');
   const [phone, setPhone] = useState(user?.user_metadata?.phone || '');
   const [email, setEmail] = useState(user?.email || '');
@@ -46,6 +56,19 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
   const [currency, setCurrency] = useState('BDT (৳)');
   const [financialYear, setFinancialYear] = useState(`${currentYear}-${currentYear + 1}`);
   const [vatTaxRate, setVatTaxRate] = useState<number>(0);
+
+  // Mobile OTP verification state
+  const [otpSending, setOtpSending] = useState(false);
+  const [otpVerifying, setOtpVerifying] = useState(false);
+  const [otpSentPhone, setOtpSentPhone] = useState('');
+  const [otpCodeInput, setOtpCodeInput] = useState('');
+  const [otpPreviewHint, setOtpPreviewHint] = useState<string | null>(null);
+  const [mobileVerified, setMobileVerified] = useState(false);
+
+  // Plan Selection State
+  const [plans, setPlans] = useState<SubscriptionPlan[]>(availablePlans);
+  const [selectedPlanCode, setSelectedPlanCode] = useState<string>('free_trial');
+  const [billingCycle, setBillingCycle] = useState<'trial' | 'monthly' | 'yearly'>('trial');
 
   // Optional initial accounts configured by Admin
   const [accountsList, setAccountsList] = useState<
@@ -59,6 +82,19 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (availablePlans.length > 0) {
+      setPlans(availablePlans);
+    } else {
+      subscriptionService
+        .fetchPlans()
+        .then(res => {
+          if (res.plans.length > 0) setPlans(res.plans);
+        })
+        .catch(() => {});
+    }
+  }, [availablePlans]);
+
   const businessTypes: { id: BusinessType; title: string; desc: string }[] = [
     { id: 'general', title: 'General Retail', desc: 'Departmental, stationery, gifts & general goods' },
     { id: 'clothing', title: 'Clothing & Fashion', desc: 'Apparel, shoes, fabrics with size/color variants' },
@@ -67,6 +103,45 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
     { id: 'pharmacy', title: 'Pharmacy', desc: 'Medicines, pharmaceuticals & expiry control' },
     { id: 'restaurant', title: 'Food & Restaurant', desc: 'Cafe, dining, quick service & takeout' },
   ];
+
+  const handleSendOtp = async () => {
+    setErrorMsg(null);
+    const cleaned = phone.replace(/[\s-]/g, '').trim();
+    if (!/^\+?[0-9]{10,15}$/.test(cleaned)) {
+      setErrorMsg('Please enter a valid 10-15 digit mobile number before requesting an OTP.');
+      return;
+    }
+    setOtpSending(true);
+    try {
+      const res = await subscriptionService.sendMobileOtp(cleaned);
+      setOtpSentPhone(cleaned);
+      setMobileVerified(false);
+      setOtpPreviewHint(res.previewCode ? `${res.message}` : res.message);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Unable to send OTP verification code.');
+    } finally {
+      setOtpSending(false);
+    }
+  };
+
+  const handleVerifyOtp = async () => {
+    setErrorMsg(null);
+    const cleaned = phone.replace(/[\s-]/g, '').trim();
+    if (!/^[0-9]{6}$/.test(otpCodeInput.trim())) {
+      setErrorMsg('Please enter the 6-digit OTP verification code.');
+      return;
+    }
+    setOtpVerifying(true);
+    try {
+      await subscriptionService.verifyMobileOtp(cleaned, otpCodeInput.trim());
+      setMobileVerified(true);
+      setOtpPreviewHint(null);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'OTP verification failed. Please check the code.');
+    } finally {
+      setOtpVerifying(false);
+    }
+  };
 
   const handleNext = (e: React.FormEvent) => {
     e.preventDefault();
@@ -96,6 +171,8 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
         return;
       }
       setCurrentStep(3);
+    } else if (currentStep === 3) {
+      setCurrentStep(4);
     }
   };
 
@@ -107,6 +184,13 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
 
     try {
       const cleanCurrency = currency.includes('BDT') || currency.includes('৳') ? '৳' : currency.split(' ')[0] || '৳';
+      const resolvedCycle =
+        selectedPlanCode === 'free_trial'
+          ? 'trial'
+          : billingCycle === 'trial'
+          ? 'monthly'
+          : billingCycle;
+
       const setupPayload: BusinessSetupData = {
         shopName: shopName.trim(),
         ownerName: ownerName.trim(),
@@ -118,12 +202,17 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
         currency: cleanCurrency,
         financialYear: financialYear.trim() || `${currentYear}-${currentYear + 1}`,
         vatTaxRate: Number(vatTaxRate) || 0,
-        initialAccounts: accountsList.filter(a => a.name.trim().length > 0).map(a => ({
-          name: a.name.trim(),
-          accountType: a.accountType,
-          accountNumber: a.accountNumber?.trim() || undefined,
-          openingBalance: Number(a.openingBalance) || 0,
-        })),
+        createNew: mode === 'additional',
+        planCode: selectedPlanCode,
+        billingCycle: resolvedCycle,
+        initialAccounts: accountsList
+          .filter(a => a.name.trim().length > 0)
+          .map(a => ({
+            name: a.name.trim(),
+            accountType: a.accountType,
+            accountNumber: a.accountNumber?.trim() || undefined,
+            openingBalance: Number(a.openingBalance) || 0,
+          })),
       };
 
       await completeBusinessSetup(setupPayload);
@@ -137,10 +226,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
   };
 
   const addAccountRow = () => {
-    setAccountsList(prev => [
-      ...prev,
-      { name: '', accountType: 'cash', openingBalance: 0 },
-    ]);
+    setAccountsList(prev => [...prev, { name: '', accountType: 'cash', openingBalance: 0 }]);
   };
 
   const removeAccountRow = (index: number) => {
@@ -151,13 +237,21 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
     'w-full pl-9 pr-3 py-2.5 text-xs sm:text-sm bg-[#F8FAFC] dark:bg-[#0E182E] border border-[#E2E8F0] dark:border-[#1F3158] rounded-[10px] focus:outline-none focus:ring-2 focus:ring-[#087F8C]/25 focus:border-[#087F8C] text-[#172033] dark:text-white placeholder:text-[#94A3B8] font-medium';
 
   return (
-    <div className="min-h-screen bg-[#0B1428] relative flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
-      <div className="pointer-events-none fixed -top-24 -right-24 w-96 h-96 rounded-full bg-[#087F8C]/15 blur-3xl" />
-      <div className="pointer-events-none fixed -bottom-24 -left-24 w-96 h-96 rounded-full bg-[#D6AD60]/10 blur-3xl" />
+    <div
+      className={`${
+        mode === 'additional' ? 'fixed inset-0 z-50 bg-[#0B1428]/80 backdrop-blur-xs' : 'min-h-screen bg-[#0B1428]'
+      } relative flex items-center justify-center p-3 sm:p-6 overflow-y-auto`}
+    >
+      {mode === 'initial' && (
+        <>
+          <div className="pointer-events-none fixed -top-24 -right-24 w-96 h-96 rounded-full bg-[#087F8C]/15 blur-3xl" />
+          <div className="pointer-events-none fixed -bottom-24 -left-24 w-96 h-96 rounded-full bg-[#D6AD60]/10 blur-3xl" />
+        </>
+      )}
 
       <div className="relative w-full max-w-2xl bg-white dark:bg-[#101B35] rounded-[16px] shadow-2xl border border-[#E2E8F0] dark:border-[#1F3158] overflow-hidden my-auto adp-modal-enter">
         {/* Wizard Header Banner */}
-        <div className="bg-gradient-to-r from-[#101B35] via-[#152447] to-[#0B1428] text-white p-6 sm:p-8 border-b border-[#D6AD60]/25">
+        <div className="bg-gradient-to-r from-[#101B35] via-[#152447] to-[#0B1428] text-white p-6 sm:p-7 border-b border-[#D6AD60]/25">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2.5">
               <div className="w-11 h-11 rounded-[12px] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] flex items-center justify-center shadow-md">
@@ -168,27 +262,40 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
                 <div className="text-[10px] text-[#D6AD60] font-medium">{APP_IDENTITY.subtitle}</div>
               </div>
             </div>
-            <span className="text-xs font-semibold px-3 py-1 rounded-[8px] bg-white/10 border border-[#D6AD60]/30 text-[#D6AD60] tracking-wide uppercase">
-              Step {currentStep} of 3
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold px-3 py-1 rounded-[8px] bg-white/10 border border-[#D6AD60]/30 text-[#D6AD60] tracking-wide uppercase">
+                Step {currentStep} of 4
+              </span>
+              {mode === 'additional' && onCancel && (
+                <button
+                  type="button"
+                  onClick={onCancel}
+                  aria-label="Close new business wizard"
+                  className="p-1.5 rounded-[8px] bg-white/10 hover:bg-white/20 text-white cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
           </div>
           <h1 className="text-xl sm:text-2xl font-extrabold tracking-tight text-white">
-            First-Time Business Setup
+            {mode === 'additional' ? 'Create New Business Workspace' : 'Business Onboarding & Setup'}
           </h1>
           <p className="text-xs sm:text-sm text-slate-300 mt-1">
-            Configure your genuine business profile, branch, and financial accounts. No demo data.
+            Configure your isolated tenant workspace, verify contact number, and choose a SaaS plan.
           </p>
 
-          {/* Stepper progress dots */}
-          <div className="grid grid-cols-3 gap-2 mt-6">
+          {/* Stepper progress bars */}
+          <div className="grid grid-cols-4 gap-2 mt-5">
             <div className={`h-1.5 rounded-full transition-all ${currentStep >= 1 ? 'bg-[#D6AD60]' : 'bg-white/15'}`} />
             <div className={`h-1.5 rounded-full transition-all ${currentStep >= 2 ? 'bg-[#D6AD60]' : 'bg-white/15'}`} />
-            <div className={`h-1.5 rounded-full transition-all ${currentStep >= 3 ? 'bg-[#10B981]' : 'bg-white/15'}`} />
+            <div className={`h-1.5 rounded-full transition-all ${currentStep >= 3 ? 'bg-[#D6AD60]' : 'bg-white/15'}`} />
+            <div className={`h-1.5 rounded-full transition-all ${currentStep >= 4 ? 'bg-[#10B981]' : 'bg-white/15'}`} />
           </div>
         </div>
 
         {/* Wizard Content */}
-        <div className="p-6 sm:p-8">
+        <div className="p-6 sm:p-7">
           {errorMsg && (
             <div className="p-3.5 mb-5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-700/60 text-rose-800 dark:text-rose-200 text-xs sm:text-sm rounded-[10px] flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 text-[#F06464] shrink-0 mt-0.5" />
@@ -278,42 +385,92 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
                   type="submit"
                   className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white rounded-[10px] text-xs sm:text-sm font-bold shadow-md shadow-[#087F8C]/20 active:scale-[0.98] transition-all cursor-pointer"
                 >
-                  <span>Continue to Location</span>
+                  <span>Continue to Contact &amp; Verification</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>
             </form>
           )}
 
-          {/* STEP 2: Location, Contact & Branch */}
+          {/* STEP 2: Location, Contact, Mobile OTP & Primary Branch */}
           {currentStep === 2 && (
-            <form onSubmit={handleNext} className="space-y-5">
+            <form onSubmit={handleNext} className="space-y-4">
               <div className="space-y-1">
                 <h2 className="text-base font-bold text-[#172033] dark:text-white flex items-center gap-2">
                   <Building2 className="w-4 h-4 text-[#087F8C] dark:text-[#D6AD60]" />
-                  <span>Contact Details &amp; Primary Branch</span>
+                  <span>Contact Verification &amp; Primary Branch</span>
                 </h2>
                 <p className="text-xs text-[#64748B] dark:text-slate-400">
-                  Every business starts with at least one active branch or store outlet.
+                  Verify your owner mobile number via OTP and configure your primary outlet.
                 </p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-[#172033] dark:text-slate-200 mb-1">
-                    Phone Number <span className="text-[#F06464]">*</span>
-                  </label>
-                  <div className="relative">
-                    <Phone className="w-4 h-4 text-[#64748B] dark:text-slate-400 absolute left-3 top-3" />
-                    <input
-                      type="text"
-                      required
-                      value={phone}
-                      onChange={e => setPhone(e.target.value)}
-                      placeholder="017xxxxxxxx"
-                      className={`${inputBaseClass} font-mono`}
-                    />
+                <div className="sm:col-span-2 p-3.5 rounded-[12px] bg-[#F8FAFC] dark:bg-[#0E182E] border border-[#E2E8F0] dark:border-[#1F3158] space-y-2.5">
+                  <div className="flex flex-col sm:flex-row sm:items-end gap-2">
+                    <div className="flex-1">
+                      <label className="block text-xs font-bold text-[#172033] dark:text-slate-200 mb-1">
+                        Owner / Business Mobile Number <span className="text-[#F06464]">*</span>
+                      </label>
+                      <div className="relative">
+                        <Phone className="w-4 h-4 text-[#64748B] dark:text-slate-400 absolute left-3 top-3" />
+                        <input
+                          type="text"
+                          required
+                          value={phone}
+                          onChange={e => {
+                            setPhone(e.target.value);
+                            setMobileVerified(false);
+                          }}
+                          placeholder="017xxxxxxxx"
+                          className={`${inputBaseClass} font-mono`}
+                        />
+                      </div>
+                    </div>
+                    {mobileVerified ? (
+                      <div className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-[10px] bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30 text-xs font-bold shrink-0">
+                        <ShieldCheck className="w-4 h-4" />
+                        <span>Mobile Verified</span>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={otpSending}
+                        onClick={handleSendOtp}
+                        className="px-4 py-2.5 rounded-[10px] bg-[#101B35] text-white text-xs font-bold hover:brightness-110 shrink-0 cursor-pointer disabled:opacity-60"
+                      >
+                        {otpSending ? 'Sending...' : otpSentPhone ? 'Resend OTP' : 'Send OTP Code'}
+                      </button>
+                    )}
                   </div>
+
+                  {otpSentPhone && !mobileVerified && (
+                    <div className="space-y-2 pt-1">
+                      {otpPreviewHint && (
+                        <div className="p-2.5 rounded-[8px] bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-700/50 text-[11px] text-amber-800 dark:text-amber-200">
+                          {otpPreviewHint}
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          maxLength={6}
+                          value={otpCodeInput}
+                          onChange={e => setOtpCodeInput(e.target.value)}
+                          placeholder="Enter 6-digit OTP"
+                          className="w-40 px-3 py-2 text-xs bg-white dark:bg-[#101B35] border border-[#E2E8F0] dark:border-[#1F3158] rounded-[8px] font-mono tracking-widest"
+                        />
+                        <button
+                          type="button"
+                          disabled={otpVerifying}
+                          onClick={handleVerifyOtp}
+                          className="px-4 py-2 rounded-[8px] bg-[#087F8C] text-white text-xs font-bold cursor-pointer"
+                        >
+                          {otpVerifying ? 'Verifying...' : 'Verify OTP'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -327,6 +484,23 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
                       value={email}
                       onChange={e => setEmail(e.target.value)}
                       placeholder="business@example.com"
+                      className={inputBaseClass}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-[#172033] dark:text-slate-200 mb-1">
+                    Primary Branch / Outlet Name <span className="text-[#F06464]">*</span>
+                  </label>
+                  <div className="relative">
+                    <Building2 className="w-4 h-4 text-[#64748B] dark:text-slate-400 absolute left-3 top-3" />
+                    <input
+                      type="text"
+                      required
+                      value={branchName}
+                      onChange={e => setBranchName(e.target.value)}
+                      placeholder="e.g. Main Outlet / Dhanmondi Branch"
                       className={inputBaseClass}
                     />
                   </div>
@@ -347,26 +521,6 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
                       className={inputBaseClass}
                     />
                   </div>
-                </div>
-
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-bold text-[#172033] dark:text-slate-200 mb-1">
-                    Primary Branch / Outlet Name <span className="text-[#F06464]">*</span>
-                  </label>
-                  <div className="relative">
-                    <Building2 className="w-4 h-4 text-[#64748B] dark:text-slate-400 absolute left-3 top-3" />
-                    <input
-                      type="text"
-                      required
-                      value={branchName}
-                      onChange={e => setBranchName(e.target.value)}
-                      placeholder="e.g. Main Outlet / Dhanmondi Branch / Head Office"
-                      className={inputBaseClass}
-                    />
-                  </div>
-                  <p className="text-[11px] text-[#64748B] dark:text-slate-400 mt-1">
-                    This will be configured as your primary outlet. You can add more branches later.
-                  </p>
                 </div>
               </div>
 
@@ -391,7 +545,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
 
           {/* STEP 3: Financial Settings & Initial Accounts */}
           {currentStep === 3 && (
-            <form onSubmit={handleFinalSubmit} className="space-y-5">
+            <form onSubmit={handleNext} className="space-y-5">
               <div className="space-y-1">
                 <h2 className="text-base font-bold text-[#172033] dark:text-white flex items-center gap-2">
                   <Wallet className="w-4 h-4 text-[#087F8C] dark:text-[#D6AD60]" />
@@ -449,7 +603,6 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
                 </div>
               </div>
 
-              {/* Initial Accounts Setup Table */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <div>
@@ -470,7 +623,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
                   </button>
                 </div>
 
-                <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                   {accountsList.map((acc, idx) => (
                     <div
                       key={idx}
@@ -484,7 +637,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
                           value={acc.name}
                           onChange={e => {
                             const val = e.target.value;
-                            setAccountsList(prev => prev.map((item, i) => i === idx ? { ...item, name: val } : item));
+                            setAccountsList(prev => prev.map((item, i) => (i === idx ? { ...item, name: val } : item)));
                           }}
                           placeholder="e.g. Cash in Hand"
                           className="w-full p-1.5 bg-[#F8FAFC] dark:bg-[#101B35] border border-[#E2E8F0] dark:border-[#1F3158] rounded-[8px] text-[#172033] dark:text-white"
@@ -497,7 +650,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
                           value={acc.accountType}
                           onChange={e => {
                             const val = e.target.value as any;
-                            setAccountsList(prev => prev.map((item, i) => i === idx ? { ...item, accountType: val } : item));
+                            setAccountsList(prev => prev.map((item, i) => (i === idx ? { ...item, accountType: val } : item)));
                           }}
                           className="w-full p-1.5 bg-[#F8FAFC] dark:bg-[#101B35] border border-[#E2E8F0] dark:border-[#1F3158] rounded-[8px] text-[#172033] dark:text-white"
                         >
@@ -515,7 +668,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
                           value={acc.openingBalance}
                           onChange={e => {
                             const val = Number(e.target.value) || 0;
-                            setAccountsList(prev => prev.map((item, i) => i === idx ? { ...item, openingBalance: val } : item));
+                            setAccountsList(prev => prev.map((item, i) => (i === idx ? { ...item, openingBalance: val } : item)));
                           }}
                           placeholder="0"
                           className="w-full p-1.5 bg-[#F8FAFC] dark:bg-[#101B35] border border-[#E2E8F0] dark:border-[#1F3158] rounded-[8px] font-mono text-right text-[#172033] dark:text-white"
@@ -534,21 +687,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
                       </div>
                     </div>
                   ))}
-
-                  {accountsList.length === 0 && (
-                    <div className="p-4 text-center text-[#64748B] dark:text-slate-400 border-2 border-dashed border-[#E2E8F0] dark:border-[#1F3158] rounded-[10px] text-xs">
-                      No accounts configured yet. Click &quot;+ Add Account&quot; to configure Cash or Bank accounts.
-                    </div>
-                  )}
                 </div>
-              </div>
-
-              {/* Notice */}
-              <div className="p-3 bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/50 rounded-[10px] text-emerald-900 dark:text-emerald-200 text-xs flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-[#10B981] shrink-0" />
-                <span>
-                  Your business will start clean with zero fake products, fake sales, or fake dues.
-                </span>
               </div>
 
               <div className="flex items-center justify-between pt-4 border-t border-[#E2E8F0] dark:border-[#1F3158]">
@@ -561,13 +700,121 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({ onComp
                 </button>
                 <button
                   type="submit"
+                  className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white rounded-[10px] text-xs sm:text-sm font-bold shadow-md shadow-[#087F8C]/20 cursor-pointer"
+                >
+                  <span>Select Subscription Plan</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* STEP 4: SaaS Plan Selection */}
+          {currentStep === 4 && (
+            <form onSubmit={handleFinalSubmit} className="space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div>
+                  <h2 className="text-base font-bold text-[#172033] dark:text-white flex items-center gap-2">
+                    <Crown className="w-4 h-4 text-[#D6AD60]" />
+                    <span>Choose Your Subscription Plan</span>
+                  </h2>
+                  <p className="text-xs text-[#64748B] dark:text-slate-400">
+                    Start with a 14-day Free Trial or pick a scaling plan (payment verification available in Plan &amp; Support).
+                  </p>
+                </div>
+
+                {selectedPlanCode !== 'free_trial' && (
+                  <div className="inline-flex rounded-[8px] border border-[#E2E8F0] dark:border-[#1F3158] p-0.5 text-[11px] font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setBillingCycle('monthly')}
+                      className={`px-2.5 py-1 rounded-[6px] cursor-pointer ${
+                        billingCycle !== 'yearly' ? 'bg-[#087F8C] text-white' : 'text-slate-500'
+                      }`}
+                    >
+                      Monthly
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBillingCycle('yearly')}
+                      className={`px-2.5 py-1 rounded-[6px] cursor-pointer ${
+                        billingCycle === 'yearly' ? 'bg-[#087F8C] text-white' : 'text-slate-500'
+                      }`}
+                    >
+                      Yearly
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-72 overflow-y-auto pr-1">
+                {plans.map(plan => {
+                  const selected = selectedPlanCode === plan.code;
+                  const price =
+                    plan.priceMonthly === 0
+                      ? 0
+                      : billingCycle === 'yearly'
+                      ? plan.priceYearly
+                      : plan.priceMonthly;
+                  return (
+                    <div
+                      key={plan.id}
+                      onClick={() => {
+                        setSelectedPlanCode(plan.code);
+                        if (plan.code === 'free_trial') {
+                          setBillingCycle('trial');
+                        } else if (billingCycle === 'trial') {
+                          setBillingCycle('monthly');
+                        }
+                      }}
+                      className={`p-3.5 rounded-[12px] border cursor-pointer transition-all ${
+                        selected
+                          ? 'bg-[#087F8C]/10 dark:bg-[#087F8C]/20 border-[#087F8C] ring-2 ring-[#087F8C]/20'
+                          : 'bg-white dark:bg-[#0E182E] border-[#E2E8F0] dark:border-[#1F3158] hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-[#172033] dark:text-white">{plan.name}</span>
+                        <span className="text-xs font-extrabold font-mono-num text-[#087F8C] dark:text-[#D6AD60]">
+                          {price === 0 ? `${plan.trialDays}d Free` : `৳${price.toLocaleString()}`}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-[#64748B] dark:text-slate-400 mt-1">{plan.description}</p>
+                      <div className="mt-2 text-[10.5px] font-mono text-[#475569] dark:text-slate-300">
+                        {plan.maxUsers || '∞'} users · {plan.maxBranches || '∞'} branches ·{' '}
+                        {plan.maxProducts ? plan.maxProducts.toLocaleString() : '∞'} products
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="p-3 bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/50 rounded-[10px] text-emerald-900 dark:text-emerald-200 text-xs flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-[#10B981] shrink-0" />
+                <span>
+                  {selectedPlanCode === 'free_trial'
+                    ? 'Your workspace starts immediately with a 14-day full-featured evaluation.'
+                    : 'Your workspace starts with trial evaluation immediately; submit payment in Plan & Support to activate paid billing.'}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between pt-4 border-t border-[#E2E8F0] dark:border-[#1F3158]">
+                <button
+                  type="button"
+                  onClick={() => setCurrentStep(3)}
+                  className="px-4 py-2 border border-[#E2E8F0] dark:border-[#1F3158] text-[#172033] dark:text-slate-200 rounded-[10px] text-xs sm:text-sm font-semibold hover:bg-[#F8FAFC] dark:hover:bg-[#162344] cursor-pointer"
+                >
+                  Back
+                </button>
+                <button
+                  type="submit"
                   disabled={loading}
                   className="flex items-center gap-2 px-7 py-2.5 bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white rounded-[10px] text-xs sm:text-sm font-bold shadow-lg shadow-[#087F8C]/25 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-60"
                 >
                   {loading ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Configuring Business...</span>
+                      <span>Provisioning Workspace...</span>
                     </>
                   ) : (
                     <>

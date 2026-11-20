@@ -24,6 +24,7 @@ import {
   ShieldCheck,
   ChevronLeft,
   ChevronRight,
+  Crown,
 } from 'lucide-react';
 import { LegacyAppModule } from '../../utils/rbacDefaults';
 import { getBusinessDisplayName } from '../../config/appIdentity';
@@ -75,6 +76,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
     { id: 'sellers', label: 'Seller Management', icon: UserCog, moduleKey: 'sellers', group: 'Team & Settings' },
     { id: 'branches', label: 'Branches & Transfer', icon: GitFork, moduleKey: 'branches', group: 'Team & Settings' },
     { id: 'settings', label: 'Shop Settings', icon: Settings, moduleKey: 'settings', group: 'Team & Settings' },
+    { id: 'billing', label: 'Plan & Support', icon: Crown, moduleKey: 'billing', group: 'Team & Settings' },
   ];
 
   const visibleItems = navItems.filter(item => canAccess(item.moduleKey));

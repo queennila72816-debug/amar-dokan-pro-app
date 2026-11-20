@@ -32,6 +32,11 @@ import {
   UserActivityLog,
   ProductColor,
   ProductColorImage,
+  PlatformAdmin,
+  BusinessMembershipSummary,
+  BusinessSubscription,
+  SubscriptionPlan,
+  PlatformBillingSettings,
 } from '../types';
 import {
   initialSettings,
@@ -46,6 +51,8 @@ import { inferColorHex, normalizeColorKey, sortColorImages } from '../utils/prod
 import { salesService } from '../services/salesService';
 import { sellerService } from '../services/sellerService';
 import { staffRbacService, CreateEmployeePayload, UpdateEmployeePayload } from '../services/staffRbacService';
+import { platformAdminService } from '../services/platformAdminService';
+import { subscriptionService } from '../services/subscriptionService';
 import {
   createDefaultRolesForBusiness,
   hasMatrixPermission,
@@ -358,6 +365,25 @@ interface AppContextType {
   reloadComboOffers: () => Promise<void>;
 
   canAccess: (module: LegacyAppModule) => boolean;
+
+  // Multi-Tenant SaaS, Platform Super Admin & Subscription Context
+  platformAdmin: PlatformAdmin | null;
+  isPlatformAdmin: boolean;
+  platformViewActive: boolean;
+  setPlatformViewActive: (active: boolean) => void;
+  userBusinesses: BusinessMembershipSummary[];
+  activeMembership: BusinessMembershipSummary | null;
+  switchBusiness: (businessId: string) => Promise<void>;
+  createNewBusinessModalOpen: boolean;
+  setCreateNewBusinessModalOpen: (open: boolean) => void;
+  activeSubscription: BusinessSubscription | null;
+  availablePlans: SubscriptionPlan[];
+  billingInstructions: PlatformBillingSettings | null;
+  subscriptionUsage: { users: number; branches: number; products: number };
+  refreshSubscription: () => Promise<void>;
+  isBusinessSuspendedOrExpired: boolean;
+  businessStatusBanner: { tone: 'danger' | 'warning'; title: string; message: string } | null;
+  checkPlanLimit: (resource: 'users' | 'branches' | 'products') => { allowed: boolean; message?: string };
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -419,6 +445,144 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [comboOffers, setComboOffers] = useState<ComboOffer[]>([]);
+
+  // Multi-Tenant SaaS & Platform Super Admin State
+  const [platformAdmin, setPlatformAdmin] = useState<PlatformAdmin | null>(null);
+  const [platformViewActive, setPlatformViewActive] = useState<boolean>(false);
+  const [userBusinesses, setUserBusinesses] = useState<BusinessMembershipSummary[]>([]);
+  const [createNewBusinessModalOpen, setCreateNewBusinessModalOpen] = useState<boolean>(false);
+  const [activeSubscription, setActiveSubscription] = useState<BusinessSubscription | null>(null);
+  const [availablePlans, setAvailablePlans] = useState<SubscriptionPlan[]>([]);
+  const [billingInstructions, setBillingInstructions] = useState<PlatformBillingSettings | null>(null);
+  const [subscriptionUsage, setSubscriptionUsage] = useState<{ users: number; branches: number; products: number }>({
+    users: 1,
+    branches: 1,
+    products: 0,
+  });
+
+  const isPlatformAdmin = Boolean(platformAdmin && platformAdmin.isActive);
+  const activeMembership =
+    userBusinesses.find(b => b.businessId === activeBusinessId) || null;
+
+  const isBusinessSuspendedOrExpired = (() => {
+    if (activeMembership && (activeMembership.businessStatus === 'suspended' || activeMembership.isActive === false)) {
+      return true;
+    }
+    if (!activeSubscription) return false;
+    if (['suspended', 'cancelled', 'expired'].includes(activeSubscription.status)) return true;
+    const graceEnd = activeSubscription.gracePeriodEndsAt
+      ? new Date(activeSubscription.gracePeriodEndsAt).getTime()
+      : activeSubscription.currentPeriodEnd
+      ? new Date(activeSubscription.currentPeriodEnd).getTime()
+      : 0;
+    if (graceEnd > 0 && graceEnd < Date.now() && !['active', 'trialing'].includes(activeSubscription.status)) {
+      return true;
+    }
+    return false;
+  })();
+
+  const businessStatusBanner = ((): { tone: 'danger' | 'warning'; title: string; message: string } | null => {
+    if (activeMembership && (activeMembership.businessStatus === 'suspended' || activeMembership.isActive === false)) {
+      return {
+        tone: 'danger',
+        title: 'Business Workspace Suspended',
+        message:
+          'This shop is temporarily suspended (read-only mode). Existing data is preserved safely. Renew or contact Platform Support in Plan & Support.',
+      };
+    }
+    if (!activeSubscription) return null;
+    if (activeSubscription.status === 'suspended' || activeSubscription.status === 'expired' || activeSubscription.status === 'cancelled') {
+      return {
+        tone: 'danger',
+        title: `Subscription ${activeSubscription.status.toUpperCase()}`,
+        message:
+          'New writes are paused until subscription renewal is verified. Open Plan & Support to submit a renewal payment.',
+      };
+    }
+    if (activeSubscription.status === 'grace_period' || activeSubscription.status === 'past_due') {
+      return {
+        tone: 'warning',
+        title: 'Subscription Payment Due (Grace Period)',
+        message: 'Your billing cycle has ended. Please renew in Plan & Support before grace period expiry.',
+      };
+    }
+    if (activeSubscription.status === 'trialing' && activeSubscription.currentPeriodEnd) {
+      const daysLeft = Math.ceil((new Date(activeSubscription.currentPeriodEnd).getTime() - Date.now()) / 86400_000);
+      if (daysLeft <= 3) {
+        return {
+          tone: 'warning',
+          title: daysLeft <= 0 ? 'Free Trial Ending Soon' : `Free Trial Ends in ${daysLeft} Day${daysLeft === 1 ? '' : 's'}`,
+          message: 'Select a paid subscription plan in Plan & Support to keep uninterrupted access.',
+        };
+      }
+    }
+    return null;
+  })();
+
+  const refreshSubscriptionForBusiness = useCallback(async (bizId: string) => {
+    if (!bizId || !isSupabaseConfigured || !isValidUuid(bizId)) {
+      const planRes = await subscriptionService.fetchPlans().catch(() => null);
+      if (planRes) {
+        setAvailablePlans(planRes.plans);
+        setBillingInstructions(planRes.billingInstructions);
+      }
+      return;
+    }
+    try {
+      const snap = await subscriptionService.fetchBusinessBilling(bizId);
+      setActiveSubscription(snap.subscription);
+      setAvailablePlans(snap.plans);
+      setBillingInstructions(snap.billingInstructions);
+      setSubscriptionUsage(snap.usage);
+    } catch {
+      // Keep non-blocking
+    }
+  }, []);
+
+  const refreshSubscription = useCallback(async () => {
+    await refreshSubscriptionForBusiness(activeBusinessId);
+  }, [activeBusinessId, refreshSubscriptionForBusiness]);
+
+  const checkPlanLimit = useCallback(
+    (resource: 'users' | 'branches' | 'products'): { allowed: boolean; message?: string } => {
+      if (isBusinessSuspendedOrExpired) {
+        return {
+          allowed: false,
+          message: 'This business workspace is currently suspended or expired (read-only). Please renew your subscription in Plan & Support.',
+        };
+      }
+      if (!activeSubscription) return { allowed: true };
+
+      if (resource === 'branches') {
+        const max = Number(activeSubscription.maxBranches || 0);
+        if (max > 0 && branches.length >= max) {
+          return {
+            allowed: false,
+            message: `Branch limit reached: your ${activeSubscription.plan?.name || activeSubscription.planCode} plan allows up to ${max} branch${max === 1 ? '' : 'es'}. Upgrade in Plan & Support to add more branches.`,
+          };
+        }
+      } else if (resource === 'products') {
+        const max = Number(activeSubscription.maxProducts || 0);
+        if (max > 0 && products.length >= max) {
+          return {
+            allowed: false,
+            message: `Product catalog limit reached (${max} products) on your ${activeSubscription.plan?.name || activeSubscription.planCode} plan. Upgrade in Plan & Support.`,
+          };
+        }
+      } else if (resource === 'users') {
+        const max = Number(activeSubscription.maxUsers || 0);
+        const currentStaff = Math.max(employees.filter(e => e.accountStatus === 'active').length + 1, subscriptionUsage.users);
+        if (max > 0 && currentStaff >= max) {
+          return {
+            allowed: false,
+            message: `Staff limit reached (${max} users) on your ${activeSubscription.plan?.name || activeSubscription.planCode} plan. Upgrade in Plan & Support to invite more staff.`,
+          };
+        }
+      }
+      return { allowed: true };
+    },
+    [activeSubscription, branches.length, employees, isBusinessSuspendedOrExpired, products.length, subscriptionUsage.users]
+  );
 
   const clearDbError = useCallback(() => setDbError(null), []);
   const clearAuthBlockedReason = useCallback(() => setAuthBlockedReason(null), []);
@@ -808,40 +972,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Helper: Initialize or link user's business
+  // Helper: Initialize or link user's business (supports Multi-Business + Platform Super Admin)
   const initializeUserBusiness = useCallback(
-    async (authUser: User, allowAuthRetry = true): Promise<void> => {
+    async (authUser: User, allowAuthRetry = true, preferredBizOverride?: string): Promise<void> => {
       try {
         setInitError(null);
 
-        // 0. Verify employee account status
-        const accessCheck = await staffRbacService.verifyEmployeeAccess(authUser.id);
-        if (!accessCheck.allowed) {
-          setAuthBlockedReason(
-            accessCheck.reason ||
-              'Your employee account is deactivated or suspended. Please contact the Store Owner.'
-          );
-          if (isSupabaseConfigured) {
-            await supabase.auth.signOut();
-          }
-          initializedUserIdRef.current = null;
-          setSession(null);
-          setUser(null);
-          setActiveBusinessId('');
-          setIsBusinessConfigured(false);
-          return;
-        }
+        // 0. Resolve Platform Admin identity + User Profile + Business Memberships in parallel
+        const [platformMe, profileRes, membershipsList] = await Promise.all([
+          platformAdminService.fetchMe().catch(() => ({ isPlatformAdmin: false, admin: null, serviceConfigured: false })),
+          supabase.from('user_profiles').select('*').eq('id', authUser.id).maybeSingle(),
+          subscriptionService.fetchMyBusinessMemberships(authUser.id).catch(() => [] as BusinessMembershipSummary[]),
+        ]);
 
-        setAuthBlockedReason(null);
-        setCurrentEmployee(accessCheck.employee || null);
+        setPlatformAdmin(platformMe.admin);
 
-        // 1. Ensure user profile exists
-        let { data: profile } = await supabase
-          .from('user_profiles')
-          .select('*')
-          .eq('id', authUser.id)
-          .maybeSingle();
-
+        let profile = profileRes?.data || null;
         if (!profile) {
           const { data: createdProfile, error: profileErr } = await supabase
             .from('user_profiles')
@@ -861,69 +1007,68 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         }
 
-        // 2. Check business membership
-        // Read membership independently from related tables. A joined select can
-        // return a null business relation when the businesses SELECT policy or
-        // relationship metadata differs, incorrectly sending an existing owner
-        // back to the first setup step.
-        const { data: memberships, error: memErr } = await supabase
-          .from('business_users')
-          .select('*')
-          .eq('user_id', authUser.id)
-          .order('created_at', { ascending: false });
+        const activeMemberships = membershipsList.filter(m => !m.membershipStatus || m.membershipStatus === 'active');
+        setUserBusinesses(activeMemberships);
 
-        if (memErr) throw memErr;
-
-        if (memberships && memberships.length > 0) {
-          const activeMemberships = memberships.filter((m: any) => !m.status || m.status === 'active');
-          if (activeMemberships.length === 0) {
-            const primaryBlocked = memberships[0];
-            setAuthBlockedReason(
-              `Your staff account is currently ${primaryBlocked.status}. Please contact the Store Owner.`
-            );
-            await supabase.auth.signOut();
-            initializedUserIdRef.current = null;
-            setSession(null);
-            setUser(null);
-            return;
+        // Determine preferred active business
+        const storedBizId = (() => {
+          try {
+            return localStorage.getItem(`AMAR_DOKAN_PRO_ACTIVE_BIZ_${authUser.id}`) || '';
+          } catch {
+            return '';
           }
+        })();
 
-          // Prefer an active membership that already has a configured business/branch
-          let primary = activeMemberships.find((m: any) => Boolean(m.branch_id)) || activeMemberships[0];
-          const membershipBizIds = Array.from(
-            new Set(activeMemberships.map((m: any) => m.business_id).filter(Boolean))
-          );
-
-          const { data: bizRows, error: bizErr } = await supabase
-            .from('businesses')
-            .select('id, name')
-            .in('id', membershipBizIds);
-          if (bizErr) throw bizErr;
-
-          const bizById = new Map<string, { id: string; name?: string }>(
-            (bizRows || []).map((b: any) => [b.id, b])
-          );
-
-          const configuredMembership = activeMemberships.find((m: any) => {
-            const b = bizById.get(m.business_id);
-            const normalized = String(b?.name || '').trim().toLowerCase();
-            return (
-              Boolean(normalized) &&
-              normalized !== 'my amar dokan' &&
-              normalized !== 'amar dokan'
-            );
+        let targetBizId = '';
+        if (preferredBizOverride && activeMemberships.some(m => m.businessId === preferredBizOverride)) {
+          targetBizId = preferredBizOverride;
+        } else if (storedBizId && activeMemberships.some(m => m.businessId === storedBizId)) {
+          targetBizId = storedBizId;
+        } else if (profile?.last_active_business_id && activeMemberships.some(m => m.businessId === profile.last_active_business_id)) {
+          targetBizId = profile.last_active_business_id;
+        } else if (activeMemberships.length > 0) {
+          const configuredMem = activeMemberships.find(m => {
+            const norm = String(m.businessName || '').trim().toLowerCase();
+            return Boolean(norm) && norm !== 'my amar dokan' && norm !== 'amar dokan';
           });
-          if (configuredMembership) {
-            primary = configuredMembership;
-          }
+          targetBizId = configuredMem?.businessId || activeMemberships[0].businessId;
+        }
 
-          const bizId = primary.business_id;
-          const biz = bizById.get(bizId);
-          const branchId = accessCheck.employee?.branchId || primary.branch_id || '';
+        // 1. Verify employee/staff account status against target business
+        const accessCheck = await staffRbacService.verifyEmployeeAccess(authUser.id, targetBizId || null);
+        if (!accessCheck.allowed && !platformMe.isPlatformAdmin) {
+          setAuthBlockedReason(
+            accessCheck.reason ||
+              'Your employee account is deactivated or suspended. Please contact the Store Owner.'
+          );
+          if (isSupabaseConfigured) {
+            await supabase.auth.signOut();
+          }
+          initializedUserIdRef.current = null;
+          setSession(null);
+          setUser(null);
+          setActiveBusinessId('');
+          setIsBusinessConfigured(false);
+          return;
+        }
+
+        if (!accessCheck.allowed && activeMemberships.length === 0 && !platformMe.isPlatformAdmin) {
+          setAuthBlockedReason(accessCheck.reason || 'Access suspended.');
+          await supabase.auth.signOut();
+          return;
+        }
+
+        setAuthBlockedReason(null);
+        setCurrentEmployee(accessCheck.employee || null);
+
+        if (activeMemberships.length > 0 && targetBizId) {
+          const primary = activeMemberships.find(m => m.businessId === targetBizId) || activeMemberships[0];
+          const bizId = primary.businessId;
+          const branchId = accessCheck.employee?.branchId || primary.branchId || '';
           const rawRoleKey = accessCheck.roleKey || normalizeRoleKey(primary.role);
           const role = roleKeyToLegacyUserRole(rawRoleKey);
 
-          const normalizedBusinessName = String(biz?.name || '').trim().toLowerCase();
+          const normalizedBusinessName = String(primary.businessName || '').trim().toLowerCase();
           const hasRealName = Boolean(
             normalizedBusinessName &&
             normalizedBusinessName !== 'my amar dokan' &&
@@ -942,6 +1087,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           const isConfigured = hasRealName || hasLinkedBranch;
 
+          try {
+            localStorage.setItem(`AMAR_DOKAN_PRO_ACTIVE_BIZ_${authUser.id}`, bizId);
+          } catch {}
+
           setActiveBusinessId(bizId);
           setAuthenticatedRoleKey(rawRoleKey);
           setCurrentUserRoleState(role);
@@ -949,7 +1098,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           if (isConfigured) {
             if (branchId) setActiveBranchId(branchId);
-            await loadBusinessData(bizId, branchId);
+            await Promise.all([
+              loadBusinessData(bizId, branchId),
+              refreshSubscriptionForBusiness(bizId),
+            ]);
             const empName =
               accessCheck.employee?.name ||
               profile?.full_name ||
@@ -979,7 +1131,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setAccounts([]);
             setProducts([]);
             setSales([]);
+            await refreshSubscriptionForBusiness('');
           }
+        } else if (membershipsList.length > 0 && activeMemberships.length === 0 && !platformMe.isPlatformAdmin) {
+          const primaryBlocked = membershipsList[0];
+          setAuthBlockedReason(
+            `Your staff account is currently ${primaryBlocked.membershipStatus}. Please contact the Store Owner.`
+          );
+          await supabase.auth.signOut();
+          initializedUserIdRef.current = null;
+          setSession(null);
+          setUser(null);
+          return;
         } else if (
           accessCheck.roleKey ||
           authUser.user_metadata?.role === 'seller' ||
@@ -991,19 +1154,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (accessCheck.businessId) {
             setActiveBusinessId(accessCheck.businessId);
             setIsBusinessConfigured(true);
-            await loadBusinessData(accessCheck.businessId, accessCheck.employee?.branchId);
+            await Promise.all([
+              loadBusinessData(accessCheck.businessId, accessCheck.employee?.branchId),
+              refreshSubscriptionForBusiness(accessCheck.businessId),
+            ]);
           } else {
             setActiveBusinessId('');
             setActiveBranchId('');
             setIsBusinessConfigured(false);
           }
+        } else if (platformMe.isPlatformAdmin) {
+          // Platform Super Admin without any tenant shop goes straight to Platform Console
+          setAuthenticatedRoleKey('super_admin');
+          setCurrentUserRoleState('owner');
+          setActiveBusinessId('');
+          setActiveBranchId('');
+          setIsBusinessConfigured(true);
+          setPlatformViewActive(true);
+          await refreshSubscriptionForBusiness('');
         } else {
-          // Fresh user: trigger Business Setup Wizard
+          // Fresh Business Owner: trigger Business Setup Wizard
           setAuthenticatedRoleKey('super_admin');
           setCurrentUserRoleState('owner');
           setActiveBusinessId('');
           setActiveBranchId('');
           setIsBusinessConfigured(false);
+          setPlatformViewActive(false);
           setBranches([]);
           setAccounts([]);
           setProducts([]);
@@ -1019,6 +1195,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setAccountTransactions([]);
           setStockMovements([]);
           setStockTransfers([]);
+          await refreshSubscriptionForBusiness('');
         }
       } catch (err: any) {
         if (allowAuthRetry && isAuthSessionError(err)) {
@@ -1027,7 +1204,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (refreshed?.user) {
               setSession(refreshed);
               setUser(refreshed.user);
-              await initializeUserBusiness(refreshed.user, false);
+              await initializeUserBusiness(refreshed.user, false, preferredBizOverride);
               return;
             }
           } catch {
@@ -1041,7 +1218,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsLoading(false);
       }
     },
-    [loadBusinessData]
+    [loadBusinessData, refreshSubscriptionForBusiness]
+  );
+
+  const switchBusiness = useCallback(
+    async (businessId: string): Promise<void> => {
+      if (!user || !isSupabaseConfigured || !isValidUuid(businessId)) return;
+      setPlatformViewActive(false);
+      setIsLoading(true);
+      try {
+        localStorage.setItem(`AMAR_DOKAN_PRO_ACTIVE_BIZ_${user.id}`, businessId);
+      } catch {}
+      try {
+        await supabase
+          .from('user_profiles')
+          .update({ last_active_business_id: businessId, updated_at: new Date().toISOString() })
+          .eq('id', user.id);
+      } catch {}
+      await initializeUserBusiness(user, true, businessId);
+    },
+    [user, initializeUserBusiness]
   );
 
   const retryInitialization = useCallback(async () => {
@@ -1144,6 +1340,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (isMounted) setIsLoading(false);
       } else if (event === 'SIGNED_OUT') {
         initializedUserIdRef.current = null;
+        setPlatformAdmin(null);
+        setPlatformViewActive(false);
+        setUserBusinesses([]);
+        setActiveSubscription(null);
+        setCreateNewBusinessModalOpen(false);
         setActiveBusinessId('');
         setActiveBranchId('');
         setProducts([]);
@@ -1380,6 +1581,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     setSession(null);
     setUser(null);
+    setPlatformAdmin(null);
+    setPlatformViewActive(false);
+    setUserBusinesses([]);
+    setActiveSubscription(null);
+    setCreateNewBusinessModalOpen(false);
     setCurrentEmployee(null);
     setAuthenticatedRoleKey('super_admin');
     setCurrentUserRoleState('owner');
@@ -1471,7 +1677,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const completeBusinessSetup = async (setupData: BusinessSetupData) => {
     setDbError(null);
     try {
-      let bizId = activeBusinessId;
+      let bizId = setupData.createNew ? '' : activeBusinessId;
       let mainBranchId = '';
       const now = new Date().toISOString();
 
@@ -1494,7 +1700,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             openingBalance: Number(a.openingBalance) || 0,
           }));
 
-        const { data: rpcSetupData, error: rpcSetupErr } = await supabase.rpc(
+        let { data: rpcSetupData, error: rpcSetupErr } = await supabase.rpc(
           'complete_first_time_business_setup',
           {
             p_business_id: sanitizeUuid(bizId),
@@ -1510,8 +1716,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             p_vat_tax_rate: setupData.vatTaxRate,
             p_vat_registration_no: setupData.vatRegistrationNo || null,
             p_initial_accounts: rpcPayloadAccounts,
+            p_create_new: Boolean(setupData.createNew),
+            p_plan_code: setupData.planCode || 'free_trial',
+            p_billing_cycle: setupData.billingCycle || 'trial',
           }
         );
+
+        // Graceful backward compatibility if legacy 13-arg RPC is still live in Supabase
+        if (rpcSetupErr && (rpcSetupErr.code === '42883' || rpcSetupErr.code === 'PGRST202')) {
+          const legacyRpc = await supabase.rpc('complete_first_time_business_setup', {
+            p_business_id: sanitizeUuid(bizId),
+            p_shop_name: setupData.shopName,
+            p_owner_name: setupData.ownerName,
+            p_business_type: setupData.businessType,
+            p_phone: setupData.phone,
+            p_email: setupData.email || user.email || null,
+            p_address: setupData.address,
+            p_branch_name: setupData.branchName,
+            p_currency: setupData.currency,
+            p_financial_year: setupData.financialYear,
+            p_vat_tax_rate: setupData.vatTaxRate,
+            p_vat_registration_no: setupData.vatRegistrationNo || null,
+            p_initial_accounts: rpcPayloadAccounts,
+          });
+          rpcSetupData = legacyRpc.data;
+          rpcSetupErr = legacyRpc.error;
+        }
 
         if (!rpcSetupErr && rpcSetupData?.business?.id && rpcSetupData?.branch?.id) {
           usedAtomicRpc = true;
@@ -1834,6 +2064,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setAuthenticatedRoleKey('super_admin');
       setInitError(null);
       setIsBusinessConfigured(true);
+      setCreateNewBusinessModalOpen(false);
+      setPlatformViewActive(false);
+
+      if (isSupabaseConfigured && user && isValidUuid(bizId)) {
+        try {
+          localStorage.setItem(`AMAR_DOKAN_PRO_ACTIVE_BIZ_${user.id}`, bizId);
+        } catch {}
+        subscriptionService
+          .fetchMyBusinessMemberships(user.id)
+          .then(list => setUserBusinesses(list.filter(m => !m.membershipStatus || m.membershipStatus === 'active')))
+          .catch(() => {});
+        refreshSubscriptionForBusiness(bizId).catch(() => {});
+      }
 
       localStorage.setItem(`${STORAGE_KEY}_IS_CONFIGURED`, 'true');
       localStorage.setItem(`${STORAGE_KEY}_CURRENT_BIZ_ID`, bizId);
@@ -1895,6 +2138,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Branches (Database-first)
   const addBranch = async (branchData: Omit<Branch, 'id'>): Promise<Branch> => {
     ensureCloudContext();
+    const limitCheck = checkPlanLimit('branches');
+    if (!limitCheck.allowed) {
+      throw raiseDbError(new Error(limitCheck.message), limitCheck.message || 'Plan limit reached.');
+    }
     let newBranch: Branch;
     if (activeBusinessId && isSupabaseConfigured) {
       newBranch = await branchService.insertBranch(branchData, activeBusinessId);
@@ -2007,6 +2254,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addProduct = async (
     productData: Omit<Product, 'id' | 'createdAt' | 'updatedAt'>
   ): Promise<Product> => {
+    const limitCheck = checkPlanLimit('products');
+    if (!limitCheck.allowed) {
+      throw raiseDbError(new Error(limitCheck.message), limitCheck.message || 'Product plan limit reached.');
+    }
     const now = new Date().toISOString();
     const cleanName = (productData.name || '').trim();
     let code = (productData.code || '').trim() || `PRD-${Date.now().toString().slice(-4)}`;
@@ -4288,6 +4539,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addEmployee = async (empData: Omit<Employee, 'id'> & { password?: string }): Promise<void> => {
     if (isSupabaseConfigured) {
       ensureCloudContext();
+      const limitCheck = checkPlanLimit('users');
+      if (!limitCheck.allowed) {
+        throw new Error(limitCheck.message || 'Staff user limit reached for your current plan.');
+      }
       if (!enforcePermission('user_management', 'create', 'Add Employee')) {
         throw new Error('Permission denied: Only authorized Admins can create employee accounts.');
       }
@@ -4411,6 +4666,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     branchName?: string;
     status: 'active' | 'inactive';
   }): Promise<Seller> => {
+    const limitCheck = checkPlanLimit('users');
+    if (!limitCheck.allowed) {
+      throw new Error(limitCheck.message || 'Staff user limit reached for your current plan.');
+    }
     const created = await sellerService.createSeller(sellerData, activeBusinessId);
     setSellers(prev => [created, ...prev.filter(s => s.id !== created.id)]);
     addAuditLog('SELLER_CREATED', 'seller', created.id, `Seller account created: ${created.fullName} (${created.username})`);
@@ -4459,6 +4718,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [activeBusinessId]);
 
   const createStaffAccount = async (payload: CreateEmployeePayload): Promise<Employee> => {
+    const limitCheck = checkPlanLimit('users');
+    if (!limitCheck.allowed) {
+      throw new Error(limitCheck.message || 'Staff user limit reached for your current plan.');
+    }
     if (!enforcePermission('user_management', 'create', 'Create Employee Account')) {
       throw new Error('Permission denied: Only authorized Admins can create staff accounts.');
     }
@@ -5331,6 +5594,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         toggleOfferStatus,
         archiveComboOffer,
         reloadComboOffers,
+        platformAdmin,
+        isPlatformAdmin,
+        platformViewActive,
+        setPlatformViewActive,
+        userBusinesses,
+        activeMembership,
+        switchBusiness,
+        createNewBusinessModalOpen,
+        setCreateNewBusinessModalOpen,
+        activeSubscription,
+        availablePlans,
+        billingInstructions,
+        subscriptionUsage,
+        refreshSubscription,
+        isBusinessSuspendedOrExpired,
+        businessStatusBanner,
+        checkPlanLimit,
       }}
     >
       {children}

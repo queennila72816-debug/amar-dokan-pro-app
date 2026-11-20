@@ -242,8 +242,31 @@ export const MODULE_THEMES: Record<string, ModuleThemeConfig> = {
     headerAccentText: 'text-[#087F8C]',
     pillBg: 'bg-teal-500/15 text-[#087F8C] dark:text-teal-300',
   },
+  billing: {
+    id: 'billing',
+    label: 'Plan & Support',
+    hex: '#D6AD60',
+    sidebarActiveBg: 'bg-gradient-to-r from-[#D6AD60]/25 to-[#D6AD60]/5 text-white',
+    sidebarActiveBorder: 'border-[#D6AD60]/55',
+    sidebarIconColor: 'text-[#D6AD60]',
+    sidebarBadgeBg: 'bg-[#D6AD60] text-[#0B1428]',
+    headerAccentText: 'text-[#D6AD60]',
+    pillBg: 'bg-[#D6AD60]/20 text-[#9A7428] dark:text-[#D6AD60]',
+  },
+  'platform-console': {
+    id: 'platform-console',
+    label: 'Platform Super Admin',
+    hex: '#D6AD60',
+    sidebarActiveBg: 'bg-gradient-to-r from-[#D6AD60]/25 to-[#101B35]/30 text-white',
+    sidebarActiveBorder: 'border-[#D6AD60]/60',
+    sidebarIconColor: 'text-[#D6AD60]',
+    sidebarBadgeBg: 'bg-[#D6AD60] text-[#0B1428]',
+    headerAccentText: 'text-[#D6AD60]',
+    pillBg: 'bg-[#D6AD60]/20 text-[#9A7428] dark:text-[#D6AD60]',
+  },
 };
 
 export function getModuleTheme(tabId: string): ModuleThemeConfig {
   return MODULE_THEMES[tabId] || MODULE_THEMES.dashboard;
 }
+

@@ -627,6 +627,9 @@ export interface BusinessSetupData {
   financialYear: string;
   vatTaxRate: number;
   vatRegistrationNo?: string;
+  createNew?: boolean;
+  planCode?: string;
+  billingCycle?: 'trial' | 'monthly' | 'yearly';
   initialAccounts?: {
     name: string;
     accountType: 'cash' | 'bank' | 'mobile_bank';
@@ -863,3 +866,178 @@ export interface ComboOfferUsage {
   date: string;
   branchId: string;
 }
+
+// ================================================
+// MULTI-TENANT SAAS & PLATFORM SUPER ADMIN TYPES
+// ================================================
+
+export type PlatformRole = 'SUPER_ADMIN' | 'SUPPORT_ADMIN' | 'BILLING_ADMIN' | 'PLATFORM_VIEWER';
+
+export type BusinessRoleLevel = 'OWNER' | 'ADMIN' | 'MANAGER' | 'ACCOUNTANT' | 'SALESMAN' | 'CUSTOM_ROLE';
+
+export interface PlatformAdmin {
+  id: string;
+  userId: string;
+  email: string;
+  fullName?: string;
+  role: PlatformRole;
+  isActive: boolean;
+  assignedBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface SubscriptionPlanFeatures {
+  pos?: boolean;
+  inventory?: boolean;
+  multiBranch?: boolean;
+  reports?: boolean;
+  apparelCatalog?: boolean;
+  barcodePrinting?: boolean;
+  comboOffers?: boolean;
+  apiAccess?: boolean;
+  prioritySupport?: boolean;
+  [key: string]: boolean | undefined;
+}
+
+export interface SubscriptionPlan {
+  id: string;
+  code: string;
+  name: string;
+  description: string;
+  priceMonthly: number;
+  priceYearly: number;
+  currency: string;
+  trialDays: number;
+  gracePeriodDays: number;
+  maxUsers: number; // 0 = unlimited
+  maxBranches: number; // 0 = unlimited
+  maxProducts: number; // 0 = unlimited
+  features: SubscriptionPlanFeatures;
+  isActive: boolean;
+  sortOrder: number;
+}
+
+export type SubscriptionStatus =
+  | 'trialing'
+  | 'active'
+  | 'past_due'
+  | 'grace_period'
+  | 'suspended'
+  | 'expired'
+  | 'cancelled';
+
+export interface BusinessSubscription {
+  id: string;
+  businessId: string;
+  planId?: string;
+  planCode: string;
+  billingCycle: 'trial' | 'monthly' | 'yearly' | 'lifetime';
+  status: SubscriptionStatus;
+  trialEndsAt?: string;
+  currentPeriodStart?: string;
+  currentPeriodEnd?: string;
+  gracePeriodEndsAt?: string;
+  maxUsers: number;
+  maxBranches: number;
+  maxProducts: number;
+  notes?: string;
+  plan?: SubscriptionPlan | null;
+  business?: {
+    id: string;
+    name: string;
+    phone?: string;
+    email?: string;
+    status?: string;
+    isActive?: boolean;
+  } | null;
+}
+
+export interface PlatformPayment {
+  id: string;
+  businessId: string;
+  businessName?: string;
+  subscriptionId?: string;
+  planId?: string;
+  planName?: string;
+  invoiceNumber: string;
+  amount: number;
+  currency: string;
+  billingCycle: 'monthly' | 'yearly' | 'lifetime' | 'custom';
+  paymentMethod: string;
+  gatewayProvider: string;
+  transactionId?: string;
+  senderNumber?: string;
+  status: 'pending' | 'verified' | 'rejected' | 'refunded';
+  adminNote?: string;
+  submittedBy?: string;
+  verifiedBy?: string;
+  verifiedAt?: string;
+  createdAt: string;
+}
+
+export interface SupportTicket {
+  id: string;
+  businessId: string;
+  businessName?: string;
+  createdBy?: string;
+  createdByEmail?: string;
+  subject: string;
+  message: string;
+  category: 'billing' | 'technical' | 'account' | 'feature_request' | 'general';
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  status: 'open' | 'in_progress' | 'resolved' | 'closed';
+  adminResponse?: string;
+  resolvedBy?: string;
+  resolvedAt?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface PlatformAuditLog {
+  id: string;
+  actorUserId?: string;
+  actorEmail?: string;
+  actorRole?: string;
+  action: string;
+  targetType?: string;
+  targetId?: string;
+  targetBusinessId?: string;
+  details: string;
+  metadata?: Record<string, any>;
+  createdAt: string;
+}
+
+export interface PlatformGeneralSettings {
+  platformName: string;
+  supportEmail: string;
+  supportPhone: string;
+  defaultCurrency: string;
+  allowPublicSignup: boolean;
+  requireMobileOtp: boolean;
+}
+
+export interface PlatformBillingSettings {
+  bkashNumber: string;
+  nagadNumber: string;
+  rocketNumber: string;
+  bankDetails: string;
+  note: string;
+}
+
+export interface BusinessMembershipSummary {
+  businessId: string;
+  businessName: string;
+  businessType: BusinessType;
+  businessStatus: string;
+  isActive: boolean;
+  branchId?: string;
+  role: string;
+  roleLevel: BusinessRoleLevel;
+  membershipStatus: string;
+  planCode?: string;
+  planName?: string;
+  subscriptionStatus?: SubscriptionStatus;
+  currentPeriodEnd?: string;
+}
+

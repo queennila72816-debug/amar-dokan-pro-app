@@ -1282,9 +1282,13 @@ export const staffRbacService = {
 
   /**
    * Verifies whether the authenticated user's employee account is active.
-   * Blocks inactive, suspended, or blocked employees from accessing the system.
+   * Accepts an optional target businessId for multi-business Owners/Staff.
+   * Blocks inactive, suspended, or blocked employees from accessing that business.
    */
-  async verifyEmployeeAccess(userId: string): Promise<{
+  async verifyEmployeeAccess(
+    userId: string,
+    targetBusinessId?: string | null
+  ): Promise<{
     allowed: boolean;
     accountStatus: AccountStatus;
     reason?: string;
@@ -1297,9 +1301,21 @@ export const staffRbacService = {
       return { allowed: true, accountStatus: 'active' };
     }
 
+    const cleanTargetBizId = sanitizeUuid(targetBusinessId);
+
     try {
-      // Try backend SECURITY DEFINER RPC first
-      const { data: rpcCtx, error: rpcErr } = await supabase.rpc('get_my_rbac_context');
+      // Try backend SECURITY DEFINER RPC first (pass p_business_id when provided)
+      let { data: rpcCtx, error: rpcErr } = await supabase.rpc('get_my_rbac_context', {
+        p_business_id: cleanTargetBizId,
+      });
+
+      // Graceful backward-compatibility if legacy 0-arg get_my_rbac_context is deployed
+      if (rpcErr && (rpcErr.code === '42883' || rpcErr.code === 'PGRST202')) {
+        const legacyRes = await supabase.rpc('get_my_rbac_context');
+        rpcCtx = legacyRes.data;
+        rpcErr = legacyRes.error;
+      }
+
       if (!rpcErr && rpcCtx && rpcCtx.authenticated) {
         if (rpcCtx.allowed === false) {
           return {
@@ -1354,11 +1370,11 @@ export const staffRbacService = {
       }
 
       // Direct table fallback if RPC isn't deployed yet
-      const { data: emp } = await supabase
-        .from('employees')
-        .select('*')
-        .eq('user_id', userId)
-        .maybeSingle();
+      let empQuery = supabase.from('employees').select('*').eq('user_id', userId);
+      if (cleanTargetBizId) {
+        empQuery = empQuery.eq('business_id', cleanTargetBizId);
+      }
+      const { data: emp } = await empQuery.order('created_at', { ascending: false }).limit(1).maybeSingle();
 
       if (emp) {
         const st = (emp.account_status || emp.status || 'active') as AccountStatus;

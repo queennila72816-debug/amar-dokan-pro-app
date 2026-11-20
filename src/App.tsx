@@ -26,6 +26,8 @@ import { ExchangeReturnView } from './components/returns/ExchangeReturnView';
 import { SmartReorderView } from './components/inventory/SmartReorderView';
 import { ComboOffersView } from './components/combos/ComboOffersView';
 import { UserStaffManagementView } from './components/users/UserStaffManagementView';
+import { SuperAdminDashboardView } from './components/platform/SuperAdminDashboardView';
+import { BillingSubscriptionView } from './components/billing/BillingSubscriptionView';
 import { AuthModal } from './components/auth/AuthModal';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { APP_IDENTITY } from './config/appIdentity';
@@ -54,10 +56,30 @@ const TAB_TO_MODULE_MAP: Record<string, LegacyAppModule> = {
   barcodes: 'barcodes',
   reorder: 'reorder',
   combos: 'combos',
+  billing: 'billing',
 };
 
 const MainLayout: React.FC = () => {
-  const { canAccess, currentUserRole, user, isLoading, isBusinessConfigured, isAuthenticatedAdmin, signOut, dbError, clearDbError, initError, retryInitialization, setPendingPosSelection, setPendingCatalogProductId } = useApp();
+  const {
+    canAccess,
+    currentUserRole,
+    user,
+    isLoading,
+    isBusinessConfigured,
+    isAuthenticatedAdmin,
+    signOut,
+    dbError,
+    clearDbError,
+    initError,
+    retryInitialization,
+    setPendingPosSelection,
+    setPendingCatalogProductId,
+    isPlatformAdmin,
+    platformViewActive,
+    businessStatusBanner,
+    createNewBusinessModalOpen,
+    setCreateNewBusinessModalOpen,
+  } = useApp();
 
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
@@ -121,6 +143,7 @@ const MainLayout: React.FC = () => {
 
   // Validate active tab with current user RBAC permissions & safely redirect if unauthorized
   useEffect(() => {
+    if (platformViewActive) return;
     const targetModule = TAB_TO_MODULE_MAP[activeTab] || 'dashboard';
     if (!canAccess(targetModule)) {
       const preferredOrder = isSalesmanOrCashierRole(currentUserRole)
@@ -131,7 +154,7 @@ const MainLayout: React.FC = () => {
         setActiveTab(fallbackTab);
       }
     }
-  }, [currentUserRole, activeTab, canAccess]);
+  }, [currentUserRole, activeTab, canAccess, platformViewActive]);
 
   // Loading screen while the session and initial data are loading.
   if (isLoading && !isRecovery) {
@@ -208,6 +231,20 @@ const MainLayout: React.FC = () => {
           </button>
         </div>
       </div>
+    );
+  }
+
+  // Create additional business flow triggered from Header, Billing, or Platform Console
+  if (createNewBusinessModalOpen && (isAuthenticatedAdmin || isPlatformAdmin)) {
+    return (
+      <BusinessSetupWizard
+        mode="additional"
+        onCompleted={() => {
+          setCreateNewBusinessModalOpen(false);
+          setActiveTab('dashboard');
+        }}
+        onCancel={() => setCreateNewBusinessModalOpen(false)}
+      />
     );
   }
 
@@ -375,6 +412,9 @@ const MainLayout: React.FC = () => {
       case 'combos':
         return <ComboOffersView />;
 
+      case 'billing':
+        return <BillingSubscriptionView />;
+
       default:
         if (isSalesmanOrCashierRole(currentUserRole)) {
           return <SellerDashboardView onOpenPOS={() => handleTabChange('pos')} />;
@@ -412,44 +452,80 @@ const MainLayout: React.FC = () => {
         onNavigateTab={handleTabChange}
         activeTab={activeTab}
         isSidebarOpen={isSidebarOpen}
-        onToggleSidebar={() => setIsSidebarOpen(prev => !prev)}
+        onToggleSidebar={platformViewActive && isPlatformAdmin ? undefined : () => setIsSidebarOpen(prev => !prev)}
       />
 
-      <div className="flex-1 flex min-h-0 overflow-hidden">
-        {/* Sidebar */}
-        <Sidebar
-          activeTab={activeTab}
-          setActiveTab={handleTabChange}
-          isOpen={isSidebarOpen}
-          setIsOpen={setIsSidebarOpen}
-        />
-
-        {/* Main Content Viewport */}
+      {platformViewActive && isPlatformAdmin ? (
         <main
           ref={mainScrollRef}
           className="flex-1 min-w-0 min-h-0 overflow-y-auto overflow-x-auto overscroll-contain p-3 sm:p-5 md:p-6"
         >
           <div className="max-w-[1600px] mx-auto w-full">
-            {dbError && (
-              <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs text-rose-800 shadow-xs">
-                <div className="flex items-center gap-2 min-w-0">
-                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
-                  <span className="font-medium truncate">{dbError}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={clearDbError}
-                  aria-label="Dismiss database error"
-                  className="p-1 rounded-md text-rose-600 hover:bg-rose-100 transition-colors cursor-pointer shrink-0"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            )}
-            {renderContent()}
+            <SuperAdminDashboardView />
           </div>
         </main>
-      </div>
+      ) : (
+        <div className="flex-1 flex min-h-0 overflow-hidden">
+          {/* Sidebar */}
+          <Sidebar
+            activeTab={activeTab}
+            setActiveTab={handleTabChange}
+            isOpen={isSidebarOpen}
+            setIsOpen={setIsSidebarOpen}
+          />
+
+          {/* Main Content Viewport */}
+          <main
+            ref={mainScrollRef}
+            className="flex-1 min-w-0 min-h-0 overflow-y-auto overflow-x-auto overscroll-contain p-3 sm:p-5 md:p-6"
+          >
+            <div className="max-w-[1600px] mx-auto w-full">
+              {businessStatusBanner && (
+                <div
+                  className={`mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3 text-xs ${
+                    businessStatusBanner.tone === 'danger'
+                      ? 'border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-200'
+                      : 'border-amber-500/40 bg-amber-500/10 text-amber-800 dark:text-amber-200'
+                  }`}
+                >
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                    <div className="min-w-0">
+                      <p className="font-bold">{businessStatusBanner.title}</p>
+                      <p className="opacity-90 mt-0.5">{businessStatusBanner.message}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleTabChange('billing')}
+                    className="px-3 py-1.5 rounded-lg bg-[#101B35] text-[#D6AD60] border border-[#D6AD60]/40 text-xs font-semibold hover:brightness-110 transition-all cursor-pointer shrink-0"
+                  >
+                    Manage Plan &rarr;
+                  </button>
+                </div>
+              )}
+
+              {dbError && (
+                <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-xs text-rose-800 shadow-xs">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+                    <span className="font-medium truncate">{dbError}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={clearDbError}
+                    aria-label="Dismiss database error"
+                    className="p-1 rounded-md text-rose-600 hover:bg-rose-100 transition-colors cursor-pointer shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+              {renderContent()}
+            </div>
+          </main>
+        </div>
+      )}
     </div>
   );
 };

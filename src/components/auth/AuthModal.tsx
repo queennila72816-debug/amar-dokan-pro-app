@@ -220,6 +220,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
           {mode === 'register' && (
             <>
+              <div className="p-2.5 rounded-[10px] bg-[#087F8C]/10 border border-[#087F8C]/25 text-[11px] text-[#087F8C] dark:text-[#5EEAD4]">
+                Every registered owner gets an isolated multi-branch shop workspace with a 14-day Free Trial. Staff accounts are created internally by your Shop Owner.
+              </div>
               <div>
                 <label className="block text-xs font-semibold text-[#172033] dark:text-slate-200 mb-1">Full Name *</label>
                 <div className="relative">
