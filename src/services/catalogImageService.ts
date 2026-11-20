@@ -1,4 +1,15 @@
-import { supabase, isSupabaseConfigured, isValidUuid } from '../lib/supabase';
+import { Session } from '@supabase/supabase-js';
+import {
+  supabase,
+  supabaseUrl,
+  supabaseAnonKey,
+  isSupabaseConfigured,
+  isValidUuid,
+  ensureValidSession,
+  getFreshAccessToken,
+  isAuthSessionError,
+  notifySessionExpired,
+} from '../lib/supabase';
 import { ProductColor, ProductColorImage } from '../types';
 import { inferColorHex, normalizeColorKey, sortColorImages } from '../utils/productImageResolver';
 
@@ -104,15 +115,6 @@ export function mapDbProductImage(row: any): ProductColorImage {
   };
 }
 
-function getSupabaseRestConfig(): { url: string; anonKey: string } {
-  const url = String(import.meta.env.VITE_SUPABASE_URL || '')
-    .trim()
-    .replace(/\/rest\/v1\/?$/, '')
-    .replace(/\/+$/, '');
-  const anonKey = String(import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
-  return { url, anonKey };
-}
-
 function isMissingSchemaTableError(err: any): boolean {
   const code = String(err?.code || '');
   const msg = String(err?.message || '').toLowerCase();
@@ -122,6 +124,54 @@ function isMissingSchemaTableError(err: any): boolean {
     msg.includes('could not find the table') ||
     (msg.includes('relation') && msg.includes('does not exist'))
   );
+}
+
+function isStorageResponseAuthError(status: number, responseText: string): boolean {
+  if (status === 401) return true;
+  const lower = (responseText || '').toLowerCase();
+  return (
+    (status === 400 || status === 403) &&
+    (lower.includes('jwt expired') ||
+      lower.includes('invalid jwt') ||
+      lower.includes('invalid or expired authentication session') ||
+      lower.includes('token is expired') ||
+      lower.includes('signature'))
+  );
+}
+
+/**
+ * Ensures an active, non-expired session before executing a Supabase DB/RPC operation
+ * and automatically refreshes + retries ONCE if the database rejects a stale JWT.
+ */
+async function runWithSessionRetry<T>(fn: (session: Session) => Promise<T>): Promise<T> {
+  const session = await ensureValidSession();
+  if (!session) {
+    notifySessionExpired('Your login session has expired. Please sign in again to continue.');
+    throw new Error('Your login session has expired. Please sign in again to continue.');
+  }
+
+  try {
+    return await fn(session);
+  } catch (err) {
+    if (!isAuthSessionError(err)) {
+      throw err;
+    }
+
+    const refreshed = await ensureValidSession({ forceRefresh: true });
+    if (!refreshed) {
+      throw new Error('Your login session has expired. Please sign in again to continue.');
+    }
+
+    try {
+      return await fn(refreshed);
+    } catch (retryErr) {
+      if (isAuthSessionError(retryErr)) {
+        notifySessionExpired('Your login session has expired. Please sign in again to continue.');
+        throw new Error('Your login session has expired. Please sign in again to continue.');
+      }
+      throw retryErr;
+    }
+  }
 }
 
 function xhrUpload(
@@ -168,23 +218,15 @@ async function uploadFileToStorage(params: {
   onProgress?: (pct: number) => void;
 }): Promise<{ publicUrl: string; storagePath: string }> {
   const { businessId, storagePath, file, mimeType, onProgress } = params;
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+  let accessToken = await getFreshAccessToken();
 
-  const accessToken = session?.access_token;
-  if (!accessToken) {
-    throw new Error('Your session has expired. Please log in again before uploading images.');
-  }
-
-  const { url: supabaseUrl, anonKey } = getSupabaseRestConfig();
   const encodedPath = storagePath
     .split('/')
     .map(seg => encodeURIComponent(seg))
     .join('/');
 
-  const tryDirectStorageXhr = async () => {
-    if (!supabaseUrl || !anonKey) {
+  const tryDirectStorageXhr = async (token: string) => {
+    if (!supabaseUrl || !supabaseAnonKey) {
       throw new Error('Supabase configuration is incomplete.');
     }
     const endpoint = `${supabaseUrl}/storage/v1/object/${PRODUCT_IMAGES_BUCKET}/${encodedPath}`;
@@ -192,8 +234,8 @@ async function uploadFileToStorage(params: {
       endpoint,
       file,
       {
-        Authorization: `Bearer ${accessToken}`,
-        apikey: anonKey,
+        Authorization: `Bearer ${token}`,
+        apikey: supabaseAnonKey,
         'Content-Type': mimeType,
         'x-upsert': 'true',
         'cache-control': '3600',
@@ -203,7 +245,12 @@ async function uploadFileToStorage(params: {
     );
   };
 
-  let res = await tryDirectStorageXhr();
+  let res = await tryDirectStorageXhr(accessToken);
+
+  if (isStorageResponseAuthError(res.status, res.responseText)) {
+    accessToken = await getFreshAccessToken({ forceRefresh: true });
+    res = await tryDirectStorageXhr(accessToken);
+  }
 
   if (res.status >= 200 && res.status < 300) {
     const { data: pub } = supabase.storage.from(PRODUCT_IMAGES_BUCKET).getPublicUrl(storagePath);
@@ -213,7 +260,7 @@ async function uploadFileToStorage(params: {
   // Attempt automatic bucket provisioning + server-assisted storage upload if direct RLS/bucket failed
   let ensureAttempted = false;
   try {
-    const ensureResp = await fetch('/api/catalog/ensure-bucket', {
+    let ensureResp = await fetch('/api/catalog/ensure-bucket', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -221,9 +268,22 @@ async function uploadFileToStorage(params: {
       },
       body: JSON.stringify({ businessId }),
     });
+
+    if (ensureResp.status === 401) {
+      accessToken = await getFreshAccessToken({ forceRefresh: true });
+      ensureResp = await fetch('/api/catalog/ensure-bucket', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ businessId }),
+      });
+    }
+
     if (ensureResp.ok) {
       ensureAttempted = true;
-      res = await tryDirectStorageXhr();
+      res = await tryDirectStorageXhr(accessToken);
       if (res.status >= 200 && res.status < 300) {
         const { data: pub } = supabase.storage.from(PRODUCT_IMAGES_BUCKET).getPublicUrl(storagePath);
         return { publicUrl: pub.publicUrl, storagePath };
@@ -234,12 +294,12 @@ async function uploadFileToStorage(params: {
   }
 
   // Fallback through Express storage upload route (still stores only in Supabase Storage, never DB)
-  try {
-    const fallbackRes = await xhrUpload(
+  const tryServerFallbackUpload = async (token: string) =>
+    xhrUpload(
       '/api/catalog/upload-image',
       file,
       {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': mimeType,
         'x-business-id': businessId,
         'x-storage-path': storagePath,
@@ -249,6 +309,13 @@ async function uploadFileToStorage(params: {
       'POST'
     );
 
+  try {
+    let fallbackRes = await tryServerFallbackUpload(accessToken);
+    if (fallbackRes.status === 401) {
+      accessToken = await getFreshAccessToken({ forceRefresh: true });
+      fallbackRes = await tryServerFallbackUpload(accessToken);
+    }
+
     if (fallbackRes.status >= 200 && fallbackRes.status < 300) {
       const parsed = JSON.parse(fallbackRes.responseText || '{}');
       if (parsed.publicUrl) {
@@ -257,6 +324,9 @@ async function uploadFileToStorage(params: {
           storagePath: parsed.storagePath || storagePath,
         };
       }
+    } else if (fallbackRes.status === 401) {
+      notifySessionExpired('Your login session has expired. Please sign in again to continue.');
+      throw new Error('Your login session has expired. Please sign in again to continue.');
     } else if (fallbackRes.responseText) {
       try {
         const parsedErr = JSON.parse(fallbackRes.responseText);
@@ -298,6 +368,7 @@ async function uploadFileToStorage(params: {
 async function removeStorageObjectSafely(businessId: string, storagePath?: string | null) {
   if (!storagePath) return;
   try {
+    await ensureValidSession();
     const { error } = await supabase.storage.from(PRODUCT_IMAGES_BUCKET).remove([storagePath]);
     if (!error) return;
   } catch {
@@ -305,18 +376,26 @@ async function removeStorageObjectSafely(businessId: string, storagePath?: strin
   }
 
   try {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    if (!session?.access_token) return;
-    await fetch('/api/catalog/delete-storage-object', {
+    let token = await getFreshAccessToken();
+    const delResp = await fetch('/api/catalog/delete-storage-object', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({ businessId, storagePath }),
     });
+    if (delResp.status === 401) {
+      token = await getFreshAccessToken({ forceRefresh: true });
+      await fetch('/api/catalog/delete-storage-object', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ businessId, storagePath }),
+      });
+    }
   } catch {
     // Non-blocking storage cleanup
   }
@@ -332,37 +411,39 @@ export const catalogImageService = {
       return { colors: [], images: [], schemaReady: true };
     }
 
-    const [colorsRes, imagesRes] = await Promise.all([
-      supabase
-        .from('product_colors')
-        .select('*')
-        .eq('business_id', businessId)
-        .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: true }),
-      supabase
-        .from('product_images')
-        .select('*')
-        .eq('business_id', businessId)
-        .order('is_primary', { ascending: false })
-        .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: true }),
-    ]);
+    return runWithSessionRetry(async () => {
+      const [colorsRes, imagesRes] = await Promise.all([
+        supabase
+          .from('product_colors')
+          .select('*')
+          .eq('business_id', businessId)
+          .order('sort_order', { ascending: true })
+          .order('created_at', { ascending: true }),
+        supabase
+          .from('product_images')
+          .select('*')
+          .eq('business_id', businessId)
+          .order('is_primary', { ascending: false })
+          .order('sort_order', { ascending: true })
+          .order('created_at', { ascending: true }),
+      ]);
 
-    if (colorsRes.error && isMissingSchemaTableError(colorsRes.error)) {
-      return { colors: [], images: [], schemaReady: false };
-    }
-    if (imagesRes.error && isMissingSchemaTableError(imagesRes.error)) {
-      return { colors: [], images: [], schemaReady: false };
-    }
+      if (colorsRes.error && isMissingSchemaTableError(colorsRes.error)) {
+        return { colors: [], images: [], schemaReady: false };
+      }
+      if (imagesRes.error && isMissingSchemaTableError(imagesRes.error)) {
+        return { colors: [], images: [], schemaReady: false };
+      }
 
-    if (colorsRes.error) throw colorsRes.error;
-    if (imagesRes.error) throw imagesRes.error;
+      if (colorsRes.error) throw colorsRes.error;
+      if (imagesRes.error) throw imagesRes.error;
 
-    return {
-      colors: (colorsRes.data || []).map(mapDbProductColor),
-      images: sortColorImages((imagesRes.data || []).map(mapDbProductImage)),
-      schemaReady: true,
-    };
+      return {
+        colors: (colorsRes.data || []).map(mapDbProductColor),
+        images: sortColorImages((imagesRes.data || []).map(mapDbProductImage)),
+        schemaReady: true,
+      };
+    });
   },
 
   async ensureProductColor(params: {
@@ -380,33 +461,34 @@ export const catalogImageService = {
 
     const resolvedHex = inferColorHex(cleanName, colorHex);
 
-    const { data: existing, error: findErr } = await supabase
-      .from('product_colors')
-      .select('*')
-      .eq('product_id', productId)
-      .eq('normalized_name', norm)
-      .maybeSingle();
-
-    if (findErr) {
-      if (isMissingSchemaTableError(findErr)) {
-        throw new Error(
-          'Catalog database tables not found. Please apply migration 20261123_apparel_photo_catalog_colors_and_images.sql in Supabase first.'
-        );
-      }
-      throw findErr;
-    }
-
-    if (existing) {
-      // Link any unlinked matching variants cleanly
-      await supabase
-        .from('product_variants')
-        .update({ color_id: existing.id })
+    return runWithSessionRetry(async () => {
+      const { data: existing, error: findErr } = await supabase
+        .from('product_colors')
+        .select('*')
         .eq('product_id', productId)
-        .is('color_id', null)
-        .ilike('color', cleanName);
+        .eq('normalized_name', norm)
+        .maybeSingle();
 
-      return mapDbProductColor(existing);
-    }
+      if (findErr) {
+        if (isMissingSchemaTableError(findErr)) {
+          throw new Error(
+            'Catalog database tables not found. Please apply migration 20261123_apparel_photo_catalog_colors_and_images.sql in Supabase first.'
+          );
+        }
+        throw findErr;
+      }
+
+      if (existing) {
+        // Link any unlinked matching variants cleanly
+        await supabase
+          .from('product_variants')
+          .update({ color_id: existing.id })
+          .eq('product_id', productId)
+          .is('color_id', null)
+          .ilike('color', cleanName);
+
+        return mapDbProductColor(existing);
+      }
 
     const { count } = await supabase
       .from('product_colors')
@@ -442,13 +524,14 @@ export const catalogImageService = {
     }
 
     // Link existing variants matching this color name
-    await supabase
-      .from('product_variants')
-      .update({ color_id: inserted.id, color_hex: resolvedHex })
-      .eq('product_id', productId)
-      .ilike('color', cleanName);
+      await supabase
+        .from('product_variants')
+        .update({ color_id: inserted.id, color_hex: resolvedHex })
+        .eq('product_id', productId)
+        .ilike('color', cleanName);
 
-    return mapDbProductColor(inserted);
+      return mapDbProductColor(inserted);
+    });
   },
 
   async updateProductColor(params: {
@@ -467,39 +550,41 @@ export const catalogImageService = {
 
     const resolvedHex = inferColorHex(cleanName, colorHex);
 
-    const { data, error } = await supabase
-      .from('product_colors')
-      .update({
-        color_name: cleanName,
-        normalized_name: norm,
-        color_hex: resolvedHex,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', colorId)
-      .eq('business_id', businessId)
-      .eq('product_id', productId)
-      .select('*')
-      .single();
+    return runWithSessionRetry(async () => {
+      const { data, error } = await supabase
+        .from('product_colors')
+        .update({
+          color_name: cleanName,
+          normalized_name: norm,
+          color_hex: resolvedHex,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', colorId)
+        .eq('business_id', businessId)
+        .eq('product_id', productId)
+        .select('*')
+        .single();
 
-    if (error) {
-      if (error.code === '23505') {
-        throw new Error(`Color "${cleanName}" already exists for this product.`);
+      if (error) {
+        if (error.code === '23505') {
+          throw new Error(`Color "${cleanName}" already exists for this product.`);
+        }
+        throw error;
       }
-      throw error;
-    }
 
-    // Synchronize variant labels while keeping the permanent color_id intact
-    await supabase
-      .from('product_variants')
-      .update({
-        color: cleanName,
-        color_hex: resolvedHex,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('product_id', productId)
-      .eq('color_id', colorId);
+      // Synchronize variant labels while keeping the permanent color_id intact
+      await supabase
+        .from('product_variants')
+        .update({
+          color: cleanName,
+          color_hex: resolvedHex,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('product_id', productId)
+        .eq('color_id', colorId);
 
-    return mapDbProductColor(data);
+      return mapDbProductColor(data);
+    });
   },
 
   async deleteProductColor(params: {
@@ -508,23 +593,25 @@ export const catalogImageService = {
     colorId: string;
   }): Promise<void> {
     const { businessId, productId, colorId } = params;
-    const { data: imgs } = await supabase
-      .from('product_images')
-      .select('storage_path')
-      .eq('business_id', businessId)
-      .eq('product_id', productId)
-      .eq('color_id', colorId);
+    await runWithSessionRetry(async () => {
+      const { data: imgs } = await supabase
+        .from('product_images')
+        .select('storage_path')
+        .eq('business_id', businessId)
+        .eq('product_id', productId)
+        .eq('color_id', colorId);
 
-    const { error } = await supabase
-      .from('product_colors')
-      .delete()
-      .eq('id', colorId)
-      .eq('business_id', businessId)
-      .eq('product_id', productId);
+      const { error } = await supabase
+        .from('product_colors')
+        .delete()
+        .eq('id', colorId)
+        .eq('business_id', businessId)
+        .eq('product_id', productId);
 
-    if (error) throw error;
+      if (error) throw error;
 
-    await Promise.all((imgs || []).map(i => removeStorageObjectSafely(businessId, i.storage_path)));
+      await Promise.all((imgs || []).map(i => removeStorageObjectSafely(businessId, i.storage_path)));
+    });
   },
 
   async uploadColorImage(params: {
@@ -543,6 +630,13 @@ export const catalogImageService = {
 
     onProgress?.(3);
 
+    // Ensure session is valid and freshly refreshed BEFORE uploading to storage
+    const activeSession = await ensureValidSession();
+    if (!activeSession?.user) {
+      notifySessionExpired('Your login session has expired. Please sign in again to continue.');
+      throw new Error('Your login session has expired. Please sign in again to continue.');
+    }
+
     const uniqueName = `${crypto.randomUUID()}.${validation.extension}`;
     const storagePath = `${businessId}/${productId}/${colorId}/${uniqueName}`;
 
@@ -556,75 +650,72 @@ export const catalogImageService = {
 
     onProgress?.(94);
 
-    // Inspect existing images for this color to determine primary + next sort order
-    const { data: existingImgs, error: listErr } = await supabase
-      .from('product_images')
-      .select('id, is_primary, sort_order')
-      .eq('business_id', businessId)
-      .eq('product_id', productId)
-      .eq('color_id', colorId)
-      .order('sort_order', { ascending: true });
+    try {
+      return await runWithSessionRetry(async currentSession => {
+        // Inspect existing images for this color to determine primary + next sort order
+        const { data: existingImgs, error: listErr } = await supabase
+          .from('product_images')
+          .select('id, is_primary, sort_order')
+          .eq('business_id', businessId)
+          .eq('product_id', productId)
+          .eq('color_id', colorId)
+          .order('sort_order', { ascending: true });
 
-    if (listErr) {
+        if (listErr) throw listErr;
+
+        const existingList = existingImgs || [];
+        const hasExistingPrimary = existingList.some(i => i.is_primary);
+        const shouldBePrimary = Boolean(makePrimary || existingList.length === 0 || !hasExistingPrimary);
+        const nextSortOrder =
+          existingList.length === 0
+            ? 0
+            : Math.max(...existingList.map(i => Number(i.sort_order || 0))) + 1;
+
+        if (shouldBePrimary && hasExistingPrimary) {
+          await supabase
+            .from('product_images')
+            .update({ is_primary: false, updated_at: new Date().toISOString() })
+            .eq('business_id', businessId)
+            .eq('product_id', productId)
+            .eq('color_id', colorId)
+            .eq('is_primary', true);
+        }
+
+        const { data: inserted, error: insErr } = await supabase
+          .from('product_images')
+          .insert({
+            business_id: businessId,
+            product_id: productId,
+            color_id: colorId,
+            image_url: uploaded.publicUrl,
+            storage_path: uploaded.storagePath,
+            file_name: file.name,
+            file_size: file.size,
+            mime_type: validation.mimeType,
+            is_primary: shouldBePrimary,
+            sort_order: nextSortOrder,
+            uploaded_by: currentSession.user?.id || activeSession.user.id || null,
+          })
+          .select('*')
+          .single();
+
+        if (insErr) throw insErr;
+
+        // Populate fallback image_url on products if currently blank
+        await supabase
+          .from('products')
+          .update({ image_url: uploaded.publicUrl, updated_at: new Date().toISOString() })
+          .eq('id', productId)
+          .eq('business_id', businessId)
+          .or('image_url.is.null,image_url.eq.');
+
+        onProgress?.(100);
+        return mapDbProductImage(inserted);
+      });
+    } catch (err) {
       await removeStorageObjectSafely(businessId, uploaded.storagePath);
-      throw listErr;
+      throw err;
     }
-
-    const existingList = existingImgs || [];
-    const hasExistingPrimary = existingList.some(i => i.is_primary);
-    const shouldBePrimary = Boolean(makePrimary || existingList.length === 0 || !hasExistingPrimary);
-    const nextSortOrder =
-      existingList.length === 0
-        ? 0
-        : Math.max(...existingList.map(i => Number(i.sort_order || 0))) + 1;
-
-    if (shouldBePrimary && hasExistingPrimary) {
-      await supabase
-        .from('product_images')
-        .update({ is_primary: false, updated_at: new Date().toISOString() })
-        .eq('business_id', businessId)
-        .eq('product_id', productId)
-        .eq('color_id', colorId)
-        .eq('is_primary', true);
-    }
-
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    const { data: inserted, error: insErr } = await supabase
-      .from('product_images')
-      .insert({
-        business_id: businessId,
-        product_id: productId,
-        color_id: colorId,
-        image_url: uploaded.publicUrl,
-        storage_path: uploaded.storagePath,
-        file_name: file.name,
-        file_size: file.size,
-        mime_type: validation.mimeType,
-        is_primary: shouldBePrimary,
-        sort_order: nextSortOrder,
-        uploaded_by: user?.id || null,
-      })
-      .select('*')
-      .single();
-
-    if (insErr) {
-      await removeStorageObjectSafely(businessId, uploaded.storagePath);
-      throw insErr;
-    }
-
-    // Populate fallback image_url on products if currently blank
-    await supabase
-      .from('products')
-      .update({ image_url: uploaded.publicUrl, updated_at: new Date().toISOString() })
-      .eq('id', productId)
-      .eq('business_id', businessId)
-      .or('image_url.is.null,image_url.eq.');
-
-    onProgress?.(100);
-    return mapDbProductImage(inserted);
   },
 
   async replaceColorImage(params: {
@@ -653,41 +744,47 @@ export const catalogImageService = {
 
     onProgress?.(95);
 
-    const { data: updated, error } = await supabase
-      .from('product_images')
-      .update({
-        image_url: uploaded.publicUrl,
-        storage_path: uploaded.storagePath,
-        file_name: file.name,
-        file_size: file.size,
-        mime_type: validation.mimeType,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', image.id)
-      .eq('business_id', businessId)
-      .eq('product_id', productId)
-      .select('*')
-      .single();
+    try {
+      const updated = await runWithSessionRetry(async () => {
+        const { data, error } = await supabase
+          .from('product_images')
+          .update({
+            image_url: uploaded.publicUrl,
+            storage_path: uploaded.storagePath,
+            file_name: file.name,
+            file_size: file.size,
+            mime_type: validation.mimeType,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', image.id)
+          .eq('business_id', businessId)
+          .eq('product_id', productId)
+          .select('*')
+          .single();
 
-    if (error) {
+        if (error) throw error;
+
+        // Sync products.image_url if it pointed to the replaced image URL
+        await supabase
+          .from('products')
+          .update({ image_url: uploaded.publicUrl, updated_at: new Date().toISOString() })
+          .eq('id', productId)
+          .eq('business_id', businessId)
+          .eq('image_url', image.imageUrl);
+
+        return data;
+      });
+
+      if (image.storagePath && image.storagePath !== uploaded.storagePath) {
+        await removeStorageObjectSafely(businessId, image.storagePath);
+      }
+
+      onProgress?.(100);
+      return mapDbProductImage(updated);
+    } catch (err) {
       await removeStorageObjectSafely(businessId, uploaded.storagePath);
-      throw error;
+      throw err;
     }
-
-    // Sync products.image_url if it pointed to the replaced image URL
-    await supabase
-      .from('products')
-      .update({ image_url: uploaded.publicUrl, updated_at: new Date().toISOString() })
-      .eq('id', productId)
-      .eq('business_id', businessId)
-      .eq('image_url', image.imageUrl);
-
-    if (image.storagePath && image.storagePath !== uploaded.storagePath) {
-      await removeStorageObjectSafely(businessId, image.storagePath);
-    }
-
-    onProgress?.(100);
-    return mapDbProductImage(updated);
   },
 
   async setPrimaryColorImage(params: {
@@ -697,34 +794,37 @@ export const catalogImageService = {
     imageId: string;
   }): Promise<void> {
     const { businessId, productId, colorId, imageId } = params;
-    const { error } = await supabase.rpc('set_primary_product_color_image', {
-      p_business_id: businessId,
-      p_product_id: productId,
-      p_color_id: colorId,
-      p_image_id: imageId,
+    await runWithSessionRetry(async () => {
+      const { error } = await supabase.rpc('set_primary_product_color_image', {
+        p_business_id: businessId,
+        p_product_id: productId,
+        p_color_id: colorId,
+        p_image_id: imageId,
+      });
+
+      if (!error) return;
+      if (isAuthSessionError(error)) throw error;
+
+      // Fallback sequential update if RPC isn't present yet
+      await supabase
+        .from('product_images')
+        .update({ is_primary: false, updated_at: new Date().toISOString() })
+        .eq('business_id', businessId)
+        .eq('product_id', productId)
+        .eq('color_id', colorId)
+        .eq('is_primary', true)
+        .neq('id', imageId);
+
+      const { error: updErr } = await supabase
+        .from('product_images')
+        .update({ is_primary: true, updated_at: new Date().toISOString() })
+        .eq('id', imageId)
+        .eq('business_id', businessId)
+        .eq('product_id', productId)
+        .eq('color_id', colorId);
+
+      if (updErr) throw updErr;
     });
-
-    if (!error) return;
-
-    // Fallback sequential update if RPC isn't present yet
-    await supabase
-      .from('product_images')
-      .update({ is_primary: false, updated_at: new Date().toISOString() })
-      .eq('business_id', businessId)
-      .eq('product_id', productId)
-      .eq('color_id', colorId)
-      .eq('is_primary', true)
-      .neq('id', imageId);
-
-    const { error: updErr } = await supabase
-      .from('product_images')
-      .update({ is_primary: true, updated_at: new Date().toISOString() })
-      .eq('id', imageId)
-      .eq('business_id', businessId)
-      .eq('product_id', productId)
-      .eq('color_id', colorId);
-
-    if (updErr) throw updErr;
   },
 
   async reorderColorImages(params: {
@@ -734,26 +834,29 @@ export const catalogImageService = {
     orderedImageIds: string[];
   }): Promise<void> {
     const { businessId, productId, colorId, orderedImageIds } = params;
-    const { error } = await supabase.rpc('reorder_product_color_images', {
-      p_business_id: businessId,
-      p_product_id: productId,
-      p_color_id: colorId,
-      p_image_ids: orderedImageIds,
+    await runWithSessionRetry(async () => {
+      const { error } = await supabase.rpc('reorder_product_color_images', {
+        p_business_id: businessId,
+        p_product_id: productId,
+        p_color_id: colorId,
+        p_image_ids: orderedImageIds,
+      });
+
+      if (!error) return;
+      if (isAuthSessionError(error)) throw error;
+
+      await Promise.all(
+        orderedImageIds.map((id, idx) =>
+          supabase
+            .from('product_images')
+            .update({ sort_order: idx, updated_at: new Date().toISOString() })
+            .eq('id', id)
+            .eq('business_id', businessId)
+            .eq('product_id', productId)
+            .eq('color_id', colorId)
+        )
+      );
     });
-
-    if (!error) return;
-
-    await Promise.all(
-      orderedImageIds.map((id, idx) =>
-        supabase
-          .from('product_images')
-          .update({ sort_order: idx, updated_at: new Date().toISOString() })
-          .eq('id', id)
-          .eq('business_id', businessId)
-          .eq('product_id', productId)
-          .eq('color_id', colorId)
-      )
-    );
   },
 
   async reassignImageColor(params: {
@@ -763,36 +866,38 @@ export const catalogImageService = {
     targetColorId: string;
   }): Promise<ProductColorImage> {
     const { businessId, productId, imageId, targetColorId } = params;
-    const { data: targetImgs } = await supabase
-      .from('product_images')
-      .select('id, is_primary, sort_order')
-      .eq('business_id', businessId)
-      .eq('product_id', productId)
-      .eq('color_id', targetColorId);
+    return runWithSessionRetry(async () => {
+      const { data: targetImgs } = await supabase
+        .from('product_images')
+        .select('id, is_primary, sort_order')
+        .eq('business_id', businessId)
+        .eq('product_id', productId)
+        .eq('color_id', targetColorId);
 
-    const existingList = targetImgs || [];
-    const targetHasPrimary = existingList.some(i => i.is_primary);
-    const nextSort =
-      existingList.length === 0
-        ? 0
-        : Math.max(...existingList.map(i => Number(i.sort_order || 0))) + 1;
+      const existingList = targetImgs || [];
+      const targetHasPrimary = existingList.some(i => i.is_primary);
+      const nextSort =
+        existingList.length === 0
+          ? 0
+          : Math.max(...existingList.map(i => Number(i.sort_order || 0))) + 1;
 
-    const { data: updated, error } = await supabase
-      .from('product_images')
-      .update({
-        color_id: targetColorId,
-        is_primary: !targetHasPrimary,
-        sort_order: nextSort,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', imageId)
-      .eq('business_id', businessId)
-      .eq('product_id', productId)
-      .select('*')
-      .single();
+      const { data: updated, error } = await supabase
+        .from('product_images')
+        .update({
+          color_id: targetColorId,
+          is_primary: !targetHasPrimary,
+          sort_order: nextSort,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', imageId)
+        .eq('business_id', businessId)
+        .eq('product_id', productId)
+        .select('*')
+        .single();
 
-    if (error) throw error;
-    return mapDbProductImage(updated);
+      if (error) throw error;
+      return mapDbProductImage(updated);
+    });
   },
 
   async deleteColorImage(params: {
@@ -801,61 +906,63 @@ export const catalogImageService = {
     image: ProductColorImage;
   }): Promise<void> {
     const { businessId, productId, image } = params;
-    const { error } = await supabase
-      .from('product_images')
-      .delete()
-      .eq('id', image.id)
-      .eq('business_id', businessId)
-      .eq('product_id', productId);
-
-    if (error) throw error;
-
-    await removeStorageObjectSafely(businessId, image.storagePath);
-
-    // Promote next image if deleted one was primary for its color
-    if (image.isPrimary) {
-      const { data: remaining } = await supabase
+    await runWithSessionRetry(async () => {
+      const { error } = await supabase
         .from('product_images')
-        .select('id, image_url')
+        .delete()
+        .eq('id', image.id)
         .eq('business_id', businessId)
-        .eq('product_id', productId)
-        .eq('color_id', image.colorId)
-        .order('sort_order', { ascending: true })
-        .limit(1);
+        .eq('product_id', productId);
 
-      if (remaining && remaining.length > 0) {
-        await supabase
+      if (error) throw error;
+
+      await removeStorageObjectSafely(businessId, image.storagePath);
+
+      // Promote next image if deleted one was primary for its color
+      if (image.isPrimary) {
+        const { data: remaining } = await supabase
           .from('product_images')
-          .update({ is_primary: true, updated_at: new Date().toISOString() })
-          .eq('id', remaining[0].id);
+          .select('id, image_url')
+          .eq('business_id', businessId)
+          .eq('product_id', productId)
+          .eq('color_id', image.colorId)
+          .order('sort_order', { ascending: true })
+          .limit(1);
+
+        if (remaining && remaining.length > 0) {
+          await supabase
+            .from('product_images')
+            .update({ is_primary: true, updated_at: new Date().toISOString() })
+            .eq('id', remaining[0].id);
+        }
       }
-    }
 
-    // Clear or update products.image_url if it pointed to deleted image
-    const { data: prodRow } = await supabase
-      .from('products')
-      .select('image_url')
-      .eq('id', productId)
-      .maybeSingle();
-
-    if (prodRow?.image_url === image.imageUrl) {
-      const { data: anyRemaining } = await supabase
-        .from('product_images')
-        .select('image_url')
-        .eq('business_id', businessId)
-        .eq('product_id', productId)
-        .order('is_primary', { ascending: false })
-        .order('sort_order', { ascending: true })
-        .limit(1);
-
-      await supabase
+      // Clear or update products.image_url if it pointed to deleted image
+      const { data: prodRow } = await supabase
         .from('products')
-        .update({
-          image_url: anyRemaining?.[0]?.image_url || null,
-          updated_at: new Date().toISOString(),
-        })
+        .select('image_url')
         .eq('id', productId)
-        .eq('business_id', businessId);
-    }
+        .maybeSingle();
+
+      if (prodRow?.image_url === image.imageUrl) {
+        const { data: anyRemaining } = await supabase
+          .from('product_images')
+          .select('image_url')
+          .eq('business_id', businessId)
+          .eq('product_id', productId)
+          .order('is_primary', { ascending: false })
+          .order('sort_order', { ascending: true })
+          .limit(1);
+
+        await supabase
+          .from('products')
+          .update({
+            image_url: anyRemaining?.[0]?.image_url || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', productId)
+          .eq('business_id', businessId);
+      }
+    });
   },
 };

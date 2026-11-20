@@ -1,9 +1,8 @@
-import { createClient } from '@supabase/supabase-js';
 import {
   supabase,
+  getEphemeralAuthClient,
+  getFreshAccessToken,
   isSupabaseConfigured,
-  supabaseUrl,
-  supabaseAnonKey,
   isValidUuid,
   sanitizeUuid,
   formatSupabaseError,
@@ -530,18 +529,22 @@ export const staffRbacService = {
     let newEmployee: Employee | null = null;
 
     if (isSupabaseConfigured && businessId && isValidUuid(businessId)) {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData?.session?.access_token;
+      let accessToken = '';
+      try {
+        accessToken = await getFreshAccessToken();
+      } catch {
+        accessToken = '';
+      }
 
       // 1. Prefer server-side Express admin endpoint (/api/staff/create)
       let handledByPrivilegedApi = false;
       if (accessToken && typeof fetch !== 'undefined') {
-        try {
-          const res = await fetch('/api/staff/create', {
+        const postStaffCreate = (token: string) =>
+          fetch('/api/staff/create', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${accessToken}`,
+              Authorization: `Bearer ${token}`,
             },
             body: JSON.stringify({
               businessId,
@@ -556,6 +559,12 @@ export const staffRbacService = {
               },
             }),
           });
+        try {
+          let res = await postStaffCreate(accessToken);
+          if (res.status === 401) {
+            accessToken = await getFreshAccessToken({ forceRefresh: true });
+            res = await postStaffCreate(accessToken);
+          }
 
           const json = await res.json().catch(() => null);
           if (res.ok && json?.employee) {
@@ -631,14 +640,8 @@ export const staffRbacService = {
           throw new Error(`An employee account with email "${emailToUse}" already exists.`);
         }
 
-        // Isolated client so Admin session is NEVER overwritten
-        const tempClient = createClient(supabaseUrl, supabaseAnonKey, {
-          auth: {
-            persistSession: false,
-            autoRefreshToken: false,
-            detectSessionInUrl: false,
-          },
-        });
+        // Isolated shared ephemeral client so Admin session is NEVER overwritten
+        const tempClient = getEphemeralAuthClient();
 
         const { data: authData, error: authErr } = await tempClient.auth.signUp({
           email: emailToUse,
@@ -983,8 +986,7 @@ export const staffRbacService = {
         };
       }
 
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData?.session?.access_token;
+      let accessToken = await getFreshAccessToken().catch(() => '');
       const validBizId = sanitizeUuid(businessId);
 
       if (!accessToken) {
@@ -1003,12 +1005,12 @@ export const staffRbacService = {
 
       // 1. Try local Express backend endpoint (/api/staff/reset-password) if configured with service key
       if (typeof fetch !== 'undefined') {
-        try {
-          const res = await fetch('/api/staff/reset-password', {
+        const postResetPassword = (token: string) =>
+          fetch('/api/staff/reset-password', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${accessToken}`,
+              Authorization: `Bearer ${token}`,
             },
             body: JSON.stringify({
               businessId: validBizId,
@@ -1019,6 +1021,12 @@ export const staffRbacService = {
               newPassword: cleanPass,
             }),
           });
+        try {
+          let res = await postResetPassword(accessToken);
+          if (res.status === 401) {
+            accessToken = await getFreshAccessToken({ forceRefresh: true });
+            res = await postResetPassword(accessToken);
+          }
           const json = await res.json().catch(() => null);
           if (res.ok && json?.success) {
             return {
@@ -1124,23 +1132,25 @@ export const staffRbacService = {
       };
     }
 
-    const { data: sessionData } = await supabase.auth.getSession();
-    const accessToken = sessionData?.session?.access_token;
-    if (!accessToken) {
-      throw new Error('Your Admin session has expired. Please sign in again.');
-    }
+    let accessToken = await getFreshAccessToken();
 
     // 1. Try local Express backend (/api/staff/repair-links)
     if (typeof fetch !== 'undefined') {
-      try {
-        const res = await fetch('/api/staff/repair-links', {
+      const postRepairLinks = (token: string) =>
+        fetch('/api/staff/repair-links', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({ businessId: validBizId }),
         });
+      try {
+        let res = await postRepairLinks(accessToken);
+        if (res.status === 401) {
+          accessToken = await getFreshAccessToken({ forceRefresh: true });
+          res = await postRepairLinks(accessToken);
+        }
         const json = await res.json().catch(() => null);
         if (res.ok && json?.success) {
           return {

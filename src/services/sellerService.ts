@@ -1,9 +1,8 @@
-import { createClient } from '@supabase/supabase-js';
 import {
   supabase,
+  getEphemeralAuthClient,
+  getFreshAccessToken,
   isSupabaseConfigured,
-  supabaseUrl,
-  supabaseAnonKey,
   isValidUuid,
   sanitizeUuid,
   formatSupabaseError,
@@ -158,17 +157,16 @@ export const sellerService = {
     let createdId = tempId;
 
     if (isSupabaseConfigured && isValidUuid(businessId)) {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData?.session?.access_token;
+      let accessToken = await getFreshAccessToken().catch(() => '');
 
       let handledByPrivilegedApi = false;
       if (accessToken && typeof fetch !== 'undefined') {
-        try {
-          const res = await fetch('/api/staff/create', {
+        const postSellerCreate = (token: string) =>
+          fetch('/api/staff/create', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              Authorization: `Bearer ${accessToken}`,
+              Authorization: `Bearer ${token}`,
             },
             body: JSON.stringify({
               businessId,
@@ -182,6 +180,12 @@ export const sellerService = {
               },
             }),
           });
+        try {
+          let res = await postSellerCreate(accessToken);
+          if (res.status === 401) {
+            accessToken = await getFreshAccessToken({ forceRefresh: true });
+            res = await postSellerCreate(accessToken);
+          }
           const json = await res.json().catch(() => null);
           if (res.ok && isValidUuid(json?.userId)) {
             createdId = json.userId;
@@ -233,13 +237,7 @@ export const sellerService = {
 
       if (!handledByPrivilegedApi) {
         try {
-          const tempClient = createClient(supabaseUrl, supabaseAnonKey, {
-            auth: {
-              persistSession: false,
-              autoRefreshToken: false,
-              detectSessionInUrl: false,
-            },
-          });
+          const tempClient = getEphemeralAuthClient();
 
           const { data: authData, error: authErr } = await tempClient.auth.signUp({
             email: emailToUse,
@@ -433,17 +431,16 @@ export const sellerService = {
       const cleanPass = (newPassword || '').trim();
       const validBizId = sanitizeUuid(businessId);
       const validUserId = sanitizeUuid(sellerUserId);
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData?.session?.access_token;
+      let accessToken = await getFreshAccessToken().catch(() => '');
 
       if (cleanPass.length >= 6 && accessToken && validBizId && validUserId) {
         if (typeof fetch !== 'undefined') {
-          try {
-            const res = await fetch('/api/staff/reset-password', {
+          const postSellerReset = (token: string) =>
+            fetch('/api/staff/reset-password', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                Authorization: `Bearer ${accessToken}`,
+                Authorization: `Bearer ${token}`,
               },
               body: JSON.stringify({
                 businessId: validBizId,
@@ -451,6 +448,12 @@ export const sellerService = {
                 newPassword: cleanPass,
               }),
             });
+          try {
+            let res = await postSellerReset(accessToken);
+            if (res.status === 401) {
+              accessToken = await getFreshAccessToken({ forceRefresh: true });
+              res = await postSellerReset(accessToken);
+            }
             const json = await res.json().catch(() => null);
             if (res.ok && json?.success) {
               return {

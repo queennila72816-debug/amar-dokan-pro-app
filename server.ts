@@ -36,6 +36,9 @@ function roleKeyToLegacyUserRole(roleKey: string): string {
   return roleKey;
 }
 
+let cachedAdminClient: SupabaseClient | null = null;
+let cachedAdminKeyFingerprint = '';
+
 function getSupabaseAdminClient(): SupabaseClient | null {
   const url = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '')
     .trim()
@@ -53,13 +56,19 @@ function getSupabaseAdminClient(): SupabaseClient | null {
     return null;
   }
 
-  return createClient(url, serviceRoleKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-      detectSessionInUrl: false,
-    },
-  });
+  const fingerprint = `${url}::${serviceRoleKey}`;
+  if (!cachedAdminClient || cachedAdminKeyFingerprint !== fingerprint) {
+    cachedAdminClient = createClient(url, serviceRoleKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    });
+    cachedAdminKeyFingerprint = fingerprint;
+  }
+
+  return cachedAdminClient;
 }
 
 async function authorizeStaffPermission(
@@ -127,21 +136,67 @@ async function authorizeStaffPermission(
 async function authenticateCaller(
   req: express.Request,
   supabaseAdmin: SupabaseClient
-): Promise<{ error: string; status: 401 | 403 } | { user: { id: string } }> {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-  if (!token) {
-    return { error: 'Missing Authorization bearer token.', status: 401 };
+): Promise<{ error: string; status: 401 | 403 | 503; code?: string } | { user: { id: string } }> {
+  const authHeader = String(req.headers.authorization || '').trim();
+  const bearerMatch = /^Bearer\s+(.+)$/i.exec(authHeader);
+  const token = bearerMatch ? bearerMatch[1].trim() : '';
+
+  if (!token || token === 'null' || token === 'undefined') {
+    return {
+      error: 'Missing Authorization bearer token.',
+      status: 401,
+      code: 'SESSION_EXPIRED',
+    };
   }
-  const { data, error } = await supabaseAdmin.auth.getUser(token);
-  if (error || !data?.user || data.user.is_anonymous) {
-    return { error: 'Invalid or expired authentication session.', status: 401 };
+
+  try {
+    const { data, error } = await supabaseAdmin.auth.getUser(token);
+    if (error) {
+      const msg = (error.message || '').toLowerCase();
+      if (
+        msg.includes('fetch') ||
+        msg.includes('network') ||
+        msg.includes('timeout') ||
+        msg.includes('econnreset')
+      ) {
+        return {
+          error: 'Authentication service is temporarily unreachable. Please retry.',
+          status: 503,
+          code: 'AUTH_SERVICE_UNAVAILABLE',
+        };
+      }
+      return {
+        error: 'Invalid or expired authentication session.',
+        status: 401,
+        code: 'SESSION_EXPIRED',
+      };
+    }
+
+    if (!data?.user || data.user.is_anonymous) {
+      return {
+        error: 'Invalid or expired authentication session.',
+        status: 401,
+        code: 'SESSION_EXPIRED',
+      };
+    }
+
+    const bannedUntil = data.user.banned_until ? new Date(data.user.banned_until).getTime() : 0;
+    if (bannedUntil && bannedUntil > Date.now()) {
+      return {
+        error: 'Access denied: your account is currently suspended.',
+        status: 403,
+        code: 'ACCOUNT_SUSPENDED',
+      };
+    }
+
+    return { user: data.user };
+  } catch {
+    return {
+      error: 'Authentication service is temporarily unreachable. Please retry.',
+      status: 503,
+      code: 'AUTH_SERVICE_UNAVAILABLE',
+    };
   }
-  const bannedUntil = data.user.banned_until ? new Date(data.user.banned_until).getTime() : 0;
-  if (bannedUntil && bannedUntil > Date.now()) {
-    return { error: 'Access denied: your account is currently suspended.', status: 403 };
-  }
-  return { user: data.user };
 }
 
 interface EmpLinkRow {
@@ -405,7 +460,7 @@ export function createApp() {
 
     const authResult = await authenticateCaller(req, supabaseAdmin);
     if ('error' in authResult) {
-      return res.status(authResult.status).json({ error: authResult.error });
+      return res.status(authResult.status).json({ error: authResult.error, code: authResult.code });
     }
 
     const caller = authResult.user;
@@ -652,7 +707,7 @@ export function createApp() {
 
     const authResult = await authenticateCaller(req, supabaseAdmin);
     if ('error' in authResult) {
-      return res.status(authResult.status).json({ error: authResult.error });
+      return res.status(authResult.status).json({ error: authResult.error, code: authResult.code });
     }
 
     const caller = authResult.user;
@@ -938,7 +993,7 @@ export function createApp() {
 
     const authResult = await authenticateCaller(req, supabaseAdmin);
     if ('error' in authResult) {
-      return res.status(authResult.status).json({ error: authResult.error });
+      return res.status(authResult.status).json({ error: authResult.error, code: authResult.code });
     }
 
     const caller = authResult.user;
@@ -1115,7 +1170,7 @@ export function createApp() {
 
     const authResult = await authenticateCaller(req, supabaseAdmin);
     if ('error' in authResult) {
-      return res.status(authResult.status).json({ error: authResult.error });
+      return res.status(authResult.status).json({ error: authResult.error, code: authResult.code });
     }
 
     const businessId = sanitizeUuid(req.body?.businessId);
@@ -1172,7 +1227,7 @@ export function createApp() {
 
       const authResult = await authenticateCaller(req, supabaseAdmin);
       if ('error' in authResult) {
-        return res.status(authResult.status).json({ error: authResult.error });
+        return res.status(authResult.status).json({ error: authResult.error, code: authResult.code });
       }
 
       const businessId = sanitizeUuid(req.headers['x-business-id']);
@@ -1261,7 +1316,7 @@ export function createApp() {
 
     const authResult = await authenticateCaller(req, supabaseAdmin);
     if ('error' in authResult) {
-      return res.status(authResult.status).json({ error: authResult.error });
+      return res.status(authResult.status).json({ error: authResult.error, code: authResult.code });
     }
 
     const businessId = sanitizeUuid(req.body?.businessId);

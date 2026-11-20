@@ -1,4 +1,4 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { createClient, Session, SupabaseClient } from '@supabase/supabase-js';
 
 const viteEnv = (import.meta as { env?: Record<string, string | undefined> }).env ?? {};
 const rawUrl = (viteEnv.VITE_SUPABASE_URL || '').trim();
@@ -33,17 +33,258 @@ export const isSupabaseConfigured =
   !supabaseAnonKey.startsWith('placeholder-') &&
   !supabaseAnonKey.includes('your-supabase-');
 
-export const supabase: SupabaseClient = createClient(
-  isSupabaseConfigured ? supabaseUrl : 'https://placeholder.supabase.co',
-  isSupabaseConfigured ? supabaseAnonKey : 'placeholder-anon-key',
-  {
+const globalScope = globalThis as typeof globalThis & {
+  __adpSupabaseClient?: SupabaseClient;
+  __adpEphemeralAuthClient?: SupabaseClient;
+};
+
+const resolvedUrl = isSupabaseConfigured ? supabaseUrl : 'https://placeholder.supabase.co';
+const resolvedKey = isSupabaseConfigured ? supabaseAnonKey : 'placeholder-anon-key';
+
+if (!globalScope.__adpSupabaseClient) {
+  globalScope.__adpSupabaseClient = createClient(resolvedUrl, resolvedKey, {
     auth: {
       persistSession: true,
       autoRefreshToken: true,
       detectSessionInUrl: true,
     },
+  });
+}
+
+/**
+ * Single shared Supabase client instance across the entire frontend runtime.
+ */
+export const supabase: SupabaseClient = globalScope.__adpSupabaseClient;
+
+/**
+ * Isolated, non-persisting auth client used exclusively for creating staff/seller Auth accounts
+ * when the privileged server/Edge Function is unavailable, without touching the Admin session
+ * or spawning duplicate storage-backed GoTrueClient instances.
+ */
+export function getEphemeralAuthClient(): SupabaseClient {
+  if (!globalScope.__adpEphemeralAuthClient) {
+    globalScope.__adpEphemeralAuthClient = createClient(resolvedUrl, resolvedKey, {
+      auth: {
+        storageKey: 'adp-ephemeral-staff-signup',
+        storage: {
+          getItem: () => null,
+          setItem: () => {},
+          removeItem: () => {},
+        },
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    });
   }
-);
+  return globalScope.__adpEphemeralAuthClient;
+}
+
+let refreshInFlightPromise: Promise<Session | null> | null = null;
+let sessionExpiredHandler: ((reason: string) => void) | null = null;
+
+export function registerSessionExpiredHandler(handler: ((reason: string) => void) | null): void {
+  sessionExpiredHandler = handler;
+}
+
+export function notifySessionExpired(
+  reason = 'Your login session has expired. Please sign in again to continue.'
+): void {
+  if (sessionExpiredHandler) {
+    sessionExpiredHandler(reason);
+  }
+}
+
+export function isAuthSessionError(err: unknown): boolean {
+  if (!err) return false;
+  const obj = err as Record<string, unknown>;
+  const status = Number(obj?.status || obj?.statusCode || 0);
+  const code = String(obj?.code || '').toUpperCase();
+  const msg =
+    typeof err === 'string'
+      ? err.toLowerCase()
+      : String(obj?.message || obj?.error || obj?.error_description || '').toLowerCase();
+
+  if (status === 401 || code === 'PGRST301' || code === 'SESSION_EXPIRED') {
+    return true;
+  }
+
+  return (
+    msg.includes('invalid or expired authentication session') ||
+    msg.includes('missing authorization bearer token') ||
+    msg.includes('jwt expired') ||
+    msg.includes('invalid jwt') ||
+    msg.includes('invalid claim') ||
+    msg.includes('session has expired') ||
+    msg.includes('not authenticated') ||
+    msg.includes('auth session missing') ||
+    msg.includes('invalid refresh token') ||
+    msg.includes('refresh_token_not_found')
+  );
+}
+
+function isTransientNetworkError(err: unknown): boolean {
+  if (!err) return false;
+  const obj = err as Record<string, unknown>;
+  const status = Number(obj?.status || obj?.statusCode || 0);
+  if (status >= 500 && status < 600) return true;
+
+  const msg =
+    typeof err === 'string'
+      ? err.toLowerCase()
+      : String(obj?.message || obj?.error || '').toLowerCase();
+
+  return (
+    msg.includes('failed to fetch') ||
+    msg.includes('networkerror') ||
+    msg.includes('network request failed') ||
+    msg.includes('fetch failed') ||
+    msg.includes('timed out') ||
+    msg.includes('timeout') ||
+    msg.includes('econnreset')
+  );
+}
+
+function isHardRefreshTokenError(err: unknown): boolean {
+  if (!err || isTransientNetworkError(err)) return false;
+  const obj = err as Record<string, unknown>;
+  const status = Number(obj?.status || obj?.statusCode || 0);
+  const msg =
+    typeof err === 'string'
+      ? err.toLowerCase()
+      : String(obj?.message || obj?.error_description || obj?.error || '').toLowerCase();
+
+  if (
+    msg.includes('invalid refresh token') ||
+    msg.includes('refresh_token_not_found') ||
+    msg.includes('invalid_grant') ||
+    msg.includes('token has expired') ||
+    msg.includes('already used') ||
+    msg.includes('session not found') ||
+    msg.includes('auth session missing') ||
+    msg.includes('user not found') ||
+    msg.includes('user is banned')
+  ) {
+    return true;
+  }
+
+  return status === 400 || status === 401 || status === 403;
+}
+
+const EXPIRY_BUFFER_MS = 60_000;
+
+function isSessionNearExpiry(session: Session | null): boolean {
+  if (!session?.access_token) return true;
+  if (!session.expires_at) return false;
+  return session.expires_at * 1000 - Date.now() <= EXPIRY_BUFFER_MS;
+}
+
+async function performSingleFlightRefresh(): Promise<Session | null> {
+  if (refreshInFlightPromise) {
+    return refreshInFlightPromise;
+  }
+
+  refreshInFlightPromise = (async () => {
+    try {
+      const { data, error } = await supabase.auth.refreshSession();
+      if (error) {
+        if (isHardRefreshTokenError(error)) {
+          notifySessionExpired('Your login session has expired. Please sign in again to continue.');
+          return null;
+        }
+        throw error;
+      }
+      if (!data?.session?.access_token) {
+        notifySessionExpired('Your login session has expired. Please sign in again to continue.');
+        return null;
+      }
+      return data.session;
+    } finally {
+      refreshInFlightPromise = null;
+    }
+  })();
+
+  return refreshInFlightPromise;
+}
+
+/**
+ * Ensures the active Supabase session has a valid, non-expired access token.
+ * Automatically refreshes via refresh token when expired or within 60s of expiry,
+ * deduplicating concurrent refresh calls to prevent refresh-token rotation collisions.
+ * Only notifies session expiration when re-authentication is genuinely required.
+ */
+export async function ensureValidSession(options?: {
+  forceRefresh?: boolean;
+  verifyWithServer?: boolean;
+}): Promise<Session | null> {
+  if (!isSupabaseConfigured) return null;
+
+  const {
+    data: { session },
+    error: sessErr,
+  } = await supabase.auth.getSession();
+
+  if (sessErr && isTransientNetworkError(sessErr)) {
+    throw sessErr;
+  }
+
+  if (!session) {
+    return null;
+  }
+
+  let activeSession: Session = session;
+
+  if (options?.forceRefresh || isSessionNearExpiry(session)) {
+    if (!session.refresh_token) {
+      notifySessionExpired('Your login session has expired. Please sign in again to continue.');
+      return null;
+    }
+    const refreshed = await performSingleFlightRefresh();
+    if (!refreshed) return null;
+    activeSession = refreshed;
+  }
+
+  if (options?.verifyWithServer) {
+    const { data: userData, error: userErr } = await supabase.auth.getUser(activeSession.access_token);
+    if (userErr || !userData?.user) {
+      if (userErr && isTransientNetworkError(userErr)) {
+        // Do NOT log out authenticated users on transient connectivity issues
+        return activeSession;
+      }
+
+      // Access token rejected by Auth server (e.g. clock skew or revoked); try one refresh
+      if (activeSession.refresh_token) {
+        const refreshed = await performSingleFlightRefresh();
+        if (!refreshed) return null;
+        const { data: recheckData, error: recheckErr } = await supabase.auth.getUser(refreshed.access_token);
+        if (recheckErr || !recheckData?.user) {
+          if (recheckErr && isTransientNetworkError(recheckErr)) {
+            return refreshed;
+          }
+          notifySessionExpired('Your login session has expired. Please sign in again to continue.');
+          return null;
+        }
+        return refreshed;
+      }
+
+      notifySessionExpired('Your login session has expired. Please sign in again to continue.');
+      return null;
+    }
+  }
+
+  return activeSession;
+}
+
+/**
+ * Returns a fresh Bearer access token, automatically refreshing if expired or near expiry.
+ */
+export async function getFreshAccessToken(options?: { forceRefresh?: boolean }): Promise<string> {
+  const session = await ensureValidSession(options);
+  if (!session?.access_token) {
+    throw new Error('Your login session has expired. Please sign in again to continue.');
+  }
+  return session.access_token;
+}
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -96,7 +337,15 @@ export const formatSupabaseError = (
   if (lower.includes('failed to fetch') || lower.includes('networkerror')) {
     return 'Network error: Unable to reach Supabase. Please check your internet connection.';
   }
-  if (lower.includes('jwt') || lower.includes('not authenticated')) {
+  if (
+    code === 'PGRST301' ||
+    code === 'SESSION_EXPIRED' ||
+    lower.includes('jwt') ||
+    lower.includes('not authenticated') ||
+    lower.includes('invalid or expired authentication session') ||
+    lower.includes('auth session missing') ||
+    lower.includes('session has expired')
+  ) {
     return 'Your session has expired. Please sign in again.';
   }
 

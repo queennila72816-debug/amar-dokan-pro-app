@@ -16,7 +16,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   initialMode = 'login',
   onRecoveryComplete,
 }) => {
-  const { authBlockedReason, clearAuthBlockedReason } = useApp();
+  const {
+    authBlockedReason,
+    clearAuthBlockedReason,
+    sessionExpiredNotice,
+    clearSessionExpiredNotice,
+  } = useApp();
   const [mode, setMode] = useState<'login' | 'register' | 'forgot' | 'recovery'>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -31,6 +36,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setErrorMsg(null);
     setSuccessMsg(null);
     clearAuthBlockedReason();
+    clearSessionExpiredNotice();
     setLoading(true);
 
     if (!isSupabaseConfigured) {
@@ -184,6 +190,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <div>
                 <div className="font-bold">Access Restricted</div>
                 <p className="mt-0.5">{authBlockedReason}</p>
+              </div>
+            </div>
+          )}
+
+          {!authBlockedReason && sessionExpiredNotice && (
+            <div className="p-3 rounded-[10px] bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700/60 text-amber-800 dark:text-amber-200 text-xs flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#F59E0B]" />
+              <div>
+                <div className="font-bold">Session Expired</div>
+                <p className="mt-0.5">{sessionExpiredNotice}</p>
               </div>
             </div>
           )}

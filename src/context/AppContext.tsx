@@ -64,7 +64,16 @@ import {
 } from '../services/businessServices';
 import { comboOfferService } from '../services/comboOfferService';
 import { getPrinterSettings, getShopLogo, savePrinterSettings, saveShopLogo } from '../utils/printEngine';
-import { supabase, isSupabaseConfigured, formatSupabaseError, sanitizeUuid, isValidUuid } from '../lib/supabase';
+import {
+  supabase,
+  isSupabaseConfigured,
+  formatSupabaseError,
+  sanitizeUuid,
+  isValidUuid,
+  ensureValidSession,
+  isAuthSessionError,
+  registerSessionExpiredHandler,
+} from '../lib/supabase';
 import { User, Session } from '@supabase/supabase-js';
 
 interface AppContextType {
@@ -80,6 +89,8 @@ interface AppContextType {
   clearDbError: () => void;
   initError: string | null;
   retryInitialization: () => Promise<void>;
+  sessionExpiredNotice: string | null;
+  clearSessionExpiredNotice: () => void;
 
   // Business Setup State
   isBusinessConfigured: boolean;
@@ -382,6 +393,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [authenticatedRoleKey, setAuthenticatedRoleKey] = useState<string>('super_admin');
   const [currentEmployee, setCurrentEmployee] = useState<Employee | null>(null);
   const [authBlockedReason, setAuthBlockedReason] = useState<string | null>(null);
+  const [sessionExpiredNotice, setSessionExpiredNotice] = useState<string | null>(null);
+  const handlingSessionExpiryRef = useRef<boolean>(false);
   const isAuthenticatedAdmin = authenticatedRoleKey === 'super_admin';
   const isAdmin = normalizeRoleKey(currentUserRole) === 'super_admin';
   const [activeBranchId, setActiveBranchId] = useState<string>('');
@@ -409,6 +422,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const clearDbError = useCallback(() => setDbError(null), []);
   const clearAuthBlockedReason = useCallback(() => setAuthBlockedReason(null), []);
+  const clearSessionExpiredNotice = useCallback(() => setSessionExpiredNotice(null), []);
 
   const raiseDbError = useCallback((err: any, fallback: string): Error => {
     const message = formatSupabaseError(err, fallback);
@@ -796,7 +810,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Helper: Initialize or link user's business
   const initializeUserBusiness = useCallback(
-    async (authUser: User) => {
+    async (authUser: User, allowAuthRetry = true): Promise<void> => {
       try {
         setInitError(null);
 
@@ -1007,6 +1021,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setStockTransfers([]);
         }
       } catch (err: any) {
+        if (allowAuthRetry && isAuthSessionError(err)) {
+          try {
+            const refreshed = await ensureValidSession({ forceRefresh: true });
+            if (refreshed?.user) {
+              setSession(refreshed);
+              setUser(refreshed.user);
+              await initializeUserBusiness(refreshed.user, false);
+              return;
+            }
+          } catch {
+            // Fall through to surface error
+          }
+        }
         const message = formatSupabaseError(err, 'Failed to initialize your business account.');
         setDbError(message);
         setInitError(message);
@@ -1021,12 +1048,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!isSupabaseConfigured || !user) return;
     setIsLoading(true);
     setInitError(null);
-    await initializeUserBusiness(user);
+    const validSession = await ensureValidSession({ verifyWithServer: true }).catch(() => null);
+    if (!validSession?.user) {
+      setIsLoading(false);
+      return;
+    }
+    await initializeUserBusiness(validSession.user, false);
   }, [user, initializeUserBusiness]);
 
   // Initialize Auth & Supabase Session
   useEffect(() => {
     let isMounted = true;
+
+    registerSessionExpiredHandler((reason: string) => {
+      if (!isMounted || handlingSessionExpiryRef.current) return;
+      handlingSessionExpiryRef.current = true;
+      initializedUserIdRef.current = null;
+      setSessionExpiredNotice(reason);
+      setDbError(null);
+      setInitError(null);
+      setSession(null);
+      setUser(null);
+      setActiveBusinessId('');
+      setActiveBranchId('');
+      setIsBusinessConfigured(false);
+      setIsLoading(false);
+      supabase.auth
+        .signOut({ scope: 'local' })
+        .catch(() => {})
+        .finally(() => {
+          handlingSessionExpiryRef.current = false;
+        });
+    });
 
     async function initSession() {
       if (!isSupabaseConfigured) {
@@ -1036,19 +1089,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       try {
-        const {
-          data: { session: initialSession },
-          error: sessErr,
-        } = await supabase.auth.getSession();
-        if (sessErr) throw sessErr;
+        // Ensure any cached session with an expired access token is automatically refreshed
+        // using its refresh token BEFORE querying protected database tables.
+        const validSession = await ensureValidSession({ verifyWithServer: true });
         if (!isMounted) return;
 
-        setSession(initialSession);
-        setUser(initialSession?.user ?? null);
+        setSession(validSession);
+        setUser(validSession?.user ?? null);
 
-        if (initialSession?.user) {
-          initializedUserIdRef.current = initialSession.user.id;
-          await initializeUserBusiness(initialSession.user);
+        if (validSession?.user) {
+          setSessionExpiredNotice(null);
+          initializedUserIdRef.current = validSession.user.id;
+          await initializeUserBusiness(validSession.user);
         } else {
           initializedUserIdRef.current = null;
           setIsLoading(false);
@@ -1071,7 +1123,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setSession(newSession);
       setUser(newSession?.user ?? null);
 
+      if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+        if (newSession?.user) {
+          setSessionExpiredNotice(null);
+        }
+        return;
+      }
+
       if (event === 'SIGNED_IN' && newSession?.user) {
+        setSessionExpiredNotice(null);
+        setAuthBlockedReason(null);
         // Avoid unmounting active UI (such as BusinessSetupWizard steps) when Supabase
         // re-emits SIGNED_IN on initial hydration, tab focus, or token refresh for the same user.
         if (initializedUserIdRef.current === newSession.user.id) {
@@ -1104,6 +1165,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     return () => {
       isMounted = false;
+      registerSessionExpiredHandler(null);
       subscription.unsubscribe();
     };
   }, [initializeUserBusiness]);
@@ -5238,6 +5300,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         activityLogs,
         authBlockedReason,
         clearAuthBlockedReason,
+        sessionExpiredNotice,
+        clearSessionExpiredNotice,
         hasPermission,
         enforcePermission,
         createStaffAccount,

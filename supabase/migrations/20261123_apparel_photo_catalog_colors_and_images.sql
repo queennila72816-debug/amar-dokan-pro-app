@@ -129,8 +129,14 @@ CREATE POLICY product_colors_insert ON public.product_colors
 
 CREATE POLICY product_colors_update ON public.product_colors
   FOR UPDATE TO authenticated
-  USING (public.has_module_permission(business_id, 'product_management', 'edit'))
-  WITH CHECK (public.has_module_permission(business_id, 'product_management', 'edit'));
+  USING (
+    public.has_module_permission(business_id, 'product_management', 'edit')
+    OR public.has_module_permission(business_id, 'product_management', 'create')
+  )
+  WITH CHECK (
+    public.has_module_permission(business_id, 'product_management', 'edit')
+    OR public.has_module_permission(business_id, 'product_management', 'create')
+  );
 
 CREATE POLICY product_colors_delete ON public.product_colors
   FOR DELETE TO authenticated
@@ -157,8 +163,14 @@ CREATE POLICY product_images_insert ON public.product_images
 
 CREATE POLICY product_images_update ON public.product_images
   FOR UPDATE TO authenticated
-  USING (public.has_module_permission(business_id, 'product_management', 'edit'))
-  WITH CHECK (public.has_module_permission(business_id, 'product_management', 'edit'));
+  USING (
+    public.has_module_permission(business_id, 'product_management', 'edit')
+    OR public.has_module_permission(business_id, 'product_management', 'create')
+  )
+  WITH CHECK (
+    public.has_module_permission(business_id, 'product_management', 'edit')
+    OR public.has_module_permission(business_id, 'product_management', 'create')
+  );
 
 CREATE POLICY product_images_delete ON public.product_images
   FOR DELETE TO authenticated
@@ -324,12 +336,18 @@ CREATE POLICY product_images_storage_auth_update ON storage.objects
   USING (
     bucket_id = 'product-images'
     AND (storage.foldername(name))[1] ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-    AND public.has_module_permission(((storage.foldername(name))[1])::uuid, 'product_management', 'edit')
+    AND (
+      public.has_module_permission(((storage.foldername(name))[1])::uuid, 'product_management', 'edit')
+      OR public.has_module_permission(((storage.foldername(name))[1])::uuid, 'product_management', 'create')
+    )
   )
   WITH CHECK (
     bucket_id = 'product-images'
     AND (storage.foldername(name))[1] ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-    AND public.has_module_permission(((storage.foldername(name))[1])::uuid, 'product_management', 'edit')
+    AND (
+      public.has_module_permission(((storage.foldername(name))[1])::uuid, 'product_management', 'edit')
+      OR public.has_module_permission(((storage.foldername(name))[1])::uuid, 'product_management', 'create')
+    )
   );
 
 CREATE POLICY product_images_storage_auth_delete ON storage.objects
