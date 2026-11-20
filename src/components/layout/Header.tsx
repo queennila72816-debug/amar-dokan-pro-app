@@ -4,13 +4,11 @@ import { useTheme } from '../../context/ThemeContext';
 import { UserRole } from '../../types';
 import { normalizeRoleKey, roleKeyToLegacyUserRole } from '../../utils/rbacDefaults';
 import { APP_IDENTITY } from '../../config/appIdentity';
-import { isSupabaseConfigured } from '../../lib/supabase';
 import {
   Store,
   ShoppingCart,
   Globe,
   Shield,
-  SlidersHorizontal,
   Building2,
   LogOut,
   Lock,
@@ -23,11 +21,8 @@ import {
   Menu,
   X,
   ChevronRight,
-  Cloud,
-  HardDrive,
   Crown,
   Plus,
-  Briefcase,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -66,8 +61,6 @@ export const Header: React.FC<HeaderProps> = ({
     platformViewActive,
     setPlatformViewActive,
     userBusinesses,
-    activeBusinessId,
-    switchBusiness,
     setCreateNewBusinessModalOpen,
     activeSubscription,
   } = useApp();
@@ -187,43 +180,10 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
       </div>
 
-      {/* Zone 2: Multi-Business Switcher, Branch, Mode, Role Preview & Language */}
+      {/* Zone 2: Branch, Active Plan, Role Preview & Language */}
       <div className="hidden lg:flex items-center gap-2">
         {!platformViewActive ? (
           <>
-            {/* Multi-Business Switcher + New Business */}
-            {(userBusinesses.length > 0 || isAuthenticatedAdmin) && (
-              <div className="flex items-center gap-1 px-2 py-1.5 bg-[#0B1428]/70 rounded-[10px] border border-white/15 text-xs text-slate-200 hover:border-[#D6AD60]/45 transition-colors">
-                <Briefcase className="w-3.5 h-3.5 text-[#D6AD60] shrink-0" />
-                <select
-                  aria-label="Switch Business"
-                  value={activeBusinessId}
-                  onChange={(e) => switchBusiness(e.target.value)}
-                  className="bg-transparent font-semibold text-white focus:outline-none cursor-pointer pr-1 max-w-[135px] truncate [&>option]:bg-[#101B35] [&>option]:text-white"
-                >
-                  {userBusinesses.length === 0 ? (
-                    <option value={activeBusinessId || ''}>{settings.shopName || 'Current Shop'}</option>
-                  ) : (
-                    userBusinesses.map(b => (
-                      <option key={b.businessId} value={b.businessId}>
-                        {b.businessName}
-                      </option>
-                    ))
-                  )}
-                </select>
-                {isAuthenticatedAdmin && (
-                  <button
-                    type="button"
-                    onClick={() => setCreateNewBusinessModalOpen(true)}
-                    title="Create additional business / shop"
-                    className="ml-0.5 p-1 rounded-[7px] bg-[#D6AD60]/20 hover:bg-[#D6AD60]/35 text-[#F5DC9F] transition-colors cursor-pointer"
-                  >
-                    <Plus className="w-3 h-3" />
-                  </button>
-                )}
-              </div>
-            )}
-
             {/* Branch Selector */}
             <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#0B1428]/70 rounded-[10px] border border-white/15 text-xs text-slate-200 hover:border-[#D6AD60]/45 transition-colors">
               <Building2 className="w-3.5 h-3.5 text-[#D6AD60] shrink-0" />
@@ -258,21 +218,6 @@ export const Header: React.FC<HeaderProps> = ({
                 <span>{activeSubscription.plan?.name || activeSubscription.planCode}</span>
               </button>
             )}
-
-            {/* Advanced Settings / UI Mode Toggle */}
-            <button
-              type="button"
-              onClick={() => updateSettings({ uiMode: settings.uiMode === 'easy' ? 'advanced' : 'easy' })}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-[10px] border text-xs font-medium transition-colors cursor-pointer whitespace-nowrap ${
-                settings.uiMode === 'easy'
-                  ? 'bg-[#D6AD60]/20 text-[#F5DC9F] border-[#D6AD60]/50 hover:bg-[#D6AD60]/30'
-                  : 'bg-[#0B1428]/70 text-slate-200 border-white/15 hover:border-[#087F8C]'
-              }`}
-              title="Toggle Easy / Advanced interface mode"
-            >
-              <SlidersHorizontal className="w-3.5 h-3.5 text-[#D6AD60]" />
-              <span>{settings.uiMode === 'easy' ? 'Easy Mode' : 'Advanced'}</span>
-            </button>
 
             {/* Role Preview (Admin only) */}
             {isAuthenticatedAdmin ? (
@@ -322,27 +267,6 @@ export const Header: React.FC<HeaderProps> = ({
             <option value="bn">বাংলা</option>
           </select>
         </div>
-
-        {/* Storage Mode Status Indicator */}
-        {isSupabaseConfigured ? (
-          <div
-            className="hidden xl:flex items-center gap-1.5 px-2.5 py-1.5 rounded-[10px] border border-[#10B981]/35 bg-[#10B981]/10 text-[#6EE7B7] text-[11px] font-semibold whitespace-nowrap"
-            title="Connected to Supabase cloud database"
-          >
-            <Cloud className="w-3.5 h-3.5 shrink-0" />
-            <span>Cloud Synced</span>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => onNavigateTab('settings')}
-            className="hidden xl:flex items-center gap-1.5 px-2.5 py-1.5 rounded-[10px] border border-[#F59E0B]/40 bg-[#F59E0B]/15 text-[#FDE68A] text-[11px] font-semibold whitespace-nowrap hover:bg-[#F59E0B]/25 transition-colors cursor-pointer"
-            title="Temporary local browser storage active — Supabase environment variables not configured"
-          >
-            <HardDrive className="w-3.5 h-3.5 shrink-0" />
-            <span>Local Mode (Browser Only)</span>
-          </button>
-        )}
       </div>
 
       {/* Zone 3: Platform Toggle, Theme, Notifications, New Sale CTA, Profile & Logout */}

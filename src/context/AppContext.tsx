@@ -37,6 +37,8 @@ import {
   BusinessSubscription,
   SubscriptionPlan,
   PlatformBillingSettings,
+  BusinessType,
+  InvoicePaperSize,
 } from '../types';
 import {
   initialSettings,
@@ -384,6 +386,33 @@ interface AppContextType {
   isBusinessSuspendedOrExpired: boolean;
   businessStatusBanner: { tone: 'danger' | 'warning'; title: string; message: string } | null;
   checkPlanLimit: (resource: 'users' | 'branches' | 'products') => { allowed: boolean; message?: string };
+
+  // Store Management & Cloud Sync Controls (Relocated to Settings)
+  fetchBusinessRecord: (businessId: string) => Promise<Record<string, any> | null>;
+  updateBusinessStore: (
+    businessId: string,
+    updates: {
+      name: string;
+      ownerName?: string;
+      tagline?: string;
+      address: string;
+      phone: string;
+      email?: string;
+      businessType: BusinessType;
+      currency?: string;
+      vatTaxRate?: number;
+      vatRegistrationNo?: string;
+      invoiceFormat?: InvoicePaperSize;
+    }
+  ) => Promise<void>;
+  deleteBusinessStore: (businessId: string) => Promise<void>;
+  isSyncing: boolean;
+  lastSyncAt: string | null;
+  lastSyncError: string | null;
+  autoSyncEnabled: boolean;
+  setAutoSyncEnabled: (enabled: boolean) => void;
+  isOnline: boolean;
+  syncNow: () => Promise<{ success: boolean; syncedAt: string | null; message: string }>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -463,6 +492,64 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const isPlatformAdmin = Boolean(platformAdmin && platformAdmin.isActive);
   const activeMembership =
     userBusinesses.find(b => b.businessId === activeBusinessId) || null;
+
+  // Cloud Sync & Connectivity State
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(`${STORAGE_KEY}_LAST_SYNC`) || null;
+    } catch {
+      return null;
+    }
+  });
+  const [lastSyncError, setLastSyncError] = useState<string | null>(null);
+  const [autoSyncEnabled, setAutoSyncEnabledState] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem(`${STORAGE_KEY}_AUTO_SYNC`);
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const syncInFlightRef = useRef<boolean>(false);
+
+  const setAutoSyncEnabled = useCallback(
+    (enabled: boolean) => {
+      setAutoSyncEnabledState(enabled);
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_AUTO_SYNC`, String(enabled));
+        if (activeBusinessId) {
+          localStorage.setItem(`${STORAGE_KEY}_AUTO_SYNC_${activeBusinessId}`, String(enabled));
+        }
+      } catch {}
+    },
+    [activeBusinessId]
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeBusinessId) return;
+    try {
+      const bizLastSync = localStorage.getItem(`${STORAGE_KEY}_LAST_SYNC_${activeBusinessId}`);
+      if (bizLastSync) setLastSyncAt(bizLastSync);
+      const bizAutoSync = localStorage.getItem(`${STORAGE_KEY}_AUTO_SYNC_${activeBusinessId}`);
+      if (bizAutoSync !== null) setAutoSyncEnabledState(bizAutoSync === 'true');
+    } catch {}
+  }, [activeBusinessId]);
 
   const isBusinessSuspendedOrExpired = (() => {
     if (activeMembership && (activeMembership.businessStatus === 'suspended' || activeMembership.isActive === false)) {
@@ -836,10 +923,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Surface critical data load failures cleanly
       const firstCriticalFailure = [prodsRes, accsRes, salesRes, purRes].find(r => r.status === 'rejected');
       if (firstCriticalFailure && firstCriticalFailure.status === 'rejected') {
-        setDbError(formatSupabaseError(firstCriticalFailure.reason, 'Failed to sync some cloud records.'));
+        const msg = formatSupabaseError(firstCriticalFailure.reason, 'Failed to sync some cloud records.');
+        setDbError(msg);
+        setLastSyncError(msg);
+      } else {
+        const syncedTimestamp = new Date().toISOString();
+        setLastSyncAt(syncedTimestamp);
+        setLastSyncError(null);
+        try {
+          localStorage.setItem(`${STORAGE_KEY}_LAST_SYNC`, syncedTimestamp);
+          localStorage.setItem(`${STORAGE_KEY}_LAST_SYNC_${businessId}`, syncedTimestamp);
+        } catch {}
       }
     } catch (err: any) {
-      setDbError(formatSupabaseError(err, 'Error loading business data from Supabase.'));
+      const msg = formatSupabaseError(err, 'Error loading business data from Supabase.');
+      setDbError(msg);
+      setLastSyncError(msg);
     }
   }, []);
 
@@ -1238,6 +1337,263 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await initializeUserBusiness(user, true, businessId);
     },
     [user, initializeUserBusiness]
+  );
+
+  const syncNow = useCallback(async (): Promise<{
+    success: boolean;
+    syncedAt: string | null;
+    message: string;
+  }> => {
+    if (!isSupabaseConfigured) {
+      return {
+        success: false,
+        syncedAt: lastSyncAt,
+        message: 'Supabase cloud database is not configured. Operating in local browser mode.',
+      };
+    }
+    if (!isOnline) {
+      const msg = 'Device appears offline. Cloud sync will resume automatically when online.';
+      setLastSyncError(msg);
+      return { success: false, syncedAt: lastSyncAt, message: msg };
+    }
+    if (!user || !activeBusinessId) {
+      return {
+        success: false,
+        syncedAt: lastSyncAt,
+        message: 'No active cloud store selected for synchronization.',
+      };
+    }
+    if (syncInFlightRef.current) {
+      return {
+        success: true,
+        syncedAt: lastSyncAt,
+        message: 'Cloud synchronization is already in progress.',
+      };
+    }
+
+    syncInFlightRef.current = true;
+    setIsSyncing(true);
+    setLastSyncError(null);
+    try {
+      const validSession = await ensureValidSession({ verifyWithServer: true });
+      if (!validSession?.user) {
+        throw new Error('Authentication session expired. Please sign in again.');
+      }
+      await Promise.all([
+        loadBusinessData(activeBusinessId, activeBranchId),
+        refreshSubscriptionForBusiness(activeBusinessId),
+        subscriptionService
+          .fetchMyBusinessMemberships(validSession.user.id)
+          .then(list => {
+            if (list.length > 0) setUserBusinesses(list);
+          })
+          .catch(() => {}),
+      ]);
+      const nowIso = new Date().toISOString();
+      setLastSyncAt(nowIso);
+      setLastSyncError(null);
+      try {
+        localStorage.setItem(`${STORAGE_KEY}_LAST_SYNC`, nowIso);
+        localStorage.setItem(`${STORAGE_KEY}_LAST_SYNC_${activeBusinessId}`, nowIso);
+      } catch {}
+      return {
+        success: true,
+        syncedAt: nowIso,
+        message: 'All store records synchronized with Supabase cloud.',
+      };
+    } catch (err: any) {
+      const msg = formatSupabaseError(err, 'Cloud synchronization failed.');
+      setLastSyncError(msg);
+      return { success: false, syncedAt: lastSyncAt, message: msg };
+    } finally {
+      syncInFlightRef.current = false;
+      setIsSyncing(false);
+    }
+  }, [
+    isOnline,
+    user,
+    activeBusinessId,
+    activeBranchId,
+    lastSyncAt,
+    loadBusinessData,
+    refreshSubscriptionForBusiness,
+  ]);
+
+  // Automatic background / reconnect synchronization when Auto-Sync is enabled
+  useEffect(() => {
+    if (!autoSyncEnabled || !isSupabaseConfigured || !isOnline || !user || !activeBusinessId || isLoading) {
+      return;
+    }
+    const interval = setInterval(() => {
+      syncNow().catch(() => {});
+    }, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [autoSyncEnabled, isOnline, user, activeBusinessId, isLoading, syncNow]);
+
+  const fetchBusinessRecord = useCallback(
+    async (businessId: string): Promise<Record<string, any> | null> => {
+      if (!businessId) return null;
+      if (isSupabaseConfigured && isValidUuid(businessId)) {
+        const { data, error } = await supabase
+          .from('businesses')
+          .select('*')
+          .eq('id', businessId)
+          .maybeSingle();
+        if (error) {
+          throw new Error(formatSupabaseError(error, 'Failed to load store details.'));
+        }
+        return data;
+      }
+      return {
+        id: businessId,
+        name: settings.shopName,
+        owner_name: settings.ownerName || '',
+        tagline: settings.tagline || '',
+        address: settings.address || '',
+        phone: settings.mobile || '',
+        email: settings.email || '',
+        business_type: settings.businessType || 'general',
+        currency: settings.currency || 'BDT (৳)',
+        vat_tax_rate: settings.vatTaxRate || 0,
+        vat_registration_no: settings.vatRegistrationNo || '',
+        invoice_format: settings.invoiceFormat || 'thermal',
+      };
+    },
+    [settings]
+  );
+
+  const updateBusinessStore = useCallback(
+    async (
+      businessId: string,
+      updates: {
+        name: string;
+        ownerName?: string;
+        tagline?: string;
+        address: string;
+        phone: string;
+        email?: string;
+        businessType: BusinessType;
+        currency?: string;
+        vatTaxRate?: number;
+        vatRegistrationNo?: string;
+        invoiceFormat?: InvoicePaperSize;
+      }
+    ): Promise<void> => {
+      if (!updates.name.trim() || !updates.phone.trim() || !updates.address.trim()) {
+        throw new Error('Store name, phone number, and address are required.');
+      }
+
+      if (isSupabaseConfigured && user && isValidUuid(businessId)) {
+        const payload: Record<string, any> = {
+          name: updates.name.trim(),
+          owner_name: updates.ownerName?.trim() || null,
+          tagline: updates.tagline?.trim() || '',
+          address: updates.address.trim(),
+          phone: updates.phone.trim(),
+          email: updates.email?.trim() || '',
+          business_type: updates.businessType,
+          updated_at: new Date().toISOString(),
+        };
+        if (updates.currency !== undefined) payload.currency = updates.currency;
+        if (updates.vatTaxRate !== undefined) payload.vat_tax_rate = updates.vatTaxRate;
+        if (updates.vatRegistrationNo !== undefined) {
+          payload.vat_registration_no = updates.vatRegistrationNo.trim();
+        }
+        if (updates.invoiceFormat !== undefined) payload.invoice_format = updates.invoiceFormat;
+
+        const { error } = await supabase.from('businesses').update(payload).eq('id', businessId);
+        if (error) {
+          throw new Error(formatSupabaseError(error, 'Failed to update store information.'));
+        }
+
+        const refreshedMemberships = await subscriptionService
+          .fetchMyBusinessMemberships(user.id)
+          .catch(() => []);
+        if (refreshedMemberships.length > 0) {
+          setUserBusinesses(refreshedMemberships);
+        }
+      }
+
+      if (businessId === activeBusinessId || !isSupabaseConfigured) {
+        setSettings(prev => {
+          const merged: ShopSettings = {
+            ...prev,
+            shopName: updates.name.trim(),
+            ownerName: updates.ownerName?.trim() ?? prev.ownerName,
+            tagline: updates.tagline?.trim() ?? prev.tagline,
+            address: updates.address.trim(),
+            mobile: updates.phone.trim(),
+            email: updates.email?.trim() ?? prev.email,
+            businessType: updates.businessType,
+            currency: updates.currency ?? prev.currency,
+            vatTaxRate: updates.vatTaxRate ?? prev.vatTaxRate,
+            vatRegistrationNo: updates.vatRegistrationNo?.trim() ?? prev.vatRegistrationNo,
+            invoiceFormat: updates.invoiceFormat ?? prev.invoiceFormat,
+          };
+          try {
+            if (activeBusinessId) {
+              localStorage.setItem(`${STORAGE_KEY}_${activeBusinessId}_SETTINGS`, JSON.stringify(merged));
+            }
+            localStorage.setItem(`${STORAGE_KEY}_SETTINGS`, JSON.stringify(merged));
+          } catch {}
+          return merged;
+        });
+      }
+    },
+    [user, activeBusinessId]
+  );
+
+  const deleteBusinessStore = useCallback(
+    async (businessId: string): Promise<void> => {
+      if (!isSupabaseConfigured || !user || !isValidUuid(businessId)) {
+        throw new Error('Store deletion requires an active authenticated cloud session.');
+      }
+
+      const target = userBusinesses.find(b => b.businessId === businessId);
+      if (!target) {
+        throw new Error('Selected store was not found in your account.');
+      }
+
+      const canDelete =
+        isPlatformAdmin ||
+        target.roleLevel === 'OWNER' ||
+        target.role.toLowerCase() === 'owner' ||
+        target.role.toLowerCase() === 'admin';
+      if (!canDelete) {
+        throw new Error('Only the Store Owner or Administrator can delete a store.');
+      }
+
+      if (userBusinesses.length <= 1) {
+        throw new Error(
+          'You cannot delete your only remaining store. Create another store first before removing this one.'
+        );
+      }
+
+      const { error } = await supabase.from('businesses').delete().eq('id', businessId);
+      if (error) {
+        throw new Error(formatSupabaseError(error, 'Failed to delete the selected store.'));
+      }
+
+      try {
+        Object.keys(localStorage).forEach(key => {
+          if (key.startsWith(`${STORAGE_KEY}_${businessId}_`)) {
+            localStorage.removeItem(key);
+          }
+        });
+      } catch {}
+
+      const remaining = (await subscriptionService.fetchMyBusinessMemberships(user.id).catch(() => [])).filter(
+        b => b.businessId !== businessId
+      );
+      const fallbackRemaining =
+        remaining.length > 0 ? remaining : userBusinesses.filter(b => b.businessId !== businessId);
+      setUserBusinesses(fallbackRemaining);
+
+      if (businessId === activeBusinessId && fallbackRemaining.length > 0) {
+        await switchBusiness(fallbackRemaining[0].businessId);
+      }
+    },
+    [user, userBusinesses, isPlatformAdmin, activeBusinessId, switchBusiness]
   );
 
   const retryInitialization = useCallback(async () => {
@@ -5611,6 +5967,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isBusinessSuspendedOrExpired,
         businessStatusBanner,
         checkPlanLimit,
+        fetchBusinessRecord,
+        updateBusinessStore,
+        deleteBusinessStore,
+        isSyncing,
+        lastSyncAt,
+        lastSyncError,
+        autoSyncEnabled,
+        setAutoSyncEnabled,
+        isOnline,
+        syncNow,
       }}
     >
       {children}
