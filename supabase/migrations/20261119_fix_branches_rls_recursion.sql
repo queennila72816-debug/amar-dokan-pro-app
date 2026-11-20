@@ -3,19 +3,45 @@
 -- Idempotent & Data-Safe Migration (preserves all existing data & RLS security)
 -- ============================================================================
 
--- 1. Secure SECURITY DEFINER helper functions (fixed search_path, zero recursion)
+ALTER TABLE public.businesses
+  ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL;
+
+ALTER TABLE public.businesses
+  ALTER COLUMN created_by SET DEFAULT auth.uid();
+
+ALTER TABLE public.user_profiles NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.businesses NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.branches NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.business_users NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.user_roles NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.role_permissions NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE public.employees NO FORCE ROW LEVEL SECURITY;
+
+-- 1. Secure SECURITY DEFINER helper functions (fixed search_path, ZERO queries to branches)
 CREATE OR REPLACE FUNCTION public.can_access_business_branch(p_business_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
+STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
+DECLARE
+  v_uid UUID := auth.uid();
 BEGIN
-  IF auth.uid() IS NULL OR p_business_id IS NULL THEN
+  IF v_uid IS NULL OR p_business_id IS NULL THEN
     RETURN FALSE;
   END IF;
 
-  RETURN public.is_active_staff_member(p_business_id);
+  IF public.is_active_staff_member(p_business_id) THEN
+    RETURN TRUE;
+  END IF;
+
+  RETURN EXISTS (
+    SELECT 1
+    FROM public.businesses b
+    WHERE b.id = p_business_id
+      AND b.created_by = v_uid
+  );
 END;
 $$;
 
@@ -25,13 +51,12 @@ CREATE OR REPLACE FUNCTION public.can_manage_business_branch(
 )
 RETURNS BOOLEAN
 LANGUAGE plpgsql
+STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
   v_uid UUID := auth.uid();
-  v_is_active_member BOOLEAN := FALSE;
-  v_has_branches BOOLEAN := FALSE;
 BEGIN
   IF v_uid IS NULL OR p_business_id IS NULL THEN
     RETURN FALSE;
@@ -42,33 +67,21 @@ BEGIN
     RETURN TRUE;
   END IF;
 
-  -- Active staff with Application Settings edit permission can manage branches
-  IF public.has_module_permission(p_business_id, 'application_settings', 'edit') THEN
+  -- Active staff with Application Settings permission can manage branches
+  IF public.has_module_permission(p_business_id, 'application_settings', 'edit')
+     OR (p_allow_initial_setup AND public.has_module_permission(p_business_id, 'application_settings', 'create')) THEN
     RETURN TRUE;
   END IF;
 
-  -- During initial setup only, allow an active member of the business to create
-  -- its first branch inside SECURITY DEFINER without triggering recursive RLS
-  -- on public.branches.
+  -- During initial setup only, allow the business creator without querying public.branches
   IF p_allow_initial_setup THEN
-    SELECT EXISTS (
+    IF EXISTS (
       SELECT 1
-      FROM public.business_users bu
-      WHERE bu.business_id = p_business_id
-        AND bu.user_id = v_uid
-        AND COALESCE(bu.status, 'active') = 'active'
-    ) INTO v_is_active_member;
-
-    IF v_is_active_member THEN
-      SELECT EXISTS (
-        SELECT 1
-        FROM public.branches b
-        WHERE b.business_id = p_business_id
-      ) INTO v_has_branches;
-
-      IF NOT v_has_branches THEN
-        RETURN TRUE;
-      END IF;
+      FROM public.businesses b
+      WHERE b.id = p_business_id
+        AND b.created_by = v_uid
+    ) THEN
+      RETURN TRUE;
     END IF;
   END IF;
 
@@ -79,6 +92,7 @@ $$;
 CREATE OR REPLACE FUNCTION public.can_manage_user_profile(p_target_user_id UUID)
 RETURNS BOOLEAN
 LANGUAGE plpgsql
+STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
@@ -148,7 +162,10 @@ CREATE POLICY "branches_update" ON public.branches
 
 CREATE POLICY "branches_delete" ON public.branches
   FOR DELETE TO authenticated
-  USING (public.is_business_owner_or_admin(business_id));
+  USING (
+    public.is_business_owner_or_admin(business_id)
+    OR public.has_module_permission(business_id, 'application_settings', 'delete')
+  );
 
 -- 4. Verify & harden user_profiles policies without circular dependencies
 ALTER TABLE public.user_profiles ENABLE ROW LEVEL SECURITY;

@@ -931,6 +931,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setIsBusinessConfigured(true);
             await loadBusinessData(accessCheck.businessId, accessCheck.employee?.branchId);
           } else {
+            setActiveBusinessId('');
+            setActiveBranchId('');
             setIsBusinessConfigured(false);
           }
         } else {
@@ -1361,75 +1363,126 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           throw new Error('Your session has expired. Please sign in again before completing setup.');
         }
 
-        // 0. Check if user already has an existing membership to prevent duplicate business rows
-        const { data: existingMemberships, error: existingMemErr } = await supabase
-          .from('business_users')
-          .select('business_id, branch_id, role, status')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false });
-        if (existingMemErr) throw existingMemErr;
+        // 0. Try atomic transactional setup RPC first (eliminates partial setup & client-side RLS races)
+        let usedAtomicRpc = false;
+        let savedBranch: any = null;
+        const createdAccounts: Account[] = [];
 
-        const blockedMem = (existingMemberships || []).find(
-          (m: any) => m.status && m.status !== 'active'
+        const rpcPayloadAccounts = (setupData.initialAccounts || [])
+          .filter(a => a.name.trim().length > 0)
+          .map(a => ({
+            name: a.name.trim(),
+            accountType: a.accountType,
+            accountNumber: a.accountNumber || null,
+            openingBalance: Number(a.openingBalance) || 0,
+          }));
+
+        const { data: rpcSetupData, error: rpcSetupErr } = await supabase.rpc(
+          'complete_first_time_business_setup',
+          {
+            p_business_id: sanitizeUuid(bizId),
+            p_shop_name: setupData.shopName,
+            p_owner_name: setupData.ownerName,
+            p_business_type: setupData.businessType,
+            p_phone: setupData.phone,
+            p_email: setupData.email || user.email || null,
+            p_address: setupData.address,
+            p_branch_name: setupData.branchName,
+            p_currency: setupData.currency,
+            p_financial_year: setupData.financialYear,
+            p_vat_tax_rate: setupData.vatTaxRate,
+            p_vat_registration_no: setupData.vatRegistrationNo || null,
+            p_initial_accounts: rpcPayloadAccounts,
+          }
         );
-        const activeMem = (existingMemberships || []).find(
-          (m: any) => !m.status || m.status === 'active'
-        );
 
-        if (!activeMem && blockedMem) {
-          throw new Error(`Your account is currently ${blockedMem.status}. Please contact the Store Owner.`);
-        }
-
-        if (!bizId && activeMem?.business_id) {
-          bizId = activeMem.business_id;
-        }
-
-        // 1. Upsert user profile (RLS allows id = auth.uid())
-        const { error: profErr } = await supabase.from('user_profiles').upsert({
-          id: user.id,
-          email: user.email || '',
-          full_name: setupData.ownerName,
-          mobile: setupData.phone,
-          updated_at: now,
-        });
-        if (profErr) throw profErr;
-
-        // 2. Create or update business & link owner membership in RLS-safe order
-        if (!bizId) {
-          // Generate UUID client-side and insert WITHOUT .select() (no RETURNING),
-          // because businesses_select RLS requires an active business_users row first.
-          const newBizId = generateClientUuid();
-          const { error: bErr } = await supabase
-            .from('businesses')
-            .insert({
-              id: newBizId,
-              name: setupData.shopName,
-              owner_name: setupData.ownerName,
-              tagline: '',
-              business_type: setupData.businessType,
-              phone: setupData.phone,
-              email: setupData.email || user.email || null,
-              address: setupData.address,
-              currency: setupData.currency,
-              financial_year: setupData.financialYear,
-              vat_tax_rate: setupData.vatTaxRate,
-              vat_registration_no: setupData.vatRegistrationNo || null,
-              language: 'en',
-              is_active: true,
+        if (!rpcSetupErr && rpcSetupData?.business?.id && rpcSetupData?.branch?.id) {
+          usedAtomicRpc = true;
+          bizId = rpcSetupData.business.id;
+          savedBranch = rpcSetupData.branch;
+          mainBranchId = savedBranch.id;
+          const rpcAccounts = Array.isArray(rpcSetupData.accounts) ? rpcSetupData.accounts : [];
+          for (const accRes of rpcAccounts) {
+            createdAccounts.push({
+              id: accRes.id,
+              name: accRes.name,
+              accountType: accRes.account_type,
+              accountNumber: accRes.account_number || undefined,
+              balance: Number(accRes.balance || 0),
             });
-          if (bErr) throw bErr;
-          bizId = newBizId;
+          }
+        } else if (rpcSetupErr) {
+          const rpcMsg = String(rpcSetupErr.message || '').toLowerCase();
+          const rpcCode = String(rpcSetupErr.code || '');
+          const isMissingRpc =
+            rpcCode === '42883' ||
+            rpcCode === 'PGRST202' ||
+            (rpcMsg.includes('complete_first_time_business_setup') &&
+              (rpcMsg.includes('does not exist') || rpcMsg.includes('could not find')));
+          if (!isMissingRpc) {
+            throw rpcSetupErr;
+          }
+        }
 
-          const { error: memErr } = await supabase.from('business_users').insert({
-            business_id: bizId,
-            user_id: user.id,
-            role: 'owner',
-            status: 'active',
+        if (!usedAtomicRpc) {
+          // Direct fallback if 20261122 migration RPC hasn't been applied yet
+          // 0. Check if user already has an existing membership to prevent duplicate business rows
+          const { data: existingMemberships, error: existingMemErr } = await supabase
+            .from('business_users')
+            .select('business_id, branch_id, role, status')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false });
+          if (existingMemErr) throw existingMemErr;
+
+          const blockedMem = (existingMemberships || []).find(
+            (m: any) => m.status && m.status !== 'active'
+          );
+          const activeMem = (existingMemberships || []).find(
+            (m: any) => !m.status || m.status === 'active'
+          );
+
+          if (!activeMem && blockedMem) {
+            throw new Error(`Your account is currently ${blockedMem.status}. Please contact the Store Owner.`);
+          }
+
+          if (!bizId && activeMem?.business_id) {
+            bizId = activeMem.business_id;
+          }
+
+          // 1. Upsert user profile (RLS allows id = auth.uid())
+          const { error: profErr } = await supabase.from('user_profiles').upsert({
+            id: user.id,
+            email: user.email || '',
+            full_name: setupData.ownerName,
+            mobile: setupData.phone,
+            updated_at: now,
           });
-          if (memErr) throw memErr;
-        } else {
-          // Ensure owner membership exists before updating businesses (satisfies businesses UPDATE RLS)
-          if (!activeMem || activeMem.business_id !== bizId) {
+          if (profErr) throw profErr;
+
+          // 2. Create or update business & link owner membership in RLS-safe order
+          if (!bizId) {
+            const newBizId = generateClientUuid();
+            const { error: bErr } = await supabase
+              .from('businesses')
+              .insert({
+                id: newBizId,
+                name: setupData.shopName,
+                owner_name: setupData.ownerName,
+                tagline: '',
+                business_type: setupData.businessType,
+                phone: setupData.phone,
+                email: setupData.email || user.email || null,
+                address: setupData.address,
+                currency: setupData.currency,
+                financial_year: setupData.financialYear,
+                vat_tax_rate: setupData.vatTaxRate,
+                vat_registration_no: setupData.vatRegistrationNo || null,
+                language: 'en',
+                is_active: true,
+              });
+            if (bErr) throw bErr;
+            bizId = newBizId;
+
             const { error: memErr } = await supabase.from('business_users').insert({
               business_id: bizId,
               user_id: user.id,
@@ -1437,148 +1490,159 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               status: 'active',
             });
             if (memErr) throw memErr;
+          } else {
+            if (!activeMem || activeMem.business_id !== bizId) {
+              const { error: memErr } = await supabase.from('business_users').insert({
+                business_id: bizId,
+                user_id: user.id,
+                role: 'owner',
+                status: 'active',
+              });
+              if (memErr) throw memErr;
+            }
+
+            const { error: uBizErr } = await supabase
+              .from('businesses')
+              .update({
+                name: setupData.shopName,
+                owner_name: setupData.ownerName,
+                business_type: setupData.businessType,
+                phone: setupData.phone,
+                email: setupData.email || user.email || null,
+                address: setupData.address,
+                currency: setupData.currency,
+                financial_year: setupData.financialYear,
+                vat_tax_rate: setupData.vatTaxRate,
+                vat_registration_no: setupData.vatRegistrationNo || null,
+                is_active: true,
+                updated_at: now,
+              })
+              .eq('id', bizId);
+            if (uBizErr) throw uBizErr;
           }
 
-          const { error: uBizErr } = await supabase
-            .from('businesses')
-            .update({
-              name: setupData.shopName,
-              owner_name: setupData.ownerName,
-              business_type: setupData.businessType,
-              phone: setupData.phone,
-              email: setupData.email || user.email || null,
-              address: setupData.address,
-              currency: setupData.currency,
-              financial_year: setupData.financialYear,
-              vat_tax_rate: setupData.vatTaxRate,
-              vat_registration_no: setupData.vatRegistrationNo || null,
-              is_active: true,
-              updated_at: now,
-            })
-            .eq('id', bizId);
-          if (uBizErr) throw uBizErr;
-        }
-
-        // 3. Create or reuse primary branch (now that business_users membership satisfies RLS)
-        const { data: existingBranches, error: existingBrErr } = await supabase
-          .from('branches')
-          .select('*')
-          .eq('business_id', bizId)
-          .order('is_main', { ascending: false })
-          .order('created_at', { ascending: true });
-        if (existingBrErr) throw existingBrErr;
-
-        if (existingBranches && existingBranches.length > 0) {
-          const primaryBranch = existingBranches[0];
-          mainBranchId = primaryBranch.id;
-          const { error: updBrErr } = await supabase
+          // 3. Create or reuse primary branch
+          const { data: existingBranches, error: existingBrErr } = await supabase
             .from('branches')
-            .update({
-              name: setupData.branchName,
-              location: setupData.address,
-              mobile: setupData.phone,
-              is_main: true,
-              updated_at: now,
-            })
-            .eq('id', mainBranchId)
-            .eq('business_id', bizId);
-          if (updBrErr) throw updBrErr;
-        } else {
-          const { data: newBranch, error: brErr } = await supabase
-            .from('branches')
-            .insert({
-              business_id: bizId,
-              name: setupData.branchName,
-              location: setupData.address,
-              mobile: setupData.phone,
-              is_main: true,
-            })
-            .select()
-            .single();
-          if (brErr) throw brErr;
-          mainBranchId = newBranch.id;
-        }
-
-        // 4. Link main branch to owner membership
-        const { error: branchLinkErr } = await supabase
-          .from('business_users')
-          .update({ branch_id: mainBranchId, updated_at: now })
-          .eq('business_id', bizId)
-          .eq('user_id', user.id);
-        if (branchLinkErr) throw branchLinkErr;
-
-        // 5. Verify business, owner membership, and main branch are persisted and readable
-        const [
-          { data: savedBusiness, error: verifyBizErr },
-          { data: savedMembership, error: verifyMemErr },
-          { data: savedBranch, error: verifyBrErr },
-        ] = await Promise.all([
-          supabase.from('businesses').select('id, name').eq('id', bizId).maybeSingle(),
-          supabase
-            .from('business_users')
-            .select('business_id, user_id, branch_id, role, status')
+            .select('*')
             .eq('business_id', bizId)
-            .eq('user_id', user.id)
-            .maybeSingle(),
-          supabase
-            .from('branches')
-            .select('id, name, location, mobile, is_main')
-            .eq('id', mainBranchId)
-            .maybeSingle(),
-        ]);
-        if (verifyBizErr) throw verifyBizErr;
-        if (verifyMemErr) throw verifyMemErr;
-        if (verifyBrErr) throw verifyBrErr;
+            .order('is_main', { ascending: false })
+            .order('created_at', { ascending: true });
+          if (existingBrErr) throw existingBrErr;
 
-        if (!savedBusiness?.id || !String(savedBusiness.name || '').trim()) {
-          throw new Error(
-            'Business setup was saved, but the business profile could not be verified. Please check your Supabase businesses table permissions.'
-          );
-        }
-        if (!savedMembership?.business_id || savedMembership.status === 'inactive') {
-          throw new Error(
-            'Business profile was saved, but the owner membership is missing or inactive. Please check business_users permissions.'
-          );
-        }
-        if (!savedBranch?.id) {
-          throw new Error(
-            'Business profile was saved, but the primary branch could not be verified. Please check branches permissions.'
-          );
-        }
-
-        // 6. Insert initial accounts (avoid duplicating on retry)
-        const existingAccounts = await financeService.fetchAccounts(bizId).catch(() => [] as Account[]);
-        const createdAccounts: Account[] = [...existingAccounts];
-        if (setupData.initialAccounts && setupData.initialAccounts.length > 0) {
-          for (const acc of setupData.initialAccounts) {
-            const alreadyExists = existingAccounts.some(
-              e =>
-                e.name.trim().toLowerCase() === acc.name.trim().toLowerCase() &&
-                e.accountType === acc.accountType
-            );
-            if (alreadyExists) continue;
-
-            const { data: accRes, error: aErr } = await supabase
-              .from('accounts')
+          if (existingBranches && existingBranches.length > 0) {
+            const primaryBranch = existingBranches[0];
+            mainBranchId = primaryBranch.id;
+            const { error: updBrErr } = await supabase
+              .from('branches')
+              .update({
+                name: setupData.branchName,
+                location: setupData.address,
+                mobile: setupData.phone,
+                is_main: true,
+                updated_at: now,
+              })
+              .eq('id', mainBranchId)
+              .eq('business_id', bizId);
+            if (updBrErr) throw updBrErr;
+          } else {
+            const { data: newBranch, error: brErr } = await supabase
+              .from('branches')
               .insert({
                 business_id: bizId,
-                name: acc.name,
-                account_type: acc.accountType,
-                account_number: acc.accountNumber || null,
-                balance: acc.openingBalance || 0,
-                is_active: true,
+                name: setupData.branchName,
+                location: setupData.address,
+                mobile: setupData.phone,
+                is_main: true,
               })
               .select()
               .single();
-            if (aErr) throw aErr;
-            if (accRes) {
-              createdAccounts.push({
-                id: accRes.id,
-                name: accRes.name,
-                accountType: accRes.account_type,
-                accountNumber: accRes.account_number || undefined,
-                balance: Number(accRes.balance || 0),
-              });
+            if (brErr) throw brErr;
+            mainBranchId = newBranch.id;
+          }
+
+          // 4. Link main branch to owner membership
+          const { error: branchLinkErr } = await supabase
+            .from('business_users')
+            .update({ branch_id: mainBranchId, updated_at: now })
+            .eq('business_id', bizId)
+            .eq('user_id', user.id);
+          if (branchLinkErr) throw branchLinkErr;
+
+          // 5. Verify business, owner membership, and main branch are persisted and readable
+          const [
+            { data: savedBusiness, error: verifyBizErr },
+            { data: savedMembership, error: verifyMemErr },
+            { data: verifiedBranch, error: verifyBrErr },
+          ] = await Promise.all([
+            supabase.from('businesses').select('id, name').eq('id', bizId).maybeSingle(),
+            supabase
+              .from('business_users')
+              .select('business_id, user_id, branch_id, role, status')
+              .eq('business_id', bizId)
+              .eq('user_id', user.id)
+              .maybeSingle(),
+            supabase
+              .from('branches')
+              .select('id, name, location, mobile, is_main')
+              .eq('id', mainBranchId)
+              .maybeSingle(),
+          ]);
+          if (verifyBizErr) throw verifyBizErr;
+          if (verifyMemErr) throw verifyMemErr;
+          if (verifyBrErr) throw verifyBrErr;
+
+          if (!savedBusiness?.id || !String(savedBusiness.name || '').trim()) {
+            throw new Error(
+              'Business setup was saved, but the business profile could not be verified. Please check your Supabase businesses table permissions.'
+            );
+          }
+          if (!savedMembership?.business_id || savedMembership.status === 'inactive') {
+            throw new Error(
+              'Business profile was saved, but the owner membership is missing or inactive. Please check business_users permissions.'
+            );
+          }
+          if (!verifiedBranch?.id) {
+            throw new Error(
+              'Business profile was saved, but the primary branch could not be verified. Please check branches permissions.'
+            );
+          }
+          savedBranch = verifiedBranch;
+
+          // 6. Insert initial accounts (avoid duplicating on retry)
+          const existingAccounts = await financeService.fetchAccounts(bizId).catch(() => [] as Account[]);
+          createdAccounts.push(...existingAccounts);
+          if (setupData.initialAccounts && setupData.initialAccounts.length > 0) {
+            for (const acc of setupData.initialAccounts) {
+              const alreadyExists = existingAccounts.some(
+                e =>
+                  e.name.trim().toLowerCase() === acc.name.trim().toLowerCase() &&
+                  e.accountType === acc.accountType
+              );
+              if (alreadyExists) continue;
+
+              const { data: accRes, error: aErr } = await supabase
+                .from('accounts')
+                .insert({
+                  business_id: bizId,
+                  name: acc.name,
+                  account_type: acc.accountType,
+                  account_number: acc.accountNumber || null,
+                  balance: acc.openingBalance || 0,
+                  is_active: true,
+                })
+                .select()
+                .single();
+              if (aErr) throw aErr;
+              if (accRes) {
+                createdAccounts.push({
+                  id: accRes.id,
+                  name: accRes.name,
+                  accountType: accRes.account_type,
+                  accountNumber: accRes.account_number || undefined,
+                  balance: Number(accRes.balance || 0),
+                });
+              }
             }
           }
         }

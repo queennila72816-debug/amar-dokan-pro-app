@@ -73,7 +73,7 @@ export const formatSupabaseError = (
   const lower = rawMsg.toLowerCase();
 
   if (code === '42P17' || lower.includes('infinite recursion')) {
-    return `${rawMsg} — Run supabase/migrations/20261119_fix_branches_rls_recursion.sql in Supabase SQL Editor to apply the non-recursive RLS fix.`;
+    return `${rawMsg} — Run supabase/migrations/20261122_permanent_rls_recursion_and_setup_fix.sql (or 20261119_fix_branches_rls_recursion.sql) in Supabase SQL Editor to apply the non-recursive RLS fix.`;
   }
   if (lower.includes('row-level security') || code === '42501') {
     return 'Permission denied by database security policy (RLS). Ensure your staff role is active or run the latest database migrations.';
