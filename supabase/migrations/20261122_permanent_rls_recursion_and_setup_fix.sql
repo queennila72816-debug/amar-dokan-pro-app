@@ -2,24 +2,21 @@
 -- Amar Dokan Pro: Permanent Non-Recursive RLS & Atomic Business Setup Fix
 -- Idempotent & Data-Safe Migration (Zero data deletion, RLS remains ENABLED)
 --
--- Root Causes Addressed:
+-- Audit Fixes & Guarantees:
 -- 1. Eliminates ALL direct/indirect queries to public.branches inside branches
---    RLS helper functions (previous can_manage_business_branch queried branches
---    during branches INSERT, risking self-recursion if FORCE RLS or non-bypass
---    roles were active).
+--    RLS helper functions (zero self-recursion risk).
 -- 2. Sweeps ALL existing/legacy policies across pg_policies on branches AND all
---    related membership/RBAC tables (businesses, business_users, user_profiles,
---    employees, user_roles, role_permissions, user_activity_logs, accounts) so
---    no leftover OR-combined policy can trigger 42P17 infinite recursion.
--- 3. Ensures NO FORCE ROW LEVEL SECURITY on all tables so SECURITY DEFINER
---    helpers (with fixed search_path = public) cleanly evaluate membership/RBAC
---    without re-entering table RLS policies.
--- 4. Adds businesses.created_by (nullable, default auth.uid()) and tightens
---    business_users INSERT/DELETE policies so new owners can set up their own
---    business without allowing cross-business membership hijacking.
--- 5. Provides atomic SECURITY DEFINER RPC `complete_first_time_business_setup`
---    so Business, Owner Membership, Primary Branch, and Initial Accounts save
---    in one transaction with zero orphaned partial state.
+--    related membership/RBAC tables (user_profiles, businesses, business_users,
+--    user_roles, role_permissions, employees, user_activity_logs, accounts).
+-- 3. Replaces unrestricted user_profiles_select USING (TRUE) with strict
+--    same-business / self access via SECURITY DEFINER can_access_user_profile().
+-- 4. Ensures NO FORCE ROW LEVEL SECURITY on core/RBAC tables while keeping
+--    ENABLE ROW LEVEL SECURITY active on every table.
+-- 5. Adds businesses.created_by (nullable, default auth.uid()) and safely
+--    backfills existing rows from active owners without altering user data.
+-- 6. Tightens business_users INSERT/DELETE policies to block orphan-UUID claims.
+-- 7. Provides atomic SECURITY DEFINER RPC `complete_first_time_business_setup`
+--    compatible with AppContext.tsx parameters and return structure.
 -- ============================================================================
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
@@ -80,6 +77,21 @@ AS $$
     ELSE LOWER(COALESCE(p_raw, 'salesman'))
   END;
 $$;
+
+-- Safe non-destructive backfill of businesses.created_by for pre-existing rows
+UPDATE public.businesses b
+SET created_by = sub.user_id
+FROM (
+  SELECT DISTINCT ON (bu.business_id)
+    bu.business_id,
+    bu.user_id
+  FROM public.business_users bu
+  WHERE COALESCE(bu.status, 'active') = 'active'
+    AND public.normalize_rbac_role_key(bu.role) = 'super_admin'
+  ORDER BY bu.business_id, bu.created_at ASC
+) sub
+WHERE b.id = sub.business_id
+  AND b.created_by IS NULL;
 
 CREATE OR REPLACE FUNCTION public.is_active_staff_member(p_business_id UUID)
 RETURNS BOOLEAN
@@ -377,26 +389,51 @@ BEGIN
   END IF;
 
   -- Self-registration as initial owner is ONLY allowed when the authenticated
-  -- user created the business or the business has no members yet
+  -- user created the business
   IF p_target_user_id = v_uid THEN
     IF EXISTS (
       SELECT 1
       FROM public.businesses b
       WHERE b.id = p_business_id
-        AND (
-          b.created_by = v_uid
-          OR NOT EXISTS (
-            SELECT 1
-            FROM public.business_users bu
-            WHERE bu.business_id = p_business_id
-          )
-        )
+        AND b.created_by = v_uid
     ) THEN
       RETURN TRUE;
     END IF;
   END IF;
 
   RETURN FALSE;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.can_access_user_profile(p_target_user_id UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  v_uid UUID := auth.uid();
+BEGIN
+  IF v_uid IS NULL OR p_target_user_id IS NULL THEN
+    RETURN FALSE;
+  END IF;
+
+  IF p_target_user_id = v_uid THEN
+    RETURN TRUE;
+  END IF;
+
+  RETURN EXISTS (
+    SELECT 1
+    FROM public.business_users target_bu
+    WHERE target_bu.user_id = p_target_user_id
+      AND public.is_active_staff_member(target_bu.business_id)
+  ) OR EXISTS (
+    SELECT 1
+    FROM public.employees target_e
+    WHERE target_e.user_id = p_target_user_id
+      AND public.is_active_staff_member(target_e.business_id)
+  );
 END;
 $$;
 
@@ -421,12 +458,19 @@ BEGIN
   RETURN EXISTS (
     SELECT 1
     FROM public.business_users target_bu
-    JOIN public.business_users actor_bu
-      ON actor_bu.business_id = target_bu.business_id
     WHERE target_bu.user_id = p_target_user_id
-      AND actor_bu.user_id = v_uid
-      AND COALESCE(actor_bu.status, 'active') = 'active'
-      AND public.normalize_rbac_role_key(actor_bu.role) = 'super_admin'
+      AND (
+        public.is_business_owner_or_admin(target_bu.business_id)
+        OR public.has_module_permission(target_bu.business_id, 'user_management', 'edit')
+      )
+  ) OR EXISTS (
+    SELECT 1
+    FROM public.employees target_e
+    WHERE target_e.user_id = p_target_user_id
+      AND (
+        public.is_business_owner_or_admin(target_e.business_id)
+        OR public.has_module_permission(target_e.business_id, 'user_management', 'edit')
+      )
   );
 END;
 $$;
@@ -448,6 +492,9 @@ GRANT EXECUTE ON FUNCTION public.can_manage_business_branch(UUID, BOOLEAN) TO au
 
 REVOKE ALL ON FUNCTION public.can_insert_business_membership(UUID, UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.can_insert_business_membership(UUID, UUID) TO authenticated;
+
+REVOKE ALL ON FUNCTION public.can_access_user_profile(UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.can_access_user_profile(UUID) TO authenticated;
 
 REVOKE ALL ON FUNCTION public.can_manage_user_profile(UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.can_manage_user_profile(UUID) TO authenticated;
@@ -480,10 +527,10 @@ BEGIN
   END LOOP;
 END $$;
 
--- user_profiles
+-- user_profiles (scoped strictly to own profile or active members of same business)
 CREATE POLICY "user_profiles_select" ON public.user_profiles
   FOR SELECT TO authenticated
-  USING (TRUE);
+  USING (public.can_access_user_profile(id));
 
 CREATE POLICY "user_profiles_insert" ON public.user_profiles
   FOR INSERT TO authenticated
@@ -745,7 +792,10 @@ DECLARE
   v_clean_phone TEXT := BTRIM(COALESCE(p_phone, ''));
   v_clean_address TEXT := BTRIM(COALESCE(p_address, ''));
   v_clean_currency TEXT := COALESCE(NULLIF(BTRIM(COALESCE(p_currency, '')), ''), '৳');
-  v_clean_fy TEXT := COALESCE(NULLIF(BTRIM(COALESCE(p_financial_year, '')), ''), TO_CHAR(NOW(), 'YYYY') || '-' || (EXTRACT(YEAR FROM NOW())::INT + 1)::TEXT);
+  v_clean_fy TEXT := COALESCE(
+    NULLIF(BTRIM(COALESCE(p_financial_year, '')), ''),
+    TO_CHAR(NOW(), 'YYYY') || '-' || (EXTRACT(YEAR FROM NOW())::INT + 1)::TEXT
+  );
   v_biz_id UUID := p_business_id;
   v_biz RECORD;
   v_branch RECORD;
@@ -753,6 +803,7 @@ DECLARE
   v_acc_name TEXT;
   v_acc_type TEXT;
   v_acc_num TEXT;
+  v_acc_bal_raw TEXT;
   v_acc_bal NUMERIC(14,2);
   v_accounts_json JSONB := '[]'::jsonb;
 BEGIN
@@ -789,6 +840,12 @@ BEGIN
     WHERE e.user_id = v_uid
       AND e.account_status = 'active'
       AND public.normalize_rbac_role_key(COALESCE(e.role_key, e.role)) <> 'super_admin'
+  ) OR EXISTS (
+    SELECT 1
+    FROM public.business_users bu
+    WHERE bu.user_id = v_uid
+      AND COALESCE(bu.status, 'active') = 'active'
+      AND public.normalize_rbac_role_key(bu.role) <> 'super_admin'
   ) THEN
     RAISE EXCEPTION 'Only Store Owners or Administrators can run First-Time Business Setup.';
   END IF;
@@ -812,7 +869,7 @@ BEGIN
     email = CASE WHEN EXCLUDED.email <> '' THEN EXCLUDED.email ELSE public.user_profiles.email END,
     updated_at = NOW();
 
-  -- Step 2: Resolve or create business owned by v_uid
+  -- Step 2: Resolve or create business strictly owned by v_uid
   IF v_biz_id IS NOT NULL THEN
     IF NOT EXISTS (
       SELECT 1
@@ -821,9 +878,6 @@ BEGIN
         AND (
           b.created_by = v_uid
           OR public.is_business_owner_or_admin(b.id)
-          OR NOT EXISTS (
-            SELECT 1 FROM public.business_users bu WHERE bu.business_id = b.id
-          )
         )
     ) THEN
       RAISE EXCEPTION 'Permission denied: target business does not belong to the authenticated owner.';
@@ -953,9 +1007,14 @@ BEGIN
         CONTINUE;
       END IF;
 
-      v_acc_type := COALESCE(NULLIF(BTRIM(COALESCE(v_acc_item->>'accountType', v_acc_item->>'account_type', '')), ''), 'cash');
+      v_acc_type := LOWER(COALESCE(NULLIF(BTRIM(COALESCE(v_acc_item->>'accountType', v_acc_item->>'account_type', '')), ''), 'cash'));
+      IF v_acc_type NOT IN ('cash', 'bank', 'mobile_bank') THEN
+        v_acc_type := 'cash';
+      END IF;
+
       v_acc_num := NULLIF(BTRIM(COALESCE(v_acc_item->>'accountNumber', v_acc_item->>'account_number', '')), '');
-      v_acc_bal := COALESCE((COALESCE(v_acc_item->>'openingBalance', v_acc_item->>'balance', '0'))::NUMERIC, 0);
+      v_acc_bal_raw := NULLIF(BTRIM(COALESCE(v_acc_item->>'openingBalance', v_acc_item->>'balance', '')), '');
+      v_acc_bal := COALESCE(v_acc_bal_raw::NUMERIC, 0);
 
       IF NOT EXISTS (
         SELECT 1
