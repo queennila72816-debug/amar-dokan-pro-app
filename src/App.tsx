@@ -32,6 +32,7 @@ import { AuthModal } from './components/auth/AuthModal';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { APP_IDENTITY } from './config/appIdentity';
 import { isSalesmanOrCashierRole, LegacyAppModule, normalizeRoleKey } from './utils/rbacDefaults';
+import { evaluateBrowserCompatibility } from './utils/browserCompat';
 import { Loader2, Store, LogOut, ShieldAlert, AlertTriangle, X } from 'lucide-react';
 
 const TAB_TO_MODULE_MAP: Record<string, LegacyAppModule> = {
@@ -83,6 +84,8 @@ const MainLayout: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
+  const [compatReport] = useState(() => evaluateBrowserCompatibility());
+  const [compatBannerDismissed, setCompatBannerDismissed] = useState<boolean>(false);
   const mainScrollRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -160,7 +163,7 @@ const MainLayout: React.FC = () => {
   if (isLoading && !isRecovery) {
     return (
       <div className="min-h-screen bg-[#0B1428] flex flex-col items-center justify-center p-4 text-white">
-        <div className="w-16 h-16 rounded-[14px] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] flex items-center justify-center mb-4 shadow-xl shadow-black/30">
+        <div className="w-16 h-16 rounded-[14px] bg-[#D6AD60] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] flex items-center justify-center mb-4 shadow-xl shadow-black/30">
           <Store className="w-8 h-8 stroke-[2.2]" />
         </div>
 
@@ -173,7 +176,7 @@ const MainLayout: React.FC = () => {
 
         <div className="w-56 space-y-2 mb-4">
           <div className="h-2.5 bg-white/10 rounded-full overflow-hidden">
-            <div className="h-full w-2/3 bg-gradient-to-r from-[#087F8C] via-[#10B981] to-[#D6AD60] animate-pulse rounded-full" />
+            <div className="h-full w-2/3 bg-[#10B981] bg-gradient-to-r from-[#087F8C] via-[#10B981] to-[#D6AD60] animate-pulse rounded-full" />
           </div>
         </div>
 
@@ -217,7 +220,7 @@ const MainLayout: React.FC = () => {
           <button
             type="button"
             onClick={() => retryInitialization()}
-            className="px-5 py-2.5 bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white text-xs font-bold rounded-[10px] transition-all cursor-pointer"
+            className="px-5 py-2.5 bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white text-xs font-bold rounded-[10px] transition-all cursor-pointer"
           >
             Retry Connection
           </button>
@@ -501,6 +504,33 @@ const MainLayout: React.FC = () => {
                     className="px-3 py-1.5 rounded-lg bg-[#101B35] text-[#D6AD60] border border-[#D6AD60]/40 text-xs font-semibold hover:brightness-110 transition-all cursor-pointer shrink-0"
                   >
                     Manage Plan &rarr;
+                  </button>
+                </div>
+              )}
+
+              {!compatReport.supported && !compatBannerDismissed && (
+                <div className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-950 shadow-xs no-print">
+                  <div className="flex items-start gap-2.5 min-w-0">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-700 mt-0.5" />
+                    <div className="min-w-0">
+                      <p className="font-bold">Browser Compatibility Notice</p>
+                      <p className="mt-0.5">
+                        {compatReport.recommendedAction}{' '}
+                        {compatReport.missingFeatures.length > 0 && (
+                          <span className="font-semibold">
+                            (Missing: {compatReport.missingFeatures.join(', ')})
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCompatBannerDismissed(true)}
+                    aria-label="Dismiss browser compatibility notice"
+                    className="p-1 rounded-md text-amber-800 hover:bg-amber-200/70 transition-colors cursor-pointer shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
               )}

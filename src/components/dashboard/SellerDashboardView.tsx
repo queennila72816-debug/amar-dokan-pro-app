@@ -145,7 +145,7 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({ onOpen
   return (
     <div className="space-y-6">
       {/* Luxury Navy + Gold + Teal Welcome Banner */}
-      <div className="bg-gradient-to-r from-[#101B35] via-[#152447] to-[#087F8C] rounded-[14px] p-5 sm:p-6 text-white shadow-lg border border-[#D6AD60]/25 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      <div className="bg-[#101B35] bg-gradient-to-r from-[#101B35] via-[#152447] to-[#087F8C] rounded-[14px] p-5 sm:p-6 text-white shadow-lg border border-[#D6AD60]/25 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="flex items-start gap-3.5">
           {shopLogo && (
             <div className="w-12 h-12 rounded-[10px] bg-white p-1 flex items-center justify-center shrink-0 shadow-xs">
@@ -160,7 +160,7 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({ onOpen
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white">
               Welcome back, {sellerDisplayName}!
             </h1>
-            <p className="text-xs text-slate-300 mt-1">
+            <p className="text-xs text-[#CBD5E1] mt-1">
               Your daily sales summary and counter ledger for {biz.shopName}.
             </p>
           </div>
@@ -180,7 +180,7 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({ onOpen
 
           <button
             onClick={onOpenPOS}
-            className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-[#D6AD60] to-[#E6BE73] hover:brightness-105 text-[#0B1428] rounded-[10px] text-xs sm:text-sm font-bold shadow-md active:scale-95 transition-all cursor-pointer"
+            className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-4 py-2.5 bg-[#D6AD60] bg-gradient-to-r from-[#D6AD60] to-[#E6BE73] hover:brightness-105 text-[#0B1428] rounded-[10px] text-xs sm:text-sm font-bold shadow-md active:scale-95 transition-all cursor-pointer"
           >
             <ShoppingCart className="w-4 h-4" />
             <span>Open POS / New Sale</span>
@@ -190,48 +190,48 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({ onOpen
 
       {/* Gradient KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
-        <div className="rounded-[14px] p-4 text-white bg-gradient-to-br from-[#10B981] to-[#059669] shadow-md shadow-[#10B981]/20">
-          <div className="flex items-center justify-between text-emerald-50 mb-1">
+        <div className="rounded-[14px] p-4 text-white bg-[#10B981] bg-gradient-to-br from-[#10B981] to-[#059669] shadow-md shadow-[#10B981]/20">
+          <div className="flex items-center justify-between text-[#ECFDF5] mb-1">
             <span className="text-xs font-semibold uppercase tracking-wider">Today&apos;s Sales</span>
             <TrendingUp className="w-4 h-4" />
           </div>
           <p className="text-xl sm:text-2xl font-bold font-mono-num">
             {formatCurrency(todayTotalAmount, lang)}
           </p>
-          <span className="text-[11px] text-emerald-50/90 font-medium">Your counter sales today</span>
+          <span className="text-[11px] text-[#ECFDF5] font-medium">Your counter sales today</span>
         </div>
 
-        <div className="rounded-[14px] p-4 text-white bg-gradient-to-br from-[#4169E1] to-[#284BC2] shadow-md shadow-[#4169E1]/20">
-          <div className="flex items-center justify-between text-blue-50 mb-1">
+        <div className="rounded-[14px] p-4 text-white bg-[#4169E1] bg-gradient-to-br from-[#4169E1] to-[#284BC2] shadow-md shadow-[#4169E1]/20">
+          <div className="flex items-center justify-between text-[#EFF6FF] mb-1">
             <span className="text-xs font-semibold uppercase tracking-wider">Transactions</span>
             <Receipt className="w-4 h-4" />
           </div>
           <p className="text-xl sm:text-2xl font-bold font-mono-num">
             {todayTransactionCount}
           </p>
-          <span className="text-[11px] text-blue-50/90 font-medium">Invoices completed</span>
+          <span className="text-[11px] text-[#EFF6FF] font-medium">Invoices completed</span>
         </div>
 
-        <div className="rounded-[14px] p-4 text-white bg-gradient-to-br from-[#087F8C] to-[#055B65] shadow-md shadow-[#087F8C]/20">
-          <div className="flex items-center justify-between text-teal-50 mb-1">
+        <div className="rounded-[14px] p-4 text-white bg-[#087F8C] bg-gradient-to-br from-[#087F8C] to-[#055B65] shadow-md shadow-[#087F8C]/20">
+          <div className="flex items-center justify-between text-[#F0FDFA] mb-1">
             <span className="text-xs font-semibold uppercase tracking-wider">Cash Collected</span>
             <Banknote className="w-4 h-4" />
           </div>
           <p className="text-xl sm:text-2xl font-bold font-mono-num">
             {formatCurrency(methodBreakdown.cash, lang)}
           </p>
-          <span className="text-[11px] text-teal-50/90 font-medium">In cash drawer</span>
+          <span className="text-[11px] text-[#F0FDFA] font-medium">In cash drawer</span>
         </div>
 
-        <div className="rounded-[14px] p-4 text-white bg-gradient-to-br from-[#7357D9] to-[#563AB8] shadow-md shadow-[#7357D9]/20">
-          <div className="flex items-center justify-between text-purple-50 mb-1">
+        <div className="rounded-[14px] p-4 text-white bg-[#7357D9] bg-gradient-to-br from-[#7357D9] to-[#563AB8] shadow-md shadow-[#7357D9]/20">
+          <div className="flex items-center justify-between text-[#FAF5FF] mb-1">
             <span className="text-xs font-semibold uppercase tracking-wider">Average Sale</span>
             <Receipt className="w-4 h-4" />
           </div>
           <p className="text-xl sm:text-2xl font-bold font-mono-num">
             {formatCurrency(todayAvgTicket, lang)}
           </p>
-          <span className="text-[11px] text-purple-50/90 font-medium">Per transaction</span>
+          <span className="text-[11px] text-[#FAF5FF] font-medium">Per transaction</span>
         </div>
       </div>
 

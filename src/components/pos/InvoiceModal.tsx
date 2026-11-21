@@ -14,6 +14,7 @@ import { PrintPreviewModal } from '../printing/PrintPreviewModal';
 import { BarcodeSvg } from '../barcodes/BarcodeSvg';
 import { ProductThumbnail } from '../common/ProductThumbnail';
 import { inferColorHex, resolveProductImage } from '../../utils/productImageResolver';
+import { copyTextSafely } from '../../utils/polyfills';
 import {
   Printer,
   Share2,
@@ -99,11 +100,13 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
     window.open(`https://api.whatsapp.com/send?${phoneParam}text=${message}`, '_blank');
   };
 
-  const handleCopySummary = () => {
+  const handleCopySummary = async () => {
     const text = `${biz.shopName} | Invoice: ${sale.invoiceNumber}\nTotal: ৳${sale.total} | Paid: ৳${sale.paid} | Due: ৳${sale.due}\nThank you for shopping with us!`;
-    navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    const ok = await copyTextSafely(text);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   const comboDiscount = Number(sale.comboDiscount || 0);
@@ -557,7 +560,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                     type="button"
                     onClick={handlePrint}
                     disabled={isPrinting}
-                    className="flex items-center justify-center gap-2 px-4 py-2 text-xs md:text-sm font-semibold text-white bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 disabled:opacity-60 rounded-[10px] shadow-xs transition-all cursor-pointer"
+                    className="flex items-center justify-center gap-2 px-4 py-2 text-xs md:text-sm font-semibold text-white bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 disabled:opacity-60 rounded-[10px] shadow-xs transition-all cursor-pointer"
                   >
                     <Printer className="w-4 h-4" />
                     <span>{isPrinting ? 'Printing...' : 'Print Invoice'}</span>

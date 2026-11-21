@@ -148,7 +148,7 @@ export const PrintPreviewModal: React.FC<PrintPreviewModalProps> = ({
               type="button"
               onClick={handlePrint}
               disabled={!canPrint}
-              className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 disabled:opacity-50 rounded-[10px] shadow-xs transition-all cursor-pointer"
+              className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 disabled:opacity-50 rounded-[10px] shadow-xs transition-all cursor-pointer"
             >
               {isPrinting || (Boolean(html) && !isGenerating && !isPreviewLoaded) ? (
                 <Loader2 className="w-4 h-4 animate-spin" />

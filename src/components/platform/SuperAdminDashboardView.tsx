@@ -413,7 +413,7 @@ export const SuperAdminDashboardView: React.FC = () => {
       {/* Platform Header Bar */}
       <div className="bg-[#101B35] text-white rounded-[14px] border border-[#D6AD60]/30 p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
         <div className="flex items-start sm:items-center gap-3.5">
-          <div className="w-11 h-11 rounded-[12px] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] flex items-center justify-center shrink-0">
+          <div className="w-11 h-11 rounded-[12px] bg-[#D6AD60] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] flex items-center justify-center shrink-0">
             <Crown className="w-6 h-6 stroke-[2.2]" />
           </div>
           <div>

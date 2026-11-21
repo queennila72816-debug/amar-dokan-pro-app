@@ -251,10 +251,10 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
 
       <div className="relative w-full max-w-2xl bg-white dark:bg-[#101B35] rounded-[16px] shadow-2xl border border-[#E2E8F0] dark:border-[#1F3158] overflow-hidden my-auto adp-modal-enter">
         {/* Wizard Header Banner */}
-        <div className="bg-gradient-to-r from-[#101B35] via-[#152447] to-[#0B1428] text-white p-6 sm:p-7 border-b border-[#D6AD60]/25">
+        <div className="bg-[#101B35] bg-gradient-to-r from-[#101B35] via-[#152447] to-[#0B1428] text-white p-6 sm:p-7 border-b border-[#D6AD60]/25">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2.5">
-              <div className="w-11 h-11 rounded-[12px] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] flex items-center justify-center shadow-md">
+              <div className="w-11 h-11 rounded-[12px] bg-[#D6AD60] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] flex items-center justify-center shadow-md">
                 <Store className="w-6 h-6 stroke-[2.2]" />
               </div>
               <div>
@@ -383,7 +383,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
               <div className="flex justify-end pt-4 border-t border-[#E2E8F0] dark:border-[#1F3158]">
                 <button
                   type="submit"
-                  className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white rounded-[10px] text-xs sm:text-sm font-bold shadow-md shadow-[#087F8C]/20 active:scale-[0.98] transition-all cursor-pointer"
+                  className="flex items-center gap-2 px-6 py-2.5 bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white rounded-[10px] text-xs sm:text-sm font-bold shadow-md shadow-[#087F8C]/20 active:scale-[0.98] transition-all cursor-pointer"
                 >
                   <span>Continue to Contact &amp; Verification</span>
                   <ArrowRight className="w-4 h-4" />
@@ -534,7 +534,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white rounded-[10px] text-xs sm:text-sm font-bold shadow-md shadow-[#087F8C]/20 active:scale-[0.98] transition-all cursor-pointer"
+                  className="flex items-center gap-2 px-6 py-2.5 bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white rounded-[10px] text-xs sm:text-sm font-bold shadow-md shadow-[#087F8C]/20 active:scale-[0.98] transition-all cursor-pointer"
                 >
                   <span>Continue to Accounts</span>
                   <ArrowRight className="w-4 h-4" />
@@ -700,7 +700,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                 </button>
                 <button
                   type="submit"
-                  className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white rounded-[10px] text-xs sm:text-sm font-bold shadow-md shadow-[#087F8C]/20 cursor-pointer"
+                  className="flex items-center gap-2 px-6 py-2.5 bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white rounded-[10px] text-xs sm:text-sm font-bold shadow-md shadow-[#087F8C]/20 cursor-pointer"
                 >
                   <span>Select Subscription Plan</span>
                   <ArrowRight className="w-4 h-4" />
@@ -809,7 +809,7 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
                 <button
                   type="submit"
                   disabled={loading}
-                  className="flex items-center gap-2 px-7 py-2.5 bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white rounded-[10px] text-xs sm:text-sm font-bold shadow-lg shadow-[#087F8C]/25 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-60"
+                  className="flex items-center gap-2 px-7 py-2.5 bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white rounded-[10px] text-xs sm:text-sm font-bold shadow-lg shadow-[#087F8C]/25 active:scale-[0.98] transition-all cursor-pointer disabled:opacity-60"
                 >
                   {loading ? (
                     <>

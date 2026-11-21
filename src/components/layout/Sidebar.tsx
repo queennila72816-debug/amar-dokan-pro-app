@@ -95,7 +95,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
 
       {/* Deep Navy Collapsible Sidebar */}
       <aside
-        className={`fixed lg:static top-14 sm:top-16 bottom-0 left-0 z-40 lg:h-full min-h-0 overflow-hidden overscroll-contain bg-[#0B1428] border-r border-[#1B2B4B] text-slate-200 flex flex-col transition-all duration-200 ease-in-out shrink-0 ${
+        className={`fixed lg:static top-14 sm:top-16 bottom-0 left-0 z-40 lg:h-full min-h-0 overflow-hidden overscroll-contain bg-[#0B1428] border-r border-[#1B2B4B] text-[#E2E8F0] flex flex-col transition-all duration-200 ease-in-out shrink-0 ${
           collapsed ? 'w-[76px]' : 'w-64'
         } ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}
       >
@@ -106,7 +106,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
             return (
               <div key={groupName} className="space-y-1">
                 {!collapsed && (
-                  <div className="px-2.5 pb-1 text-[10px] font-semibold tracking-wider text-slate-400/80">
+                  <div className="px-2.5 pb-1 text-[10px] font-semibold tracking-wider text-[#94A3B8]">
                     {groupName}
                   </div>
                 )}
@@ -127,14 +127,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
                         collapsed ? 'justify-center px-2' : 'justify-between px-3'
                       } py-2.5 rounded-[10px] text-xs md:text-[13px] font-medium transition-all duration-150 cursor-pointer border ${
                         isActive
-                          ? `${modTheme.sidebarActiveBg} ${modTheme.sidebarActiveBorder} font-semibold shadow-sm`
-                          : 'border-transparent text-slate-300 hover:text-white hover:bg-white/[0.06]'
+                          ? `bg-[#162344] ${modTheme.sidebarActiveBg} ${modTheme.sidebarActiveBorder} text-white font-semibold shadow-sm`
+                          : 'border-transparent text-[#CBD5E1] hover:text-white hover:bg-[#162344]'
                       }`}
                     >
                       <div className={`flex items-center ${collapsed ? 'justify-center' : 'gap-2.5'} min-w-0`}>
                         <Icon
                           className={`w-4 h-4 shrink-0 transition-transform duration-150 group-hover:scale-105 ${
-                            isActive ? modTheme.sidebarIconColor : 'text-slate-400 group-hover:text-slate-200'
+                            isActive ? modTheme.sidebarIconColor : 'text-[#94A3B8] group-hover:text-[#E2E8F0]'
                           }`}
                         />
                         {!collapsed && (
@@ -158,7 +158,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
         </div>
 
         {/* Bottom Active Business & Role Info */}
-        <div className="shrink-0 p-3 border-t border-[#1B2B4B] bg-[#101B35]/75">
+        <div className="shrink-0 p-3 border-t border-[#1B2B4B] bg-[#101B35]">
           {collapsed ? (
             <div className="flex flex-col items-center gap-2">
               <button
@@ -166,12 +166,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
                 onClick={() => setCollapsed(false)}
                 aria-label="Expand sidebar"
                 title="Expand sidebar"
-                className="hidden lg:flex w-8 h-8 rounded-[8px] items-center justify-center text-slate-400 hover:text-[#D6AD60] hover:bg-white/10 transition-colors cursor-pointer"
+                className="hidden lg:flex w-8 h-8 rounded-[8px] items-center justify-center text-[#94A3B8] hover:text-[#D6AD60] hover:bg-[#1B2C52] transition-colors cursor-pointer"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>
               <div
-                className="w-9 h-9 mx-auto rounded-[10px] bg-white/10 border border-[#D6AD60]/30 flex items-center justify-center text-[#D6AD60] font-bold text-xs"
+                className="w-9 h-9 mx-auto rounded-[10px] bg-[#1B2C52] border border-[#D6AD60]/30 flex items-center justify-center text-[#D6AD60] font-bold text-xs"
                 title={`${getBusinessDisplayName(settings)} (${activeBranch?.name || 'Main'})`}
               >
                 {getBusinessDisplayName(settings).slice(0, 1).toUpperCase()}
@@ -188,7 +188,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
                   onClick={() => setCollapsed(true)}
                   aria-label="Collapse sidebar"
                   title="Collapse sidebar"
-                  className="hidden lg:flex w-6 h-6 rounded-[7px] items-center justify-center text-slate-400 hover:text-[#D6AD60] hover:bg-white/10 transition-colors cursor-pointer shrink-0"
+                  className="hidden lg:flex w-6 h-6 rounded-[7px] items-center justify-center text-[#94A3B8] hover:text-[#D6AD60] hover:bg-[#1B2C52] transition-colors cursor-pointer shrink-0"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
@@ -197,11 +197,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
                 {getBusinessDisplayName(settings)}
               </div>
               {activeBranch && (
-                <div className="mt-0.5 text-[11px] text-slate-400 truncate">
+                <div className="mt-0.5 text-[11px] text-[#94A3B8] truncate">
                   Branch: {activeBranch.name}
                 </div>
               )}
-              <div className="mt-2 pt-2 border-t border-white/10 text-[11px] text-slate-400 flex items-center justify-between gap-2">
+              <div className="mt-2 pt-2 border-t border-[#1B2B4B] text-[11px] text-[#94A3B8] flex items-center justify-between gap-2">
                 <span className="shrink-0">Role:</span>
                 <span className="font-semibold text-white truncate">
                   {activeRoleDefinition?.name || currentUserRole}

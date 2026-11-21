@@ -12,6 +12,7 @@ import {
 } from '../lib/supabase';
 import { ProductColor, ProductColorImage } from '../types';
 import { inferColorHex, normalizeColorKey, sortColorImages } from '../utils/productImageResolver';
+import { generateSafeUuid } from '../utils/polyfills';
 
 export const PRODUCT_IMAGES_BUCKET = 'product-images';
 export const MAX_IMAGE_FILE_SIZE_BYTES = 5 * 1024 * 1024; // 5 MB
@@ -637,7 +638,7 @@ export const catalogImageService = {
       throw new Error('Your login session has expired. Please sign in again to continue.');
     }
 
-    const uniqueName = `${crypto.randomUUID()}.${validation.extension}`;
+    const uniqueName = `${generateSafeUuid()}.${validation.extension}`;
     const storagePath = `${businessId}/${productId}/${colorId}/${uniqueName}`;
 
     const uploaded = await uploadFileToStorage({
@@ -732,7 +733,7 @@ export const catalogImageService = {
     }
 
     onProgress?.(4);
-    const newPath = `${businessId}/${productId}/${image.colorId}/${crypto.randomUUID()}.${validation.extension}`;
+    const newPath = `${businessId}/${productId}/${image.colorId}/${generateSafeUuid()}.${validation.extension}`;
 
     const uploaded = await uploadFileToStorage({
       businessId,

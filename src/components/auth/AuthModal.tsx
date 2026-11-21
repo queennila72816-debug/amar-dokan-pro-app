@@ -3,7 +3,8 @@ import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { useApp } from '../../context/AppContext';
 import { staffRbacService } from '../../services/staffRbacService';
 import { APP_IDENTITY } from '../../config/appIdentity';
-import { Store, Mail, Lock, User, ArrowRight, Loader2, AlertCircle, CheckCircle2, ShieldAlert, Eye, EyeOff } from 'lucide-react';
+import { evaluateBrowserCompatibility } from '../../utils/browserCompat';
+import { Store, Mail, Lock, User, ArrowRight, Loader2, AlertCircle, CheckCircle2, ShieldAlert, Eye, EyeOff, AlertTriangle } from 'lucide-react';
 
 interface AuthModalProps {
   onSuccess: () => void;
@@ -31,6 +32,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [showPassword, setShowPassword] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [compatReport] = useState(() => evaluateBrowserCompatibility());
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -134,13 +136,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
       <div className="relative w-full max-w-md bg-white dark:bg-[#101B35] rounded-[14px] shadow-2xl border border-[#E2E8F0] dark:border-[#1F3158] overflow-hidden adp-modal-enter">
         {/* Luxury Navy & Gold Header */}
-        <div className="p-6 bg-gradient-to-br from-[#101B35] via-[#152447] to-[#0B1428] text-white text-center border-b border-[#D6AD60]/25">
-          <div className="w-12 h-12 rounded-[12px] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] flex items-center justify-center mx-auto mb-3 shadow-lg shadow-black/25">
+        <div className="p-6 bg-[#101B35] bg-gradient-to-br from-[#101B35] via-[#152447] to-[#0B1428] text-white text-center border-b border-[#D6AD60]/25">
+          <div className="w-12 h-12 rounded-[12px] bg-[#D6AD60] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] flex items-center justify-center mx-auto mb-3 shadow-lg shadow-black/25">
             <Store className="w-6 h-6 stroke-[2.2]" />
           </div>
           <h1 className="text-xl font-bold tracking-tight text-white">{APP_IDENTITY.name}</h1>
           <p className="text-xs text-[#D6AD60] mt-1 font-medium">{APP_IDENTITY.subtitle}</p>
         </div>
+
+        {!compatReport.supported && (
+          <div className="mx-4 mt-4 p-3 rounded-[10px] bg-amber-50 border border-amber-300 text-amber-950 text-[11.5px] flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">Browser Compatibility Notice</p>
+              <p className="mt-0.5">{compatReport.recommendedAction}</p>
+            </div>
+          </div>
+        )}
 
         {/* Tab Selection */}
         {mode === 'recovery' ? (
@@ -321,7 +333,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-2.5 bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white font-semibold rounded-[10px] text-xs flex items-center justify-center gap-2 shadow-md shadow-[#087F8C]/25 transition-all disabled:opacity-60 cursor-pointer"
+            className="w-full py-2.5 bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white font-semibold rounded-[10px] text-xs flex items-center justify-center gap-2 shadow-md shadow-[#087F8C]/25 transition-all disabled:opacity-60 cursor-pointer"
           >
             {loading ? (
               <Loader2 className="w-4 h-4 animate-spin" />

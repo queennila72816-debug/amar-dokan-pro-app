@@ -900,7 +900,7 @@ export const UserStaffManagementView: React.FC = () => {
           {/* Top Performing Salesman + Recent Activity Split */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             {/* Top Performing Salesman Card */}
-            <div className="bg-gradient-to-br from-emerald-600 to-teal-700 rounded-xl p-5 text-white shadow-sm flex flex-col justify-between">
+            <div className="bg-emerald-600 bg-gradient-to-br from-emerald-600 to-teal-700 rounded-xl p-5 text-white shadow-sm flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold uppercase tracking-wider text-emerald-100">

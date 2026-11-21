@@ -73,6 +73,7 @@ import {
 } from '../services/businessServices';
 import { comboOfferService } from '../services/comboOfferService';
 import { getPrinterSettings, getShopLogo, savePrinterSettings, saveShopLogo } from '../utils/printEngine';
+import { generateSafeUuid } from '../utils/polyfills';
 import {
   supabase,
   isSupabaseConfigured,
@@ -420,14 +421,7 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 const STORAGE_KEY = 'AMAR_DOKAN_PRO_STORAGE_V1';
 
 const generateClientUuid = (): string => {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, ch => {
-    const r = (Math.random() * 16) | 0;
-    const v = ch === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
+  return generateSafeUuid();
 };
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {

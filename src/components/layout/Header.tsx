@@ -162,7 +162,7 @@ export const Header: React.FC<HeaderProps> = ({
           }}
           className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer group"
         >
-          <div className="w-9 h-9 rounded-[11px] bg-gradient-to-br from-[#D6AD60] to-[#B68936] flex items-center justify-center text-[#0B1428] shadow-md shadow-black/25 shrink-0 transition-transform duration-150 group-hover:scale-[1.03]">
+          <div className="w-9 h-9 rounded-[11px] bg-[#D6AD60] bg-gradient-to-br from-[#D6AD60] to-[#B68936] flex items-center justify-center text-[#0B1428] shadow-md shadow-black/25 shrink-0 transition-transform duration-150 group-hover:scale-[1.03]">
             {platformViewActive ? (
               <Crown className="w-5 h-5 stroke-[2.2]" />
             ) : (
@@ -181,18 +181,18 @@ export const Header: React.FC<HeaderProps> = ({
       </div>
 
       {/* Zone 2: Branch, Active Plan, Role Preview & Language */}
-      <div className="hidden lg:flex items-center gap-2">
+      <div className="hidden lg:flex items-center gap-1.5 xl:gap-2 min-w-0">
         {!platformViewActive ? (
           <>
             {/* Branch Selector */}
-            <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#0B1428]/70 rounded-[10px] border border-white/15 text-xs text-slate-200 hover:border-[#D6AD60]/45 transition-colors">
+            <div className="flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 bg-[#0B1428]/70 rounded-[10px] border border-white/15 text-xs text-slate-200 hover:border-[#D6AD60]/45 transition-colors">
               <Building2 className="w-3.5 h-3.5 text-[#D6AD60] shrink-0" />
-              <span className="text-slate-400 text-[11px]">Branch:</span>
+              <span className="hidden xl:inline text-slate-400 text-[11px]">Branch:</span>
               <select
                 aria-label="Select Branch"
                 value={activeBranchId}
                 onChange={(e) => setActiveBranchId(e.target.value)}
-                className="bg-transparent font-semibold text-white focus:outline-none cursor-pointer pr-1 max-w-[120px] [&>option]:bg-[#101B35] [&>option]:text-white"
+                className="bg-transparent font-semibold text-white focus:outline-none cursor-pointer pr-1 max-w-[105px] xl:max-w-[120px] [&>option]:bg-[#101B35] [&>option]:text-white"
               >
                 {branches.length === 0 ? (
                   <option value="">No Branch</option>
@@ -221,14 +221,14 @@ export const Header: React.FC<HeaderProps> = ({
 
             {/* Role Preview (Admin only) */}
             {isAuthenticatedAdmin ? (
-              <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#0B1428]/70 rounded-[10px] border border-white/15 text-xs hover:border-[#D6AD60]/45 transition-colors">
+              <div className="flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 bg-[#0B1428]/70 rounded-[10px] border border-white/15 text-xs hover:border-[#D6AD60]/45 transition-colors">
                 <Shield className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
-                <span className="text-slate-400 text-[11px]">Role:</span>
+                <span className="hidden xl:inline text-slate-400 text-[11px]">Role:</span>
                 <select
                   aria-label="Select User Role"
                   value={normalizedRole}
                   onChange={(e) => setCurrentUserRole(roleKeyToLegacyUserRole(e.target.value) as UserRole)}
-                  className="bg-transparent font-semibold text-white focus:outline-none cursor-pointer pr-1 [&>option]:bg-[#101B35] [&>option]:text-white"
+                  className="bg-transparent font-semibold text-white focus:outline-none cursor-pointer pr-1 max-w-[105px] xl:max-w-none [&>option]:bg-[#101B35] [&>option]:text-white"
                 >
                   {roles.map(r => (
                     <option key={r.id} value={r.roleKey}>
@@ -396,7 +396,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               type="button"
               onClick={onOpenPOS}
-              className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-3.5 py-2 text-xs font-bold text-white bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 active:scale-[0.98] transition-all rounded-[10px] shadow-md shadow-black/25 border border-[#D6AD60]/35 whitespace-nowrap cursor-pointer"
+              className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-3.5 py-2 text-xs font-bold text-white bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 active:scale-[0.98] transition-all rounded-[10px] shadow-md shadow-black/25 border border-[#D6AD60]/35 whitespace-nowrap cursor-pointer"
             >
               <ShoppingCart className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span className="hidden sm:inline">New Sale (POS)</span>
@@ -412,7 +412,7 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* User Profile */}
         <div className="flex items-center gap-2 px-2 py-1 rounded-[10px] bg-[#0B1428]/70 border border-white/15">
-          <div className="w-7 h-7 rounded-[8px] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] font-extrabold text-xs flex items-center justify-center shrink-0">
+          <div className="w-7 h-7 rounded-[8px] bg-[#D6AD60] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] font-extrabold text-xs flex items-center justify-center shrink-0">
             {displayName.slice(0, 1).toUpperCase()}
           </div>
           <div className="hidden md:flex flex-col min-w-0 text-left">

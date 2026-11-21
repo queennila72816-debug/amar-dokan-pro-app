@@ -630,7 +630,7 @@ export const POSView: React.FC = () => {
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4 min-h-[calc(100vh-7rem)] lg:h-[calc(100vh-5.5rem)]">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 sm:gap-4 min-h-[calc(100vh-7rem)] lg:h-[calc(100vh-7rem)] lg:min-h-[540px]">
       {/* Left Column: Product Search, Category Filters, & Product Grid (7 cols on desktop, full width on mobile) */}
       <div className="lg:col-span-7 flex flex-col bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden min-h-[calc(100vh-9rem)] lg:min-h-0">
         {/* Search & Barcode Header */}
@@ -904,7 +904,7 @@ export const POSView: React.FC = () => {
             .map(det => (
               <div
                 key={`detected-${det.offer.id}`}
-                className="p-2.5 bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-50 border border-emerald-300 rounded-lg flex items-center justify-between gap-2 text-xs shadow-xs"
+                className="p-2.5 bg-emerald-50 bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-50 border border-emerald-300 rounded-lg flex items-center justify-between gap-2 text-xs shadow-xs"
               >
                 <div className="min-w-0">
                   <div className="flex items-center gap-1.5 font-bold text-emerald-900 truncate">
@@ -1076,7 +1076,7 @@ export const POSView: React.FC = () => {
             <span className="text-[11px] font-semibold text-slate-700 block mb-1">
               {'Payment Method'}
             </span>
-            <div className="grid grid-cols-4 sm:grid-cols-6 gap-1">
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-1">
               {(['cash', 'bkash', 'nagad', 'bank', 'due', 'mixed'] as PaymentMethod[]).map(method => (
                 <button
                   key={method}
@@ -1234,7 +1234,7 @@ export const POSView: React.FC = () => {
       </div>
 
       {/* Mobile Fixed Bottom Cart Bar (lg:hidden) */}
-      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-md border-t border-slate-200 px-3 py-2.5 shadow-xl flex items-center justify-between gap-2">
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-white dark:bg-[#101B35] border-t border-slate-200 dark:border-[#1F3158] px-3 py-2.5 shadow-xl flex items-center justify-between gap-2">
         <button
           type="button"
           onClick={() => {
@@ -1243,19 +1243,19 @@ export const POSView: React.FC = () => {
           }}
           className="flex items-center gap-2.5 min-w-0 text-left focus:outline-none"
         >
-          <div className="relative w-10 h-10 rounded-xl bg-slate-900 text-white flex items-center justify-center shrink-0 shadow-sm">
+          <div className="relative w-10 h-10 rounded-xl bg-slate-900 dark:bg-[#162344] text-white flex items-center justify-center shrink-0 shadow-sm">
             <ShoppingCart className="w-5 h-5 text-emerald-400" />
             {cartItemCount > 0 && (
-              <span className="absolute -top-1.5 -right-1.5 bg-emerald-500 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center shadow-xs border-2 border-white">
+              <span className="absolute -top-1.5 -right-1.5 bg-emerald-500 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center shadow-xs border-2 border-white dark:border-[#101B35]">
                 {cartItemCount}
               </span>
             )}
           </div>
           <div className="min-w-0">
-            <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 block leading-tight">
+            <span className="text-[10px] uppercase font-bold tracking-wider text-slate-500 dark:text-slate-400 block leading-tight">
               {cartItemCount} Item{cartItemCount === 1 ? '' : 's'}
             </span>
-            <span className="text-sm font-extrabold text-slate-900 font-mono-num truncate block leading-tight">
+            <span className="text-sm font-extrabold text-slate-900 dark:text-white font-mono-num truncate block leading-tight">
               {formatCurrency(grandTotal, lang)}
             </span>
           </div>
@@ -1422,7 +1422,7 @@ export const POSView: React.FC = () => {
                     .map(det => (
                       <div
                         key={`mob-detected-${det.offer.id}`}
-                        className="p-2.5 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-300 rounded-xl flex items-center justify-between gap-2 text-xs"
+                        className="p-2.5 bg-emerald-50 bg-gradient-to-r from-emerald-50 to-teal-50 border border-emerald-300 rounded-xl flex items-center justify-between gap-2 text-xs"
                       >
                         <div className="min-w-0">
                           <div className="flex items-center gap-1 font-bold text-emerald-900 truncate">

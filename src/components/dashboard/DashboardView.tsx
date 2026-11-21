@@ -210,7 +210,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <img src={shopLogo} alt={biz.shopName} className="max-w-full max-h-full object-contain p-1" />
             </div>
           ) : (
-            <div className="w-12 h-12 rounded-[12px] bg-gradient-to-br from-[#101B35] to-[#1D2F59] border border-[#D6AD60]/40 text-[#D6AD60] flex items-center justify-center shrink-0 shadow-sm">
+            <div className="w-12 h-12 rounded-[12px] bg-[#101B35] bg-gradient-to-br from-[#101B35] to-[#1D2F59] border border-[#D6AD60]/40 text-[#D6AD60] flex items-center justify-center shrink-0 shadow-sm">
               <Store className="w-6 h-6" />
             </div>
           )}
@@ -253,7 +253,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={onOpenPOS}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 rounded-[10px] shadow-sm shadow-[#087F8C]/25 transition-all cursor-pointer"
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 rounded-[10px] shadow-sm shadow-[#087F8C]/25 transition-all cursor-pointer"
           >
             <ShoppingCart className="w-4 h-4" />
             <span>New Sale</span>
@@ -327,10 +327,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('sales')}
-          className="text-left rounded-[14px] p-4 text-white bg-gradient-to-br from-[#10B981] to-[#059669] shadow-md shadow-[#10B981]/20 hover:translate-y-[-2px] transition-all cursor-pointer"
+          className="text-left rounded-[14px] p-4 text-white bg-[#10B981] bg-gradient-to-br from-[#10B981] to-[#059669] shadow-md shadow-[#10B981]/20 hover:translate-y-[-2px] transition-all cursor-pointer"
         >
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-emerald-50">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#ECFDF5]">
               Total Sales
             </span>
             <span className="p-1.5 rounded-[8px] bg-white/20">
@@ -340,7 +340,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="mt-2.5 text-xl font-bold font-mono-num tracking-tight">
             {formatCurrency(metrics.salesTotal, lang)}
           </div>
-          <div className="mt-1.5 text-[11px] text-emerald-50/90 font-medium">
+          <div className="mt-1.5 text-[11px] text-[#ECFDF5] font-medium">
             {metrics.salesCount} {metrics.salesCount === 1 ? 'invoice' : 'invoices'} · {rangeLabel}
           </div>
         </button>
@@ -349,10 +349,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('purchases')}
-          className="text-left rounded-[14px] p-4 text-white bg-gradient-to-br from-[#4169E1] to-[#284BC2] shadow-md shadow-[#4169E1]/20 hover:translate-y-[-2px] transition-all cursor-pointer"
+          className="text-left rounded-[14px] p-4 text-white bg-[#4169E1] bg-gradient-to-br from-[#4169E1] to-[#284BC2] shadow-md shadow-[#4169E1]/20 hover:translate-y-[-2px] transition-all cursor-pointer"
         >
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-50">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#EFF6FF]">
               Total Purchases
             </span>
             <span className="p-1.5 rounded-[8px] bg-white/20">
@@ -362,7 +362,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="mt-2.5 text-xl font-bold font-mono-num tracking-tight">
             {formatCurrency(metrics.purchasesTotal, lang)}
           </div>
-          <div className="mt-1.5 text-[11px] text-blue-50/90 font-medium">
+          <div className="mt-1.5 text-[11px] text-[#EFF6FF] font-medium">
             {metrics.purchasesCount} PO{metrics.purchasesCount === 1 ? '' : 's'} · {rangeLabel}
           </div>
         </button>
@@ -371,10 +371,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('reports')}
-          className="text-left rounded-[14px] p-4 text-white bg-gradient-to-br from-[#087F8C] to-[#055B65] shadow-md shadow-[#087F8C]/20 hover:translate-y-[-2px] transition-all cursor-pointer"
+          className="text-left rounded-[14px] p-4 text-white bg-[#087F8C] bg-gradient-to-br from-[#087F8C] to-[#055B65] shadow-md shadow-[#087F8C]/20 hover:translate-y-[-2px] transition-all cursor-pointer"
         >
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-teal-50">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#F0FDFA]">
               Total Profit
             </span>
             <span className="p-1.5 rounded-[8px] bg-white/20">
@@ -384,7 +384,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="mt-2.5 text-xl font-bold font-mono-num tracking-tight">
             {isStaffMasked ? '•••' : formatCurrency(metrics.netProfit, lang)}
           </div>
-          <div className="mt-1.5 text-[11px] text-teal-50/90 font-medium">
+          <div className="mt-1.5 text-[11px] text-[#F0FDFA] font-medium">
             {isStaffMasked ? 'Restricted access' : `Gross: ${formatCurrency(metrics.grossProfit, lang)}`}
           </div>
         </button>
@@ -393,10 +393,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('accounts')}
-          className="text-left rounded-[14px] p-4 text-white bg-gradient-to-br from-[#F06464] to-[#D44444] shadow-md shadow-[#F06464]/20 hover:translate-y-[-2px] transition-all cursor-pointer"
+          className="text-left rounded-[14px] p-4 text-white bg-[#E24E4E] bg-gradient-to-br from-[#F06464] to-[#D44444] shadow-md shadow-[#F06464]/20 hover:translate-y-[-2px] transition-all cursor-pointer"
         >
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-rose-50">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#FFF1F2]">
               Total Expenses
             </span>
             <span className="p-1.5 rounded-[8px] bg-white/20">
@@ -406,7 +406,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="mt-2.5 text-xl font-bold font-mono-num tracking-tight">
             {formatCurrency(metrics.expensesTotal, lang)}
           </div>
-          <div className="mt-1.5 text-[11px] text-rose-50/90 font-medium">
+          <div className="mt-1.5 text-[11px] text-[#FFF1F2] font-medium">
             {metrics.expensesCount} entries · {rangeLabel}
           </div>
         </button>
@@ -415,10 +415,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('customers')}
-          className="text-left rounded-[14px] p-4 text-white bg-gradient-to-br from-[#F59E0B] to-[#D97706] shadow-md shadow-[#F59E0B]/20 hover:translate-y-[-2px] transition-all cursor-pointer"
+          className="text-left rounded-[14px] p-4 text-white bg-[#D97706] bg-gradient-to-br from-[#F59E0B] to-[#D97706] shadow-md shadow-[#F59E0B]/20 hover:translate-y-[-2px] transition-all cursor-pointer"
         >
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-amber-50">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#FFFBEB]">
               Total Due
             </span>
             <span className="p-1.5 rounded-[8px] bg-white/20">
@@ -428,7 +428,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="mt-2.5 text-xl font-bold font-mono-num tracking-tight">
             {formatCurrency(metrics.totalCustomerDue, lang)}
           </div>
-          <div className="mt-1.5 text-[11px] text-amber-50/95 font-medium truncate">
+          <div className="mt-1.5 text-[11px] text-[#FFFBEB] font-medium truncate">
             {metrics.dueCustomersCount} due · Payable {formatCurrency(metrics.totalSupplierDue, lang)}
           </div>
         </button>
@@ -437,10 +437,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <button
           type="button"
           onClick={() => onNavigate('inventory')}
-          className="text-left rounded-[14px] p-4 text-white bg-gradient-to-br from-[#7357D9] to-[#563AB8] shadow-md shadow-[#7357D9]/20 hover:translate-y-[-2px] transition-all cursor-pointer"
+          className="text-left rounded-[14px] p-4 text-white bg-[#7357D9] bg-gradient-to-br from-[#7357D9] to-[#563AB8] shadow-md shadow-[#7357D9]/20 hover:translate-y-[-2px] transition-all cursor-pointer"
         >
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-purple-50">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-[#FAF5FF]">
               Stock Value
             </span>
             <span className="p-1.5 rounded-[8px] bg-white/20">
@@ -450,7 +450,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="mt-2.5 text-xl font-bold font-mono-num tracking-tight">
             {formatCurrency(metrics.totalStockValue, lang)}
           </div>
-          <div className="mt-1.5 text-[11px] text-purple-50/90 font-medium truncate">
+          <div className="mt-1.5 text-[11px] text-[#FAF5FF] font-medium truncate">
             {metrics.totalStockUnits} pcs · Retail {formatCurrency(metrics.totalRetailStockValue, lang)}
           </div>
         </button>
