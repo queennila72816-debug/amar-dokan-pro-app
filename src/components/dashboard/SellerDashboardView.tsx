@@ -144,8 +144,8 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({ onOpen
 
   return (
     <div className="space-y-6">
-      {/* Luxury Navy + Gold + Teal Welcome Banner */}
-      <div className="bg-[#101B35] bg-gradient-to-r from-[#101B35] via-[#152447] to-[#087F8C] rounded-[14px] p-5 sm:p-6 text-white shadow-lg border border-[#D6AD60]/25 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      {/* PROTIVA Navy + Secondary Blue + Orange Welcome Banner */}
+      <div className="bg-[#101B3F] bg-gradient-to-r from-[#101B3F] via-[#1B2F63] to-[#243B70] rounded-[14px] p-5 sm:p-6 text-white shadow-lg border border-[#FF9D32]/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="flex items-start gap-3.5">
           {shopLogo && (
             <div className="w-12 h-12 rounded-[10px] bg-white p-1 flex items-center justify-center shrink-0 shadow-xs">
@@ -153,7 +153,7 @@ export const SellerDashboardView: React.FC<SellerDashboardViewProps> = ({ onOpen
             </div>
           )}
           <div>
-            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] bg-white/10 border border-[#D6AD60]/30 text-[11px] font-semibold text-[#D6AD60] mb-2">
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] bg-white/10 border border-[#FF9D32]/35 text-[11px] font-semibold text-[#FF9D32] mb-2">
               <Sparkles className="w-3.5 h-3.5" />
               <span>{biz.shopName} · {biz.branchName || 'Main Branch'}</span>
             </div>

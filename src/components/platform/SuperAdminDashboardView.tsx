@@ -88,8 +88,8 @@ export const SuperAdminDashboardView: React.FC = () => {
   const [auditLogs, setAuditLogs] = useState<PlatformAuditLog[]>([]);
   const [securitySnap, setSecuritySnap] = useState<PlatformSecuritySnapshot | null>(null);
   const [generalSettings, setGeneralSettings] = useState<PlatformGeneralSettings>({
-    platformName: 'Amar Dokan Pro',
-    supportEmail: 'support@amardokanpro.com',
+    platformName: 'PROTIVA',
+    supportEmail: 'support@protiva.app',
     supportPhone: '',
     defaultCurrency: 'BDT',
     allowPublicSignup: true,
@@ -411,15 +411,19 @@ export const SuperAdminDashboardView: React.FC = () => {
   return (
     <div className="space-y-5 pb-10">
       {/* Platform Header Bar */}
-      <div className="bg-[#101B35] text-white rounded-[14px] border border-[#D6AD60]/30 p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+      <div className="bg-[#101B3F] text-white rounded-[14px] border border-[#FF9D32]/30 p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
         <div className="flex items-start sm:items-center gap-3.5">
-          <div className="w-11 h-11 rounded-[12px] bg-[#D6AD60] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] flex items-center justify-center shrink-0">
-            <Crown className="w-6 h-6 stroke-[2.2]" />
+          <div className="w-11 h-11 rounded-[12px] bg-white p-1 flex items-center justify-center shrink-0 shadow-md">
+            <img
+              src="/protiva-symbol.png"
+              alt="PROTIVA"
+              className="w-full h-full object-contain"
+            />
           </div>
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-lg sm:text-xl font-bold tracking-tight">Platform Super Admin Console</h1>
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded-[6px] bg-[#D6AD60]/20 text-[#D6AD60] border border-[#D6AD60]/40">
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight">PROTIVA Super Admin Console</h1>
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-[6px] bg-[#FF9D32]/20 text-[#FF9D32] border border-[#FF9D32]/40">
                 {role}
               </span>
             </div>
@@ -448,7 +452,7 @@ export const SuperAdminDashboardView: React.FC = () => {
               onClick={() => setCreateNewBusinessModalOpen(true)}
               className="flex items-center gap-1.5 px-3 py-2 rounded-[10px] bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-semibold cursor-pointer"
             >
-              <Plus className="w-3.5 h-3.5 text-[#D6AD60]" />
+              <Plus className="w-3.5 h-3.5 text-[#FF9D32]" />
               <span>Open a Shop Workspace</span>
             </button>
           )}
@@ -456,7 +460,7 @@ export const SuperAdminDashboardView: React.FC = () => {
             type="button"
             onClick={() => loadAll()}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-[10px] bg-[#087F8C] hover:brightness-110 text-white text-xs font-bold cursor-pointer disabled:opacity-60"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-[10px] bg-[#243B70] hover:brightness-110 text-white border border-[#FF9D32]/35 text-xs font-bold cursor-pointer disabled:opacity-60"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
             <span>Refresh</span>
@@ -476,14 +480,14 @@ export const SuperAdminDashboardView: React.FC = () => {
               onClick={() => setTab(item.id)}
               className={`flex items-center gap-1.5 px-3.5 py-2 rounded-[10px] text-xs font-semibold border whitespace-nowrap transition-colors cursor-pointer ${
                 active
-                  ? 'bg-[#101B35] text-white border-[#D6AD60]/60 shadow-xs'
-                  : 'bg-white dark:bg-[#101B35] text-[#475569] dark:text-slate-300 border-[#E2E8F0] dark:border-[#1F3158] hover:border-[#087F8C]/50'
+                  ? 'bg-[#101B3F] text-white border-[#FF9D32]/60 shadow-xs'
+                  : 'bg-white dark:bg-[#101B3F] text-[#475569] dark:text-slate-300 border-[#E2E8F0] dark:border-[#243B70] hover:border-[#243B70]'
               }`}
             >
-              <Icon className={`w-3.5 h-3.5 ${active ? 'text-[#D6AD60]' : 'text-slate-400'}`} />
+              <Icon className={`w-3.5 h-3.5 ${active ? 'text-[#FF9D32]' : 'text-slate-400'}`} />
               <span>{item.label}</span>
               {item.id === 'payments' && (metrics?.pendingPaymentsCount || 0) > 0 && (
-                <span className="ml-1 px-1.5 py-0.5 rounded-[6px] bg-amber-500 text-[#0B1428] text-[10px] font-bold font-mono-num">
+                <span className="ml-1 px-1.5 py-0.5 rounded-[6px] bg-[#FF9D32] text-[#101B3F] text-[10px] font-bold font-mono-num">
                   {metrics?.pendingPaymentsCount}
                 </span>
               )}

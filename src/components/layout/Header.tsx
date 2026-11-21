@@ -4,6 +4,7 @@ import { useTheme } from '../../context/ThemeContext';
 import { UserRole } from '../../types';
 import { normalizeRoleKey, roleKeyToLegacyUserRole } from '../../utils/rbacDefaults';
 import { APP_IDENTITY } from '../../config/appIdentity';
+import { PWAInstallButton } from '../common/PWAInstallButton';
 import {
   Store,
   ShoppingCart,
@@ -138,7 +139,7 @@ export const Header: React.FC<HeaderProps> = ({
   }, [notificationsOpen]);
 
   return (
-    <header className="h-14 sm:h-16 shrink-0 bg-[#101B35] text-white border-b border-[#D6AD60]/25 px-3 sm:px-4 md:px-6 flex items-center justify-between gap-2 sticky top-0 z-40 select-none shadow-sm">
+    <header className="h-14 sm:h-16 shrink-0 bg-[#101B3F] text-white border-b border-[#FF9D32]/30 px-3 sm:px-4 md:px-6 flex items-center justify-between gap-2 sticky top-0 z-40 select-none shadow-sm">
       {/* Zone 1: Fixed Application Identity & Mobile Menu Trigger */}
       <div className="flex items-center gap-2 sm:gap-3 min-w-0 shrink-0">
         {onToggleSidebar && (
@@ -162,18 +163,22 @@ export const Header: React.FC<HeaderProps> = ({
           }}
           className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer group"
         >
-          <div className="w-9 h-9 rounded-[11px] bg-[#D6AD60] bg-gradient-to-br from-[#D6AD60] to-[#B68936] flex items-center justify-center text-[#0B1428] shadow-md shadow-black/25 shrink-0 transition-transform duration-150 group-hover:scale-[1.03]">
+          <div className="w-9 h-9 rounded-[11px] bg-white p-1 flex items-center justify-center shadow-md shadow-black/25 shrink-0 border border-white/80 transition-transform duration-150 group-hover:scale-[1.03]">
             {platformViewActive ? (
-              <Crown className="w-5 h-5 stroke-[2.2]" />
+              <Crown className="w-5 h-5 text-[#101B3F] stroke-[2.2]" />
             ) : (
-              <Store className="w-5 h-5 stroke-[2.2]" />
+              <img
+                src={APP_IDENTITY.symbolPath}
+                alt={APP_IDENTITY.name}
+                className="w-full h-full object-contain"
+              />
             )}
           </div>
           <div className="flex flex-col min-w-0">
-            <span className="text-sm sm:text-base font-bold tracking-tight text-white leading-tight truncate whitespace-nowrap">
+            <span className="text-sm sm:text-base font-extrabold tracking-tight text-white leading-tight truncate whitespace-nowrap">
               {APP_IDENTITY.name}
             </span>
-            <span className="text-[10.5px] font-medium text-[#D6AD60] hidden sm:inline truncate tracking-wide">
+            <span className="text-[10.5px] font-medium text-[#FF9D32] hidden sm:inline truncate tracking-wide">
               {platformViewActive ? 'Platform Super Admin Console' : APP_IDENTITY.subtitle}
             </span>
           </div>
@@ -185,14 +190,14 @@ export const Header: React.FC<HeaderProps> = ({
         {!platformViewActive ? (
           <>
             {/* Branch Selector */}
-            <div className="flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 bg-[#0B1428]/70 rounded-[10px] border border-white/15 text-xs text-slate-200 hover:border-[#D6AD60]/45 transition-colors">
-              <Building2 className="w-3.5 h-3.5 text-[#D6AD60] shrink-0" />
-              <span className="hidden xl:inline text-slate-400 text-[11px]">Branch:</span>
+            <div className="flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 bg-[#243B70]/55 rounded-[10px] border border-white/15 text-xs text-slate-200 hover:border-[#FF9D32]/50 transition-colors">
+              <Building2 className="w-3.5 h-3.5 text-[#FF9D32] shrink-0" />
+              <span className="hidden xl:inline text-slate-300 text-[11px]">Branch:</span>
               <select
                 aria-label="Select Branch"
                 value={activeBranchId}
                 onChange={(e) => setActiveBranchId(e.target.value)}
-                className="bg-transparent font-semibold text-white focus:outline-none cursor-pointer pr-1 max-w-[105px] xl:max-w-[120px] [&>option]:bg-[#101B35] [&>option]:text-white"
+                className="bg-transparent font-semibold text-white focus:outline-none cursor-pointer pr-1 max-w-[105px] xl:max-w-[120px] [&>option]:bg-[#101B3F] [&>option]:text-white"
               >
                 {branches.length === 0 ? (
                   <option value="">No Branch</option>
@@ -212,23 +217,23 @@ export const Header: React.FC<HeaderProps> = ({
                 type="button"
                 onClick={() => onNavigateTab('billing')}
                 title="View SaaS Plan, Quota & Support"
-                className="hidden xl:flex items-center gap-1.5 px-2.5 py-1.5 rounded-[10px] border border-[#D6AD60]/35 bg-[#D6AD60]/12 hover:bg-[#D6AD60]/22 text-[#F5DC9F] text-[11px] font-semibold whitespace-nowrap transition-colors cursor-pointer"
+                className="hidden xl:flex items-center gap-1.5 px-2.5 py-1.5 rounded-[10px] border border-[#FF9D32]/40 bg-[#FF9D32]/15 hover:bg-[#FF9D32]/25 text-white text-[11px] font-semibold whitespace-nowrap transition-colors cursor-pointer"
               >
-                <Crown className="w-3.5 h-3.5 text-[#D6AD60]" />
+                <Crown className="w-3.5 h-3.5 text-[#FF9D32]" />
                 <span>{activeSubscription.plan?.name || activeSubscription.planCode}</span>
               </button>
             )}
 
             {/* Role Preview (Admin only) */}
             {isAuthenticatedAdmin ? (
-              <div className="flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 bg-[#0B1428]/70 rounded-[10px] border border-white/15 text-xs hover:border-[#D6AD60]/45 transition-colors">
+              <div className="flex items-center gap-1.5 px-2 xl:px-2.5 py-1.5 bg-[#243B70]/55 rounded-[10px] border border-white/15 text-xs hover:border-[#FF9D32]/50 transition-colors">
                 <Shield className="w-3.5 h-3.5 text-[#10B981] shrink-0" />
-                <span className="hidden xl:inline text-slate-400 text-[11px]">Role:</span>
+                <span className="hidden xl:inline text-slate-300 text-[11px]">Role:</span>
                 <select
                   aria-label="Select User Role"
                   value={normalizedRole}
                   onChange={(e) => setCurrentUserRole(roleKeyToLegacyUserRole(e.target.value) as UserRole)}
-                  className="bg-transparent font-semibold text-white focus:outline-none cursor-pointer pr-1 max-w-[105px] xl:max-w-none [&>option]:bg-[#101B35] [&>option]:text-white"
+                  className="bg-transparent font-semibold text-white focus:outline-none cursor-pointer pr-1 max-w-[105px] xl:max-w-none [&>option]:bg-[#101B3F] [&>option]:text-white"
                 >
                   {roles.map(r => (
                     <option key={r.id} value={r.roleKey}>
@@ -239,29 +244,29 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             ) : (
               <div
-                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#0B1428]/70 rounded-[10px] border border-white/15 text-xs text-slate-200"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-[#243B70]/55 rounded-[10px] border border-white/15 text-xs text-slate-200"
                 title="Role is enforced by Store Administrator"
               >
-                <Lock className="w-3.5 h-3.5 text-[#D6AD60]" />
+                <Lock className="w-3.5 h-3.5 text-[#FF9D32]" />
                 <span className="font-semibold whitespace-nowrap">{displayRoleLabel}</span>
               </div>
             )}
           </>
         ) : (
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-[10px] bg-[#D6AD60]/15 border border-[#D6AD60]/40 text-xs font-semibold text-[#F5DC9F]">
-            <Crown className="w-3.5 h-3.5 text-[#D6AD60]" />
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-[10px] bg-[#FF9D32]/15 border border-[#FF9D32]/40 text-xs font-semibold text-white">
+            <Crown className="w-3.5 h-3.5 text-[#FF9D32]" />
             <span>Multi-Tenant Platform Governance Mode</span>
           </div>
         )}
 
         {/* Language Selector */}
-        <div className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-[10px] text-slate-200 bg-[#0B1428]/70 border border-white/15 hover:border-[#087F8C] transition-colors">
-          <Globe className="w-3.5 h-3.5 text-[#087F8C] shrink-0" />
+        <div className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-[10px] text-slate-200 bg-[#243B70]/55 border border-white/15 hover:border-[#FF9D32]/50 transition-colors">
+          <Globe className="w-3.5 h-3.5 text-[#FF9D32] shrink-0" />
           <select
             aria-label="Select Language"
             value={settings.language || 'en'}
             onChange={(e) => updateSettings({ language: e.target.value as 'en' | 'bn' })}
-            className="bg-transparent font-medium text-white focus:outline-none cursor-pointer [&>option]:bg-[#101B35] [&>option]:text-white"
+            className="bg-transparent font-medium text-white focus:outline-none cursor-pointer [&>option]:bg-[#101B3F] [&>option]:text-white"
           >
             <option value="en">English</option>
             <option value="bn">বাংলা</option>
@@ -269,26 +274,28 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Zone 3: Platform Toggle, Theme, Notifications, New Sale CTA, Profile & Logout */}
+      {/* Zone 3: PWA Install, Platform Toggle, Theme, Notifications, New Sale CTA, Profile & Logout */}
       <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+        <PWAInstallButton />
+
         {isPlatformAdmin && (
           platformViewActive ? (
             userBusinesses.length > 0 ? (
               <button
                 type="button"
                 onClick={() => setPlatformViewActive(false)}
-                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-[10px] bg-[#0B1428]/80 hover:bg-[#1B2C52] text-[#F5DC9F] border border-[#D6AD60]/45 transition-colors whitespace-nowrap cursor-pointer"
+                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-[10px] bg-[#243B70] hover:brightness-110 text-white border border-[#FF9D32]/45 transition-colors whitespace-nowrap cursor-pointer"
               >
-                <Store className="w-3.5 h-3.5 text-[#D6AD60]" />
+                <Store className="w-3.5 h-3.5 text-[#FF9D32]" />
                 <span className="hidden sm:inline">My Shop</span>
               </button>
             ) : (
               <button
                 type="button"
                 onClick={() => setCreateNewBusinessModalOpen(true)}
-                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-[10px] bg-[#0B1428]/80 hover:bg-[#1B2C52] text-[#F5DC9F] border border-[#D6AD60]/45 transition-colors whitespace-nowrap cursor-pointer"
+                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-[10px] bg-[#243B70] hover:brightness-110 text-white border border-[#FF9D32]/45 transition-colors whitespace-nowrap cursor-pointer"
               >
-                <Plus className="w-3.5 h-3.5 text-[#D6AD60]" />
+                <Plus className="w-3.5 h-3.5 text-[#FF9D32]" />
                 <span className="hidden sm:inline">Create Shop</span>
               </button>
             )
@@ -296,7 +303,7 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               type="button"
               onClick={() => setPlatformViewActive(true)}
-              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-[10px] bg-[#D6AD60] hover:brightness-105 text-[#0B1428] transition-all whitespace-nowrap cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 sm:px-3 py-2 text-xs font-bold rounded-[10px] bg-[#FF9D32] hover:brightness-105 text-[#101B3F] transition-all whitespace-nowrap cursor-pointer"
             >
               <Crown className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Platform Console</span>
@@ -310,7 +317,7 @@ export const Header: React.FC<HeaderProps> = ({
           onClick={toggleTheme}
           aria-label={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
           title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-          className="p-2 rounded-[10px] bg-[#0B1428]/70 hover:bg-[#1B2C52] border border-white/15 hover:border-[#D6AD60]/50 text-[#D6AD60] transition-colors cursor-pointer"
+          className="p-2 rounded-[10px] bg-[#243B70]/55 hover:bg-[#243B70] border border-white/15 hover:border-[#FF9D32]/50 text-[#FF9D32] transition-colors cursor-pointer"
         >
           {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
         </button>
@@ -323,25 +330,25 @@ export const Header: React.FC<HeaderProps> = ({
               onClick={() => setNotificationsOpen(v => !v)}
               aria-label="Notifications"
               title="Operational Notifications"
-              className="relative p-2 rounded-[10px] bg-[#0B1428]/70 hover:bg-[#1B2C52] border border-white/15 hover:border-[#D6AD60]/50 text-slate-200 transition-colors cursor-pointer"
+              className="relative p-2 rounded-[10px] bg-[#243B70]/55 hover:bg-[#243B70] border border-white/15 hover:border-[#FF9D32]/50 text-slate-200 transition-colors cursor-pointer"
             >
               <Bell className="w-4 h-4" />
               {alerts.length > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-[#F06464] text-white text-[9.5px] font-bold flex items-center justify-center shadow-xs">
+                <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-[#FF9D32] text-[#101B3F] text-[9.5px] font-bold flex items-center justify-center shadow-xs">
                   {alerts.length}
                 </span>
               )}
             </button>
 
             {notificationsOpen && (
-              <div className="adp-dropdown-enter absolute right-0 mt-2 w-80 bg-white dark:bg-[#101B35] text-[#172033] dark:text-white rounded-[14px] border border-[#E2E8F0] dark:border-[#1F3158] shadow-xl z-50 overflow-hidden">
-                <div className="px-4 py-3 bg-[#101B35] text-white border-b border-[#D6AD60]/25 flex items-center justify-between">
+              <div className="adp-dropdown-enter absolute right-0 mt-2 w-80 bg-white dark:bg-[#101B3F] text-[#172033] dark:text-white rounded-[14px] border border-[#E2E8F0] dark:border-[#243B70] shadow-xl z-50 overflow-hidden">
+                <div className="px-4 py-3 bg-[#101B3F] text-white border-b border-[#FF9D32]/30 flex items-center justify-between">
                   <span className="text-xs font-bold tracking-wide">Business Alerts</span>
-                  <span className="text-[10px] font-semibold text-[#D6AD60]">
+                  <span className="text-[10px] font-semibold text-[#FF9D32]">
                     {alerts.length} active
                   </span>
                 </div>
-                <div className="divide-y divide-[#E2E8F0] dark:divide-[#1F3158] max-h-72 overflow-y-auto">
+                <div className="divide-y divide-[#E2E8F0] dark:divide-[#243B70] max-h-72 overflow-y-auto">
                   {alerts.length === 0 ? (
                     <div className="p-6 text-center text-xs text-[#64748B] dark:text-slate-400">
                       All inventory, pricing, and accounts look healthy.
@@ -355,14 +362,14 @@ export const Header: React.FC<HeaderProps> = ({
                           onNavigateTab(al.tab);
                           setNotificationsOpen(false);
                         }}
-                        className="w-full p-3 text-left flex items-start justify-between gap-2.5 hover:bg-slate-50 dark:hover:bg-[#162344] transition-colors cursor-pointer"
+                        className="w-full p-3 text-left flex items-start justify-between gap-2.5 hover:bg-slate-50 dark:hover:bg-[#182954] transition-colors cursor-pointer"
                       >
                         <div className="flex items-start gap-2.5 min-w-0">
                           <div
                             className={`w-7 h-7 rounded-[8px] flex items-center justify-center shrink-0 mt-0.5 ${
                               al.tone === 'coral'
                                 ? 'bg-[#F06464]/15 text-[#F06464]'
-                                : 'bg-[#F59E0B]/15 text-[#F59E0B]'
+                                : 'bg-[#FF9D32]/15 text-[#FF9D32]'
                             }`}
                           >
                             {al.id === 'stock' ? (
@@ -396,14 +403,14 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               type="button"
               onClick={onOpenPOS}
-              className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-3.5 py-2 text-xs font-bold text-white bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 active:scale-[0.98] transition-all rounded-[10px] shadow-md shadow-black/25 border border-[#D6AD60]/35 whitespace-nowrap cursor-pointer"
+              className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-3.5 py-2 text-xs font-bold text-[#101B3F] bg-[#FF9D32] hover:brightness-105 active:scale-[0.98] transition-all rounded-[10px] shadow-md shadow-black/25 whitespace-nowrap cursor-pointer"
             >
               <ShoppingCart className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
               <span className="hidden sm:inline">New Sale (POS)</span>
               <span className="sm:hidden">POS</span>
             </button>
           ) : (
-            <span className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#087F8C]/30 text-[#5EEAD4] border border-[#087F8C] rounded-[10px] text-xs font-semibold whitespace-nowrap">
+            <span className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#243B70] text-[#FF9D32] border border-[#FF9D32]/50 rounded-[10px] text-xs font-semibold whitespace-nowrap">
               <ShoppingCart className="w-3.5 h-3.5" />
               <span>POS Active</span>
             </span>
@@ -411,15 +418,15 @@ export const Header: React.FC<HeaderProps> = ({
         )}
 
         {/* User Profile */}
-        <div className="flex items-center gap-2 px-2 py-1 rounded-[10px] bg-[#0B1428]/70 border border-white/15">
-          <div className="w-7 h-7 rounded-[8px] bg-[#D6AD60] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] font-extrabold text-xs flex items-center justify-center shrink-0">
+        <div className="flex items-center gap-2 px-2 py-1 rounded-[10px] bg-[#243B70]/55 border border-white/15">
+          <div className="w-7 h-7 rounded-[8px] bg-[#FF9D32] text-[#101B3F] font-extrabold text-xs flex items-center justify-center shrink-0">
             {displayName.slice(0, 1).toUpperCase()}
           </div>
           <div className="hidden md:flex flex-col min-w-0 text-left">
             <span className="text-xs font-semibold text-white truncate max-w-[110px] leading-tight">
               {displayName}
             </span>
-            <span className="text-[10px] text-[#D6AD60] truncate max-w-[110px] leading-tight">
+            <span className="text-[10px] text-[#FF9D32] truncate max-w-[110px] leading-tight">
               {normalizedRole === 'super_admin' ? 'Admin' : displayRoleLabel}
             </span>
           </div>
@@ -430,7 +437,7 @@ export const Header: React.FC<HeaderProps> = ({
           type="button"
           onClick={() => signOut()}
           title={user ? `Signed in as ${user.email}. Click to Logout` : 'Logout'}
-          className="flex items-center gap-1.5 px-2.5 py-2 text-xs font-semibold text-slate-300 hover:text-white hover:bg-[#F06464]/20 hover:border-[#F06464]/50 rounded-[10px] border border-white/15 bg-[#0B1428]/60 transition-colors cursor-pointer"
+          className="flex items-center gap-1.5 px-2.5 py-2 text-xs font-semibold text-slate-300 hover:text-white hover:bg-[#F06464]/20 hover:border-[#F06464]/50 rounded-[10px] border border-white/15 bg-[#243B70]/45 transition-colors cursor-pointer"
         >
           <LogOut className="w-4 h-4" />
           <span className="hidden xl:inline">Logout</span>

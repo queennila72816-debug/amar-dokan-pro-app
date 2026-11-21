@@ -1,14 +1,14 @@
 {
-  "name": "amar-dokan-pro",
+  "name": "protiva-desktop",
   "version": "1.0.0",
-  "description": "Amar Dokan Pro - Business Management & POS Desktop Client",
+  "description": "PROTIVA - Innovation Beyond Limits. Business Management & POS Desktop Client",
   "main": "electron/main.js",
   "build": {
-    "appId": "com.amardokanpro.desktop",
-    "productName": "Amar Dokan Pro",
+    "appId": "com.protiva.desktop",
+    "productName": "PROTIVA",
     "win": {
       "target": ["nsis", "portable"],
-      "icon": "public/icon.ico"
+      "icon": "public/favicon.ico"
     },
     "nsis": {
       "oneClick": false,

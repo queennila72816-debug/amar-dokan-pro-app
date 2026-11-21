@@ -5,10 +5,12 @@ import { Branch, ShopSettings } from '../types';
  * Must NEVER be overwritten by shop/business settings.
  */
 export const APP_IDENTITY = Object.freeze({
-  name: 'Amar Dokan Pro',
-  subtitle: 'Business Management & POS',
-  fullTitle: 'Amar Dokan Pro - Business Management & POS',
-  shortName: 'AmarDokanPro',
+  name: 'PROTIVA',
+  subtitle: 'Innovation Beyond Limits.',
+  fullTitle: 'PROTIVA - Innovation Beyond Limits.',
+  shortName: 'PROTIVA',
+  logoPath: '/protiva-logo.png',
+  symbolPath: '/protiva-symbol.png',
 } as const);
 
 export interface ResolvedBusinessProfile {
@@ -25,7 +27,7 @@ export interface ResolvedBusinessProfile {
 
 /**
  * Returns the editable business/shop display name without ever falling back
- * to the software application name ("Amar Dokan Pro").
+ * to the software application name ("PROTIVA").
  */
 export function getBusinessDisplayName(
   settings?: Partial<ShopSettings> | null,

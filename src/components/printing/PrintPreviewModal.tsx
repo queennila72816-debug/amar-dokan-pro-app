@@ -104,13 +104,13 @@ export const PrintPreviewModal: React.FC<PrintPreviewModalProps> = ({
   const canPrint = !isGenerating && Boolean(html) && isPreviewLoaded && !isPrinting;
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center p-2 sm:p-4 bg-[#0B1428]/80 backdrop-blur-xs no-print">
-      <div className="bg-white dark:bg-[#101B35] rounded-[14px] shadow-2xl border border-[#E2E8F0] dark:border-[#1F3158] w-full max-w-4xl h-[90vh] flex flex-col overflow-hidden adp-modal-enter">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-2 sm:p-4 bg-[#0A122C]/80 backdrop-blur-xs no-print">
+      <div className="bg-white dark:bg-[#101B3F] rounded-[14px] shadow-2xl border border-[#E2E8F0] dark:border-[#243B70] w-full max-w-4xl h-[90vh] flex flex-col overflow-hidden adp-modal-enter">
         {/* Top Toolbar */}
-        <div className="px-4 py-3 border-b border-[#1F3158] bg-[#101B35] text-white flex flex-wrap items-center justify-between gap-3">
+        <div className="px-4 py-3 border-b border-[#243B70] bg-[#101B3F] text-white flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <h3 className="text-sm font-bold text-white flex items-center gap-2 truncate">
-              <FileText className="w-4 h-4 text-[#D6AD60] shrink-0" />
+              <FileText className="w-4 h-4 text-[#FF9D32] shrink-0" />
               <span className="truncate">{title}</span>
             </h3>
             {paperInfo && (
@@ -122,7 +122,7 @@ export const PrintPreviewModal: React.FC<PrintPreviewModalProps> = ({
 
           <div className="flex items-center gap-2">
             {/* Zoom Controls */}
-            <div className="flex items-center bg-[#0B1428] border border-white/15 rounded-[8px] p-0.5 text-xs">
+            <div className="flex items-center bg-[#243B70]/70 border border-white/15 rounded-[8px] p-0.5 text-xs">
               <button
                 type="button"
                 onClick={() => setZoom(z => Math.max(50, z - 25))}
@@ -131,7 +131,7 @@ export const PrintPreviewModal: React.FC<PrintPreviewModalProps> = ({
               >
                 <ZoomOut className="w-3.5 h-3.5" />
               </button>
-              <span className="px-2 font-mono font-bold text-[#D6AD60] min-w-[46px] text-center">
+              <span className="px-2 font-mono font-bold text-[#FF9D32] min-w-[46px] text-center">
                 {zoom}%
               </span>
               <button
@@ -148,7 +148,7 @@ export const PrintPreviewModal: React.FC<PrintPreviewModalProps> = ({
               type="button"
               onClick={handlePrint}
               disabled={!canPrint}
-              className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 disabled:opacity-50 rounded-[10px] shadow-xs transition-all cursor-pointer"
+              className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-[#101B3F] bg-[#FF9D32] hover:brightness-105 disabled:opacity-50 rounded-[10px] shadow-xs transition-all cursor-pointer"
             >
               {isPrinting || (Boolean(html) && !isGenerating && !isPreviewLoaded) ? (
                 <Loader2 className="w-4 h-4 animate-spin" />

@@ -2516,7 +2516,7 @@ export function createApp() {
           },
           body: JSON.stringify({
             to: rawPhone,
-            message: `Your Amar Dokan Pro verification code is ${otpCode}. Valid for 5 minutes.`,
+            message: `Your PROTIVA verification code is ${otpCode}. Valid for 5 minutes.`,
           }),
         });
         return res.status(200).json({
@@ -2863,7 +2863,7 @@ async function startServer() {
     app.use(
       express.static(distDir, {
         setHeaders(res, filePath) {
-          if (filePath.endsWith('.html') || filePath.endsWith('.webmanifest')) {
+          if (filePath.endsWith('.html') || filePath.endsWith('.webmanifest') || filePath.endsWith('sw.js')) {
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
           } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
             res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
@@ -2879,7 +2879,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Amar Dokan Pro server listening on http://0.0.0.0:${PORT}`);
+    console.log(`PROTIVA server listening on http://0.0.0.0:${PORT}`);
   });
 }
 

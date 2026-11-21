@@ -129,19 +129,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   };
 
   return (
-    <div className="min-h-screen bg-[#0B1428] relative flex items-center justify-center p-4 overflow-hidden">
-      {/* Subtle Luxury Background Accents */}
-      <div className="pointer-events-none absolute -top-24 -right-24 w-96 h-96 rounded-full bg-[#087F8C]/15 blur-3xl" />
-      <div className="pointer-events-none absolute -bottom-24 -left-24 w-96 h-96 rounded-full bg-[#D6AD60]/10 blur-3xl" />
+    <div className="min-h-screen bg-[#0A122C] relative flex items-center justify-center p-4 overflow-hidden">
+      {/* Subtle Brand Background Accents */}
+      <div className="pointer-events-none absolute -top-24 -right-24 w-96 h-96 rounded-full bg-[#243B70]/35 blur-3xl" />
+      <div className="pointer-events-none absolute -bottom-24 -left-24 w-96 h-96 rounded-full bg-[#FF9D32]/15 blur-3xl" />
 
-      <div className="relative w-full max-w-md bg-white dark:bg-[#101B35] rounded-[14px] shadow-2xl border border-[#E2E8F0] dark:border-[#1F3158] overflow-hidden adp-modal-enter">
-        {/* Luxury Navy & Gold Header */}
-        <div className="p-6 bg-[#101B35] bg-gradient-to-br from-[#101B35] via-[#152447] to-[#0B1428] text-white text-center border-b border-[#D6AD60]/25">
-          <div className="w-12 h-12 rounded-[12px] bg-[#D6AD60] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] flex items-center justify-center mx-auto mb-3 shadow-lg shadow-black/25">
-            <Store className="w-6 h-6 stroke-[2.2]" />
+      <div className="relative w-full max-w-md bg-white dark:bg-[#101B3F] rounded-[14px] shadow-2xl border border-[#E2E8F0] dark:border-[#243B70] overflow-hidden adp-modal-enter">
+        {/* PROTIVA Official Brand Header */}
+        <div className="p-6 bg-[#101B3F] bg-gradient-to-br from-[#101B3F] via-[#1B2F63] to-[#243B70] text-white text-center border-b border-[#FF9D32]/30">
+          <div className="inline-flex items-center justify-center bg-white rounded-[14px] px-4 py-2.5 shadow-lg shadow-black/25 border border-white/80 mb-2">
+            <img
+              src={APP_IDENTITY.logoPath}
+              alt={`${APP_IDENTITY.name} — ${APP_IDENTITY.subtitle}`}
+              className="h-16 sm:h-20 w-auto object-contain select-none"
+            />
           </div>
-          <h1 className="text-xl font-bold tracking-tight text-white">{APP_IDENTITY.name}</h1>
-          <p className="text-xs text-[#D6AD60] mt-1 font-medium">{APP_IDENTITY.subtitle}</p>
+          <p className="text-[11px] font-medium tracking-wide text-slate-200/90 mt-1">
+            Smart Multi-Tenant Business &amp; POS Platform
+          </p>
         </div>
 
         {!compatReport.supported && (
@@ -156,12 +161,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         {/* Tab Selection */}
         {mode === 'recovery' ? (
-          <div className="py-3 px-6 bg-[#F1F4F9] dark:bg-[#0B1428]/70 border-b border-[#E2E8F0] dark:border-[#1F3158] text-xs font-semibold text-[#087F8C] dark:text-[#5EEAD4] flex items-center justify-center gap-2">
+          <div className="py-3 px-6 bg-[#F5F7FC] dark:bg-[#0A122C]/70 border-b border-[#E2E8F0] dark:border-[#243B70] text-xs font-semibold text-[#243B70] dark:text-[#FF9D32] flex items-center justify-center gap-2">
             <Lock className="w-3.5 h-3.5" />
             <span>Reset Account Password</span>
           </div>
         ) : (
-          <div className="flex border-b border-[#E2E8F0] dark:border-[#1F3158] bg-[#F8FAFC] dark:bg-[#0B1428]/60 text-xs font-semibold">
+          <div className="flex border-b border-[#E2E8F0] dark:border-[#243B70] bg-[#F5F7FC] dark:bg-[#0A122C]/60 text-xs font-semibold">
             <button
               type="button"
               onClick={() => {
@@ -171,8 +176,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               }}
               className={`flex-1 py-3 text-center transition-colors cursor-pointer ${
                 mode === 'login'
-                  ? 'text-[#087F8C] dark:text-[#D6AD60] border-b-2 border-[#087F8C] dark:border-[#D6AD60] bg-white dark:bg-[#101B35]'
-                  : 'text-[#64748B] dark:text-slate-400 hover:text-[#172033] dark:hover:text-white'
+                  ? 'text-[#101B3F] dark:text-[#FF9D32] border-b-2 border-[#FF9D32] bg-white dark:bg-[#101B3F]'
+                  : 'text-[#64748B] dark:text-slate-400 hover:text-[#101B3F] dark:hover:text-white'
               }`}
             >
               Sign In
@@ -186,8 +191,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               }}
               className={`flex-1 py-3 text-center transition-colors cursor-pointer ${
                 mode === 'register'
-                  ? 'text-[#087F8C] dark:text-[#D6AD60] border-b-2 border-[#087F8C] dark:border-[#D6AD60] bg-white dark:bg-[#101B35]'
-                  : 'text-[#64748B] dark:text-slate-400 hover:text-[#172033] dark:hover:text-white'
+                  ? 'text-[#101B3F] dark:text-[#FF9D32] border-b-2 border-[#FF9D32] bg-white dark:bg-[#101B3F]'
+                  : 'text-[#64748B] dark:text-slate-400 hover:text-[#101B3F] dark:hover:text-white'
               }`}
             >
               Create Account
@@ -292,7 +297,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <label className="block text-xs font-semibold text-[#172033] dark:text-slate-200">
                   {mode === 'recovery' ? 'New Password *' : 'Password *'}
                 </label>
-                {mode === 'login' && (
+                  {mode === 'login' && (
                   <button
                     type="button"
                     onClick={() => {
@@ -300,7 +305,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       setErrorMsg(null);
                       setSuccessMsg(null);
                     }}
-                    className="text-[11px] text-[#087F8C] dark:text-[#D6AD60] hover:underline font-medium cursor-pointer"
+                    className="text-[11px] text-[#243B70] dark:text-[#FF9D32] hover:underline font-medium cursor-pointer"
                   >
                     Forgot password?
                   </button>
@@ -315,14 +320,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Minimum 6 characters"
-                  className="w-full pl-9 pr-10 py-2 text-xs bg-[#F8FAFC] dark:bg-[#0E182E] border border-[#E2E8F0] dark:border-[#1F3158] rounded-[10px] text-[#172033] dark:text-white placeholder:text-[#94A3B8] focus:outline-none focus:ring-2 focus:ring-[#087F8C]/25 focus:border-[#087F8C]"
+                  className="w-full pl-9 pr-10 py-2 text-xs bg-[#F5F7FC] dark:bg-[#0D1736] border border-[#E2E8F0] dark:border-[#243B70] rounded-[10px] text-[#172033] dark:text-white placeholder:text-[#94A3B8] focus:outline-none focus:ring-2 focus:ring-[#243B70]/25 focus:border-[#243B70]"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(prev => !prev)}
                   aria-label={showPassword ? 'Hide password' : 'Show password'}
                   title={showPassword ? 'Hide password' : 'Show password'}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-[#64748B] dark:text-slate-400 hover:text-[#172033] dark:hover:text-white transition-colors cursor-pointer"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-[#64748B] dark:text-slate-400 hover:text-[#101B3F] dark:hover:text-white transition-colors cursor-pointer"
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -333,10 +338,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-2.5 bg-[#087F8C] bg-gradient-to-r from-[#087F8C] to-[#10B981] hover:brightness-110 text-white font-semibold rounded-[10px] text-xs flex items-center justify-center gap-2 shadow-md shadow-[#087F8C]/25 transition-all disabled:opacity-60 cursor-pointer"
+            className="w-full py-2.5 bg-[#101B3F] bg-gradient-to-r from-[#101B3F] to-[#243B70] hover:brightness-110 text-white font-semibold rounded-[10px] text-xs flex items-center justify-center gap-2 shadow-md shadow-[#101B3F]/25 border border-[#FF9D32]/30 transition-all disabled:opacity-60 cursor-pointer"
           >
             {loading ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
+              <Loader2 className="w-4 h-4 animate-spin text-[#FF9D32]" />
             ) : (
               <>
                 <span>
@@ -348,7 +353,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     ? 'Update Password'
                     : 'Send Reset Link'}
                 </span>
-                <ArrowRight className="w-3.5 h-3.5" />
+                <ArrowRight className="w-3.5 h-3.5 text-[#FF9D32]" />
               </>
             )}
           </button>
@@ -361,7 +366,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   setMode('login');
                   setErrorMsg(null);
                 }}
-                className="text-xs text-[#64748B] dark:text-slate-300 hover:text-[#172033] dark:hover:text-white underline font-medium cursor-pointer"
+                className="text-xs text-[#64748B] dark:text-slate-300 hover:text-[#101B3F] dark:hover:text-white underline font-medium cursor-pointer"
               >
                 Back to Sign In
               </button>
@@ -370,8 +375,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         </form>
 
         {/* Footer info */}
-        <div className="p-4 bg-[#F8FAFC] dark:bg-[#0B1428]/70 border-t border-[#E2E8F0] dark:border-[#1F3158] text-center text-[11px] text-[#64748B] dark:text-slate-400">
-          <span>Protected with Supabase Row Level Security &amp; Encryption</span>
+        <div className="p-4 bg-[#F5F7FC] dark:bg-[#0A122C]/70 border-t border-[#E2E8F0] dark:border-[#243B70] text-center text-[11px] text-[#64748B] dark:text-slate-400">
+          <span>{APP_IDENTITY.name} · Protected with Supabase Row Level Security &amp; Encryption</span>
         </div>
       </div>
     </div>

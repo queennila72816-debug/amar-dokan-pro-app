@@ -1,4 +1,4 @@
-name: Deploy Amar Dokan Pro to GitHub Pages
+name: Deploy PROTIVA to GitHub Pages
 
 on:
   push:

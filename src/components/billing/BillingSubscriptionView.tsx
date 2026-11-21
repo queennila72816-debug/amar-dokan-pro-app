@@ -169,7 +169,7 @@ export const BillingSubscriptionView: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-[#172033] dark:text-white flex items-center gap-2">
-            <Crown className="w-5 h-5 text-[#D6AD60]" />
+            <Crown className="w-5 h-5 text-[#FF9D32]" />
             <span>Plan, Billing &amp; Platform Support</span>
           </h1>
           <p className="text-xs text-[#64748B] dark:text-slate-400 mt-0.5">
@@ -181,9 +181,9 @@ export const BillingSubscriptionView: React.FC = () => {
           <button
             type="button"
             onClick={() => setCreateNewBusinessModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-[10px] bg-[#101B35] text-white border border-[#D6AD60]/40 text-xs font-bold cursor-pointer self-start"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-[10px] bg-[#101B3F] hover:bg-[#243B70] text-white border border-[#FF9D32]/40 text-xs font-bold cursor-pointer self-start transition-colors"
           >
-            <Plus className="w-3.5 h-3.5 text-[#D6AD60]" />
+            <Plus className="w-3.5 h-3.5 text-[#FF9D32]" />
             <span>Add Another Business</span>
           </button>
         )}
@@ -215,10 +215,10 @@ export const BillingSubscriptionView: React.FC = () => {
 
       {/* Current Subscription + Quota Usage */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        <div className="lg:col-span-5 bg-[#101B35] text-white rounded-[14px] border border-[#D6AD60]/30 p-5 flex flex-col justify-between gap-4">
+        <div className="lg:col-span-5 bg-[#101B3F] text-white rounded-[14px] border border-[#FF9D32]/35 p-5 flex flex-col justify-between gap-4">
           <div>
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-[#D6AD60]">Active Subscription</span>
+              <span className="text-[11px] font-bold uppercase tracking-wider text-[#FF9D32]">Active Subscription</span>
               <span className="text-[11px] font-bold uppercase px-2 py-0.5 rounded-[6px] bg-white/10">
                 {activeSubscription?.status || 'trialing'}
               </span>
@@ -229,7 +229,7 @@ export const BillingSubscriptionView: React.FC = () => {
             <div className="mt-1 text-xs text-slate-300 capitalize">
               Billing Cycle: {activeSubscription?.billingCycle || 'trial'}
               {daysRemaining !== null && (
-                <span className="ml-2 text-[#D6AD60] font-mono-num font-semibold">
+                <span className="ml-2 text-[#FF9D32] font-mono-num font-semibold">
                   · {daysRemaining} day{daysRemaining === 1 ? '' : 's'} remaining
                 </span>
               )}
@@ -238,7 +238,7 @@ export const BillingSubscriptionView: React.FC = () => {
 
           <div className="pt-3 border-t border-white/15 flex items-center justify-between text-xs text-slate-300">
             <span className="flex items-center gap-1.5">
-              <Clock className="w-3.5 h-3.5 text-[#D6AD60]" />
+              <Clock className="w-3.5 h-3.5 text-[#FF9D32]" />
               Period Ends: {periodEndDate ? periodEndDate.toLocaleDateString() : '14-Day Trial'}
             </span>
             <span className="flex items-center gap-1.5 text-[#5EEAD4]">

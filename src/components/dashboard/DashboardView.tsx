@@ -206,11 +206,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <div className="adp-card p-5 md:p-6 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
         <div className="flex items-start gap-3.5 min-w-0">
           {shopLogo ? (
-            <div className="w-12 h-12 rounded-[12px] border border-[#E2E8F0] dark:border-[#1F3158] bg-[#F8FAFC] dark:bg-[#0E182E] flex items-center justify-center overflow-hidden shrink-0">
+            <div className="w-12 h-12 rounded-[12px] border border-[#E2E8F0] dark:border-[#243B70] bg-[#F5F7FC] dark:bg-[#0D1736] flex items-center justify-center overflow-hidden shrink-0">
               <img src={shopLogo} alt={biz.shopName} className="max-w-full max-h-full object-contain p-1" />
             </div>
           ) : (
-            <div className="w-12 h-12 rounded-[12px] bg-[#101B35] bg-gradient-to-br from-[#101B35] to-[#1D2F59] border border-[#D6AD60]/40 text-[#D6AD60] flex items-center justify-center shrink-0 shadow-sm">
+            <div className="w-12 h-12 rounded-[12px] bg-[#101B3F] bg-gradient-to-br from-[#101B3F] to-[#243B70] border border-[#FF9D32]/45 text-[#FF9D32] flex items-center justify-center shrink-0 shadow-sm">
               <Store className="w-6 h-6" />
             </div>
           )}

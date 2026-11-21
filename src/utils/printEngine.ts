@@ -373,7 +373,7 @@ export function buildInvoiceHtml(
     const bodyHtml = `
       <div class="receipt">
         <div class="center dashed-b">
-          ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(biz.shopName)}" class="logo" />` : ''}
+          <img src="${escapeHtml(logoUrl || APP_IDENTITY.symbolPath)}" alt="${escapeHtml(logoUrl ? biz.shopName : APP_IDENTITY.name)}" class="logo" />
           <h1 class="shop-name">${escapeHtml(biz.shopName)}</h1>
           ${biz.tagline ? `<p class="muted">${escapeHtml(biz.tagline)}</p>` : ''}
           ${biz.branchName ? `<p class="muted" style="font-weight:600;">Branch: ${escapeHtml(biz.branchName)}</p>` : ''}
@@ -419,6 +419,7 @@ export function buildInvoiceHtml(
           <p class="muted" style="font-weight:600;">Thank you for shopping with us!</p>
           <p class="muted">Exchange/Return within 3 days with invoice &amp; tag.</p>
           <div class="sig-line">Authorized Signature</div>
+          <p class="muted" style="margin-top:8px; font-size:8.5px; color:#475569;">Powered by <strong>${escapeHtml(APP_IDENTITY.name)}</strong> · ${escapeHtml(APP_IDENTITY.subtitle)}</p>
         </div>
       </div>
     `;
@@ -483,17 +484,18 @@ export function buildInvoiceHtml(
       align-items: flex-start;
       gap: 16px;
       padding-bottom: 12px;
-      border-bottom: 2px solid #0f172a;
+      border-bottom: 2px solid #101B3F;
     }
     .adp-doc .brand { display: flex; gap: 12px; align-items: flex-start; }
     .adp-doc .logo { max-height: ${isA5 ? 42 : 56}px; max-width: ${isA5 ? 110 : 150}px; object-fit: contain; }
-    .adp-doc .shop-title { font-size: ${isA5 ? baseFontPx + 5 : baseFontPx + 8}px; font-weight: 800; margin: 0; color: #0f172a; }
+    .adp-doc .shop-title { font-size: ${isA5 ? baseFontPx + 5 : baseFontPx + 8}px; font-weight: 800; margin: 0; color: #101B3F; }
     .adp-doc .sub { color: #475569; margin: 2px 0; font-size: ${isA5 ? 10 : 11}px; }
     .adp-doc .inv-badge {
       display: inline-block;
       padding: 3px 10px;
-      background: #0f172a;
+      background: #101B3F;
       color: #ffffff;
+      border-bottom: 2px solid #FF9D32;
       font-weight: 800;
       letter-spacing: 0.08em;
       border-radius: 4px;
@@ -610,7 +612,7 @@ export function buildInvoiceHtml(
     <div class="invoice-sheet">
       <div class="header">
         <div class="brand">
-          ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(biz.shopName)}" class="logo" />` : ''}
+          <img src="${escapeHtml(logoUrl || APP_IDENTITY.symbolPath)}" alt="${escapeHtml(logoUrl ? biz.shopName : APP_IDENTITY.name)}" class="logo" />
           <div>
             <h1 class="shop-title">${escapeHtml(biz.shopName)}</h1>
             ${biz.tagline ? `<p class="sub">${escapeHtml(biz.tagline)}</p>` : ''}
@@ -680,13 +682,17 @@ export function buildInvoiceHtml(
 
       <div class="footer-sign">
         <div class="sub" style="max-width:60%;">
-          <div style="font-weight:700; color:#0f172a;">Terms &amp; Return Policy</div>
+          <div style="font-weight:700; color:#101B3F;">Terms &amp; Return Policy</div>
           <div>For exchange or return, please present this original invoice with intact barcode tag within 3 days.</div>
         </div>
         <div style="display:flex; gap:24px;">
           <div class="sig-box">Customer Signature</div>
           <div class="sig-box">Authorized Signature</div>
         </div>
+      </div>
+      <div style="margin-top:14px; padding-top:8px; border-top:1px solid #e2e8f0; display:flex; justify-content:space-between; font-size:9.5px; color:#64748b;">
+        <span>Powered by <strong style="color:#101B3F;">${escapeHtml(APP_IDENTITY.name)}</strong></span>
+        <span>${escapeHtml(APP_IDENTITY.subtitle)}</span>
       </div>
     </div>
   `;
@@ -1259,7 +1265,7 @@ function buildBusinessDocHeaderHtml(
   return `
     <div class="doc-header">
       <div class="doc-brand">
-        ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="${escapeHtml(biz.shopName)}" class="doc-logo" />` : ''}
+        <img src="${escapeHtml(logoUrl || APP_IDENTITY.symbolPath)}" alt="${escapeHtml(logoUrl ? biz.shopName : APP_IDENTITY.name)}" class="doc-logo" />
         <div>
           <h1 class="doc-shop-title">${escapeHtml(biz.shopName)}</h1>
           ${biz.tagline ? `<p class="doc-sub">${escapeHtml(biz.tagline)}</p>` : ''}
@@ -1271,8 +1277,9 @@ function buildBusinessDocHeaderHtml(
       </div>
       <div style="text-align:right;">
         <span class="doc-badge">${escapeHtml(docBadge)}</span>
-        <div class="mono" style="font-weight:800; font-size:13px; margin-top:6px;">${escapeHtml(docRef)}</div>
+        <div class="mono" style="font-weight:800; font-size:13px; margin-top:6px; color:#101B3F;">${escapeHtml(docRef)}</div>
         <div class="doc-sub">${escapeHtml(docDateText)}</div>
+        <div class="doc-sub" style="font-size:9.5px; color:#64748b; margin-top:4px;">${escapeHtml(APP_IDENTITY.name)} · ${escapeHtml(APP_IDENTITY.subtitle)}</div>
       </div>
     </div>
   `;
@@ -1283,7 +1290,7 @@ const BUSINESS_DOC_SHARED_CSS = `
   @media screen {
     html.adp-preview-frame body {
       padding: 16px;
-      background: #f1f5f9;
+      background: #F5F7FC;
       display: flex;
       justify-content: center;
     }
@@ -1300,7 +1307,7 @@ const BUSINESS_DOC_SHARED_CSS = `
   @media screen {
     .adp-doc .doc-sheet {
       border: 1px solid #cbd5e1;
-      box-shadow: 0 4px 18px rgba(15, 23, 42, 0.08);
+      box-shadow: 0 4px 18px rgba(16, 27, 63, 0.08);
       border-radius: 6px;
     }
   }
@@ -1310,17 +1317,18 @@ const BUSINESS_DOC_SHARED_CSS = `
     align-items: flex-start;
     gap: 16px;
     padding-bottom: 12px;
-    border-bottom: 2px solid #0f172a;
+    border-bottom: 2px solid #101B3F;
   }
   .adp-doc .doc-brand { display: flex; gap: 12px; align-items: flex-start; }
   .adp-doc .doc-logo { max-height: 52px; max-width: 140px; object-fit: contain; }
-  .adp-doc .doc-shop-title { font-size: 19px; font-weight: 800; margin: 0; color: #0f172a; }
+  .adp-doc .doc-shop-title { font-size: 19px; font-weight: 800; margin: 0; color: #101B3F; }
   .adp-doc .doc-sub { color: #475569; margin: 2px 0; font-size: 11px; }
   .adp-doc .doc-badge {
     display: inline-block;
     padding: 3px 10px;
-    background: #0f172a;
+    background: #101B3F;
     color: #ffffff;
+    border-bottom: 2px solid #FF9D32;
     font-weight: 800;
     letter-spacing: 0.08em;
     border-radius: 4px;

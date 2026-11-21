@@ -160,7 +160,7 @@ export const subscriptionService = {
       if (!rpcErr && Array.isArray(rpcRows)) {
         return rpcRows.map((r: any) => ({
           businessId: r.business_id,
-          businessName: r.business_name || 'Amar Dokan Shop',
+          businessName: r.business_name || 'My Shop',
           businessType: (r.business_type || 'general') as BusinessType,
           businessStatus: r.business_status || (r.is_active === false ? 'suspended' : 'active'),
           isActive: r.is_active !== false,
@@ -204,7 +204,7 @@ export const subscriptionService = {
       const s = subMap.get(m.business_id);
       return {
         businessId: m.business_id,
-        businessName: b?.name || 'Amar Dokan Shop',
+        businessName: b?.name || 'My Shop',
         businessType: (b?.business_type || 'general') as BusinessType,
         businessStatus: b?.status || (b?.is_active === false ? 'suspended' : 'active'),
         isActive: b?.is_active !== false,

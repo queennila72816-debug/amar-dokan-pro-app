@@ -13,7 +13,7 @@ export interface CapacitorConfig {
 
 const config: CapacitorConfig = {
   appId: 'com.amardokanpro.app',
-  appName: 'Amar Dokan Pro',
+  appName: 'PROTIVA',
   webDir: 'dist',
   server: {
     androidScheme: 'https',
@@ -21,7 +21,7 @@ const config: CapacitorConfig = {
   plugins: {
     SplashScreen: {
       launchShowDuration: 1500,
-      backgroundColor: '#059669',
+      backgroundColor: '#101B3F',
       showSpinner: false,
     },
   },

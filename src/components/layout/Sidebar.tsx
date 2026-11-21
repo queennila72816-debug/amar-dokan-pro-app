@@ -88,14 +88,14 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
       {/* Mobile Backdrop */}
       {isOpen && (
         <div
-          className="fixed inset-0 bg-[#0B1428]/70 z-40 lg:hidden backdrop-blur-xs"
+          className="fixed inset-0 bg-[#0A122C]/70 z-40 lg:hidden backdrop-blur-xs"
           onClick={() => setIsOpen(false)}
         />
       )}
 
       {/* Deep Navy Collapsible Sidebar */}
       <aside
-        className={`fixed lg:static top-14 sm:top-16 bottom-0 left-0 z-40 lg:h-full min-h-0 overflow-hidden overscroll-contain bg-[#0B1428] border-r border-[#1B2B4B] text-[#E2E8F0] flex flex-col transition-all duration-200 ease-in-out shrink-0 ${
+        className={`fixed lg:static top-14 sm:top-16 bottom-0 left-0 z-40 lg:h-full min-h-0 overflow-hidden overscroll-contain bg-[#101B3F] border-r border-[#243B70]/70 text-[#E2E8F0] flex flex-col transition-all duration-200 ease-in-out shrink-0 ${
           collapsed ? 'w-[76px]' : 'w-64'
         } ${isOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}
       >
@@ -127,8 +127,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
                         collapsed ? 'justify-center px-2' : 'justify-between px-3'
                       } py-2.5 rounded-[10px] text-xs md:text-[13px] font-medium transition-all duration-150 cursor-pointer border ${
                         isActive
-                          ? `bg-[#162344] ${modTheme.sidebarActiveBg} ${modTheme.sidebarActiveBorder} text-white font-semibold shadow-sm`
-                          : 'border-transparent text-[#CBD5E1] hover:text-white hover:bg-[#162344]'
+                          ? `bg-[#243B70] ${modTheme.sidebarActiveBg} ${modTheme.sidebarActiveBorder} text-white font-semibold shadow-sm`
+                          : 'border-transparent text-[#CBD5E1] hover:text-white hover:bg-[#192A56]'
                       }`}
                     >
                       <div className={`flex items-center ${collapsed ? 'justify-center' : 'gap-2.5'} min-w-0`}>
@@ -158,7 +158,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
         </div>
 
         {/* Bottom Active Business & Role Info */}
-        <div className="shrink-0 p-3 border-t border-[#1B2B4B] bg-[#101B35]">
+        <div className="shrink-0 p-3 border-t border-[#243B70]/70 bg-[#0B1536]">
           {collapsed ? (
             <div className="flex flex-col items-center gap-2">
               <button
@@ -166,12 +166,12 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
                 onClick={() => setCollapsed(false)}
                 aria-label="Expand sidebar"
                 title="Expand sidebar"
-                className="hidden lg:flex w-8 h-8 rounded-[8px] items-center justify-center text-[#94A3B8] hover:text-[#D6AD60] hover:bg-[#1B2C52] transition-colors cursor-pointer"
+                className="hidden lg:flex w-8 h-8 rounded-[8px] items-center justify-center text-[#94A3B8] hover:text-[#FF9D32] hover:bg-[#243B70] transition-colors cursor-pointer"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>
               <div
-                className="w-9 h-9 mx-auto rounded-[10px] bg-[#1B2C52] border border-[#D6AD60]/30 flex items-center justify-center text-[#D6AD60] font-bold text-xs"
+                className="w-9 h-9 mx-auto rounded-[10px] bg-[#243B70] border border-[#FF9D32]/35 flex items-center justify-center text-[#FF9D32] font-bold text-xs"
                 title={`${getBusinessDisplayName(settings)} (${activeBranch?.name || 'Main'})`}
               >
                 {getBusinessDisplayName(settings).slice(0, 1).toUpperCase()}
@@ -180,7 +180,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
           ) : (
             <>
               <div className="flex items-center justify-between gap-2 mb-0.5">
-                <div className="text-[10px] font-semibold tracking-wider text-[#D6AD60]">
+                <div className="text-[10px] font-semibold tracking-wider text-[#FF9D32]">
                   Active Business
                 </div>
                 <button
@@ -188,7 +188,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
                   onClick={() => setCollapsed(true)}
                   aria-label="Collapse sidebar"
                   title="Collapse sidebar"
-                  className="hidden lg:flex w-6 h-6 rounded-[7px] items-center justify-center text-[#94A3B8] hover:text-[#D6AD60] hover:bg-[#1B2C52] transition-colors cursor-pointer shrink-0"
+                  className="hidden lg:flex w-6 h-6 rounded-[7px] items-center justify-center text-[#94A3B8] hover:text-[#FF9D32] hover:bg-[#243B70] transition-colors cursor-pointer shrink-0"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </button>
@@ -201,7 +201,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
                   Branch: {activeBranch.name}
                 </div>
               )}
-              <div className="mt-2 pt-2 border-t border-[#1B2B4B] text-[11px] text-[#94A3B8] flex items-center justify-between gap-2">
+              <div className="mt-2 pt-2 border-t border-[#243B70]/70 text-[11px] text-[#94A3B8] flex items-center justify-between gap-2">
                 <span className="shrink-0">Role:</span>
                 <span className="font-semibold text-white truncate">
                   {activeRoleDefinition?.name || currentUserRole}

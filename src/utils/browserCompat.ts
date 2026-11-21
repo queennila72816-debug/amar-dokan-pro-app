@@ -5,7 +5,7 @@ export interface BrowserCompatibilityReport {
 }
 
 /**
- * Checks only essential runtime browser capabilities required by Amar Dokan Pro.
+ * Checks only essential runtime browser capabilities required by PROTIVA.
  * Supported modern & Windows 7 browsers (Chrome 88+/109, Edge 88+/109, Firefox 85+/115 ESR,
  * Safari 14+) pass all checks cleanly and do NOT trigger any banner.
  * Only genuinely incompatible/ancient browsers (e.g., Internet Explorer, Chrome <80, disabled storage)

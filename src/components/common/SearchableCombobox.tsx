@@ -280,7 +280,7 @@ export const SearchableCombobox: React.FC<SearchableComboboxProps> = ({
           onKeyDown={handleKeyDown}
           className={`w-full border border-[#E2E8F0] dark:border-[#1F3158] bg-white dark:bg-[#0E182E] text-[#172033] dark:text-white placeholder:text-[#94A3B8] dark:placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#087F8C]/25 focus:border-[#087F8C] transition-colors ${
             size === 'sm' ? 'rounded-[8px]' : 'rounded-[10px]'
-          } ${paddingClasses} disabled:bg-slate-50 dark:disabled:bg-[#0B1428] disabled:text-slate-400`}
+          } ${paddingClasses} disabled:bg-slate-50 dark:disabled:bg-[#0A122C] disabled:text-slate-400`}
         />
 
         <div className="absolute right-1.5 flex items-center gap-0.5">
@@ -318,7 +318,7 @@ export const SearchableCombobox: React.FC<SearchableComboboxProps> = ({
           >
             <ChevronDown
               className={`w-3.5 h-3.5 transition-transform duration-150 ${
-                isOpen ? 'rotate-180 text-[#087F8C] dark:text-[#D6AD60]' : ''
+                isOpen ? 'rotate-180 text-[#243B70] dark:text-[#FF9D32]' : ''
               }`}
             />
           </button>
@@ -334,7 +334,7 @@ export const SearchableCombobox: React.FC<SearchableComboboxProps> = ({
             role="listbox"
             aria-label={ariaLabel}
             style={menuStyle}
-            className="adp-dropdown-enter bg-white dark:bg-[#101B35] border border-[#E2E8F0] dark:border-[#1F3158] rounded-[12px] shadow-2xl overflow-y-auto py-1 text-xs"
+            className="adp-dropdown-enter bg-white dark:bg-[#101B3F] border border-[#E2E8F0] dark:border-[#243B70] rounded-[12px] shadow-2xl overflow-y-auto py-1 text-xs"
           >
             {filteredOptions.length === 0 ? (
               <div className="px-3 py-4 text-center text-[#64748B] dark:text-slate-400 text-[11px]">
@@ -364,8 +364,8 @@ export const SearchableCombobox: React.FC<SearchableComboboxProps> = ({
                       isHighlighted
                         ? 'bg-[#087F8C]/10 dark:bg-[#087F8C]/25 text-[#087F8C] dark:text-[#5EEAD4]'
                         : isSelected
-                        ? 'bg-[#F1F4F9] dark:bg-[#162344] text-[#172033] dark:text-white'
-                        : 'text-[#172033] dark:text-slate-200 hover:bg-[#F8FAFC] dark:hover:bg-[#162344]/80'
+                        ? 'bg-[#F5F7FC] dark:bg-[#182954] text-[#101B3F] dark:text-white'
+                        : 'text-[#172033] dark:text-slate-200 hover:bg-[#F8FAFC] dark:hover:bg-[#182954]/80'
                     } ${opt.disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
                   >
                     <div className="min-w-0 flex-1">
@@ -382,7 +382,7 @@ export const SearchableCombobox: React.FC<SearchableComboboxProps> = ({
                       )}
                     </div>
                     {opt.badge && (
-                      <span className="text-[10px] font-mono-num font-semibold px-1.5 py-0.5 rounded-[6px] bg-[#F1F4F9] dark:bg-[#0E182E] text-[#172033] dark:text-slate-200 border border-[#E2E8F0] dark:border-[#1F3158] shrink-0">
+                      <span className="text-[10px] font-mono-num font-semibold px-1.5 py-0.5 rounded-[6px] bg-[#F5F7FC] dark:bg-[#0A122C] text-[#101B3F] dark:text-slate-200 border border-[#E2E8F0] dark:border-[#243B70] shrink-0">
                         {opt.badge}
                       </span>
                     )}

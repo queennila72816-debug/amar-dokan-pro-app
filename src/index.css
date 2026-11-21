@@ -2,55 +2,57 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 :root {
-  /* Core Brand & Luxury Palette */
-  --color-navy-primary: #101B35;
-  --color-navy-deep: #0B1428;
-  --color-gold: #D6AD60;
+  /* PROTIVA Core Brand Palette */
+  --color-navy-primary: #101B3F;
+  --color-navy-deep: #0A122C;
+  --color-blue-secondary: #243B70;
+  --color-orange-accent: #FF9D32;
+  --color-gold: #FF9D32;
   --color-teal: #087F8C;
   --color-emerald: #10B981;
-  --color-royal-blue: #4169E1;
+  --color-royal-blue: #243B70;
   --color-royal-purple: #7357D9;
-  --color-bg-soft: #F1F4F9;
+  --color-bg-soft: #F5F7FC;
   --color-white: #FFFFFF;
-  --color-amber: #F59E0B;
+  --color-amber: #FF9D32;
   --color-coral: #F06464;
   --color-text-primary: #172033;
   --color-text-secondary: #64748B;
   --color-border: #E2E8F0;
 
   /* Light Mode Semantic Tokens */
-  --bg-app: #F1F4F9;
+  --bg-app: #F5F7FC;
   --bg-surface: #FFFFFF;
   --bg-surface-muted: #F8FAFC;
   --bg-input: #FFFFFF;
   --text-primary: #172033;
   --text-secondary: #64748B;
   --border-color: #E2E8F0;
-  --shadow-card: 0 1px 3px rgba(16, 27, 53, 0.05), 0 1px 2px rgba(16, 27, 53, 0.04);
-  --shadow-elevated: 0 10px 25px -5px rgba(11, 20, 40, 0.10), 0 4px 10px -4px rgba(11, 20, 40, 0.05);
+  --shadow-card: 0 1px 3px rgba(16, 27, 63, 0.05), 0 1px 2px rgba(16, 27, 63, 0.04);
+  --shadow-elevated: 0 10px 25px -5px rgba(16, 27, 63, 0.12), 0 4px 10px -4px rgba(16, 27, 63, 0.05);
 }
 
 .dark {
-  --color-bg-soft: #0B1428;
+  --color-bg-soft: #0A122C;
   --color-text-primary: #F8FAFC;
   --color-text-secondary: #94A3B8;
-  --color-border: #1E2E52;
+  --color-border: #243B70;
 
   /* Dark Mode Semantic Tokens */
-  --bg-app: #0B1428;
-  --bg-surface: #101B35;
-  --bg-surface-muted: #162344;
-  --bg-input: #0E1730;
+  --bg-app: #0A122C;
+  --bg-surface: #101B3F;
+  --bg-surface-muted: #182954;
+  --bg-input: #0D1736;
   --text-primary: #F8FAFC;
   --text-secondary: #94A3B8;
-  --border-color: #1F3158;
+  --border-color: #243B70;
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.30);
   --shadow-elevated: 0 14px 32px rgba(0, 0, 0, 0.45);
 }
 
 @layer base {
   html {
-    background-color: var(--bg-app, #F1F4F9);
+    background-color: var(--bg-app, #F5F7FC);
     color: var(--text-primary, #172033);
     -webkit-text-size-adjust: 100%;
     text-size-adjust: 100%;
@@ -58,7 +60,7 @@
 
   body {
     font-family: 'Plus Jakarta Sans', 'Hind Siliguri', 'Segoe UI', Tahoma, Arial, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-    background-color: var(--bg-app, #F1F4F9);
+    background-color: var(--bg-app, #F5F7FC);
     color: var(--text-primary, #172033);
     transition: background-color 200ms cubic-bezier(0.16, 1, 0.3, 1), color 200ms cubic-bezier(0.16, 1, 0.3, 1);
   }
@@ -74,7 +76,7 @@
   .dark select optgroup,
   header select option,
   aside select option {
-    background-color: #101B35;
+    background-color: #101B3F;
     color: #F8FAFC;
   }
 
@@ -178,7 +180,7 @@
 /* Subtle Navy Scrollbar for Sidebar */
 .adp-navy-scroll {
   scrollbar-width: thin;
-  scrollbar-color: rgba(214, 173, 96, 0.35) transparent;
+  scrollbar-color: rgba(255, 157, 50, 0.40) transparent;
 }
 .adp-navy-scroll::-webkit-scrollbar {
   width: 5px;
@@ -187,25 +189,25 @@
   background: transparent;
 }
 .adp-navy-scroll::-webkit-scrollbar-thumb {
-  background: rgba(214, 173, 96, 0.25);
+  background: rgba(255, 157, 50, 0.28);
   border-radius: 9999px;
 }
 .adp-navy-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(214, 173, 96, 0.45);
+  background: rgba(255, 157, 50, 0.50);
 }
 
 /* Dark Mode Structural Compatibility for Existing Views (zero CTA/gradient breakage) */
 .dark main .bg-white:not([class*="from-"]):not(.print-paper-white):not(.print-paper-white *) {
-  background-color: var(--bg-surface, #101B35);
+  background-color: var(--bg-surface, #101B3F);
 }
 .dark main .bg-slate-50:not([class*="from-"]):not(.print-paper-white):not(.print-paper-white *),
 .dark main .bg-slate-50\/70:not(.print-paper-white):not(.print-paper-white *),
 .dark main .bg-slate-50\/80:not(.print-paper-white):not(.print-paper-white *),
 .dark main .bg-slate-50\/50:not(.print-paper-white):not(.print-paper-white *) {
-  background-color: var(--bg-surface-muted, #162344);
+  background-color: var(--bg-surface-muted, #182954);
 }
 .dark main .bg-slate-100:not([class*="from-"]):not(.print-paper-white):not(.print-paper-white *) {
-  background-color: #1A294B;
+  background-color: #1B2D5C;
 }
 .dark main .text-slate-900:not(.print-paper-white *),
 .dark main .text-slate-800:not(.print-paper-white *) {
@@ -222,25 +224,25 @@
 .dark main .border-slate-200:not(.print-paper-white):not(.print-paper-white *),
 .dark main .border-slate-100:not(.print-paper-white):not(.print-paper-white *),
 .dark main .border-slate-300:not(.print-paper-white):not(.print-paper-white *) {
-  border-color: var(--border-color, #1F3158);
+  border-color: var(--border-color, #243B70);
 }
 .dark main .divide-slate-100:not(.print-paper-white *) > :not(:last-child),
 .dark main .divide-slate-200:not(.print-paper-white *) > :not(:last-child) {
-  border-color: var(--border-color, #1F3158);
+  border-color: var(--border-color, #243B70);
 }
 .dark main input:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not(.print-paper-white *),
 .dark main select:not(.print-paper-white *),
 .dark main textarea:not(.print-paper-white *) {
-  background-color: var(--bg-input, #0E1730);
+  background-color: var(--bg-input, #0D1736);
   color: #F8FAFC;
-  border-color: var(--border-color, #1F3158);
+  border-color: var(--border-color, #243B70);
 }
 .dark main .hover\:bg-slate-50:hover,
 .dark main .hover\:bg-slate-50\/80:hover,
 .dark main .hover\:bg-slate-50\/70:hover,
 .dark main .hover\:bg-slate-100:hover,
 .dark main .hover\:bg-slate-200:hover {
-  background-color: #1D2E54;
+  background-color: #1F3568;
 }
 
 @media (prefers-reduced-motion: reduce) {

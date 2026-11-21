@@ -239,31 +239,35 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
   return (
     <div
       className={`${
-        mode === 'additional' ? 'fixed inset-0 z-50 bg-[#0B1428]/80 backdrop-blur-xs' : 'min-h-screen bg-[#0B1428]'
+        mode === 'additional' ? 'fixed inset-0 z-50 bg-[#0A122C]/80 backdrop-blur-xs' : 'min-h-screen bg-[#0A122C]'
       } relative flex items-center justify-center p-3 sm:p-6 overflow-y-auto`}
     >
       {mode === 'initial' && (
         <>
-          <div className="pointer-events-none fixed -top-24 -right-24 w-96 h-96 rounded-full bg-[#087F8C]/15 blur-3xl" />
-          <div className="pointer-events-none fixed -bottom-24 -left-24 w-96 h-96 rounded-full bg-[#D6AD60]/10 blur-3xl" />
+          <div className="pointer-events-none fixed -top-24 -right-24 w-96 h-96 rounded-full bg-[#243B70]/35 blur-3xl" />
+          <div className="pointer-events-none fixed -bottom-24 -left-24 w-96 h-96 rounded-full bg-[#FF9D32]/15 blur-3xl" />
         </>
       )}
 
-      <div className="relative w-full max-w-2xl bg-white dark:bg-[#101B35] rounded-[16px] shadow-2xl border border-[#E2E8F0] dark:border-[#1F3158] overflow-hidden my-auto adp-modal-enter">
+      <div className="relative w-full max-w-2xl bg-white dark:bg-[#101B3F] rounded-[16px] shadow-2xl border border-[#E2E8F0] dark:border-[#243B70] overflow-hidden my-auto adp-modal-enter">
         {/* Wizard Header Banner */}
-        <div className="bg-[#101B35] bg-gradient-to-r from-[#101B35] via-[#152447] to-[#0B1428] text-white p-6 sm:p-7 border-b border-[#D6AD60]/25">
+        <div className="bg-[#101B3F] bg-gradient-to-r from-[#101B3F] via-[#1B2F63] to-[#243B70] text-white p-6 sm:p-7 border-b border-[#FF9D32]/30">
           <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2.5">
-              <div className="w-11 h-11 rounded-[12px] bg-[#D6AD60] bg-gradient-to-br from-[#D6AD60] to-[#B68936] text-[#0B1428] flex items-center justify-center shadow-md">
-                <Store className="w-6 h-6 stroke-[2.2]" />
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-[12px] bg-white p-1 flex items-center justify-center shadow-md shrink-0">
+                <img
+                  src={APP_IDENTITY.symbolPath}
+                  alt={APP_IDENTITY.name}
+                  className="w-full h-full object-contain"
+                />
               </div>
               <div>
-                <div className="text-xs font-bold tracking-tight text-white">{APP_IDENTITY.name}</div>
-                <div className="text-[10px] text-[#D6AD60] font-medium">{APP_IDENTITY.subtitle}</div>
+                <div className="text-sm font-extrabold tracking-tight text-white">{APP_IDENTITY.name}</div>
+                <div className="text-[10.5px] text-[#FF9D32] font-medium">{APP_IDENTITY.subtitle}</div>
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold px-3 py-1 rounded-[8px] bg-white/10 border border-[#D6AD60]/30 text-[#D6AD60] tracking-wide uppercase">
+              <span className="text-xs font-semibold px-3 py-1 rounded-[8px] bg-white/10 border border-[#FF9D32]/40 text-[#FF9D32] tracking-wide uppercase">
                 Step {currentStep} of 4
               </span>
               {mode === 'additional' && onCancel && (
@@ -287,9 +291,9 @@ export const BusinessSetupWizard: React.FC<BusinessSetupWizardProps> = ({
 
           {/* Stepper progress bars */}
           <div className="grid grid-cols-4 gap-2 mt-5">
-            <div className={`h-1.5 rounded-full transition-all ${currentStep >= 1 ? 'bg-[#D6AD60]' : 'bg-white/15'}`} />
-            <div className={`h-1.5 rounded-full transition-all ${currentStep >= 2 ? 'bg-[#D6AD60]' : 'bg-white/15'}`} />
-            <div className={`h-1.5 rounded-full transition-all ${currentStep >= 3 ? 'bg-[#D6AD60]' : 'bg-white/15'}`} />
+            <div className={`h-1.5 rounded-full transition-all ${currentStep >= 1 ? 'bg-[#FF9D32]' : 'bg-white/15'}`} />
+            <div className={`h-1.5 rounded-full transition-all ${currentStep >= 2 ? 'bg-[#FF9D32]' : 'bg-white/15'}`} />
+            <div className={`h-1.5 rounded-full transition-all ${currentStep >= 3 ? 'bg-[#FF9D32]' : 'bg-white/15'}`} />
             <div className={`h-1.5 rounded-full transition-all ${currentStep >= 4 ? 'bg-[#10B981]' : 'bg-white/15'}`} />
           </div>
         </div>

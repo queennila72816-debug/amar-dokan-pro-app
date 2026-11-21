@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { InvoicePaperSize, Sale, ShopSettings } from '../../types';
 import { useApp } from '../../context/AppContext';
-import { resolveBusinessProfile } from '../../config/appIdentity';
+import { APP_IDENTITY, resolveBusinessProfile } from '../../config/appIdentity';
 import { formatCurrency, formatDate, formatTime } from '../../utils/formatters';
 import {
   getPrinterSettings,
@@ -177,14 +177,12 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
               >
                 {/* Shop Info */}
                 <div className="text-center space-y-1 pb-3 border-b border-dashed border-slate-300">
-                  {shopLogo && (
-                    <img
-                      src={shopLogo}
-                      alt={biz.shopName}
-                      className="h-9 max-w-[120px] object-contain mx-auto mb-1"
-                    />
-                  )}
-                  <h2 className="text-sm font-bold tracking-tight text-slate-900 font-sans">
+                  <img
+                    src={shopLogo || APP_IDENTITY.symbolPath}
+                    alt={shopLogo ? biz.shopName : APP_IDENTITY.name}
+                    className="h-9 max-w-[120px] object-contain mx-auto mb-1"
+                  />
+                  <h2 className="text-sm font-bold tracking-tight text-[#101B3F] font-sans">
                     {biz.shopName}
                   </h2>
                   {biz.tagline && (
@@ -323,6 +321,9 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                   <div className="pt-3 mx-auto w-36 border-t border-dashed border-slate-400 text-[9px] text-slate-500 font-sans">
                     Authorized Signature
                   </div>
+                  <p className="text-[8.5px] text-slate-400 font-sans pt-1">
+                    Powered by <span className="font-bold text-[#101B3F]">{APP_IDENTITY.name}</span> · {APP_IDENTITY.subtitle}
+                  </p>
                 </div>
               </div>
             ) : (
@@ -334,17 +335,15 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                 }`}
               >
                 {/* Header */}
-                <div className="flex justify-between items-start pb-5 border-b border-slate-200 gap-4">
+                <div className="flex justify-between items-start pb-5 border-b-2 border-[#101B3F] gap-4">
                   <div className="flex items-start gap-3">
-                    {shopLogo && (
-                      <img
-                        src={shopLogo}
-                        alt={biz.shopName}
-                        className="h-12 max-w-[110px] object-contain shrink-0"
-                      />
-                    )}
+                    <img
+                      src={shopLogo || APP_IDENTITY.symbolPath}
+                      alt={shopLogo ? biz.shopName : APP_IDENTITY.name}
+                      className="h-12 max-w-[110px] object-contain shrink-0"
+                    />
                     <div>
-                      <h1 className="text-lg sm:text-xl font-bold text-slate-900">{biz.shopName}</h1>
+                      <h1 className="text-lg sm:text-xl font-bold text-[#101B3F]">{biz.shopName}</h1>
                       {biz.tagline && <p className="text-xs text-slate-500 mt-0.5">{biz.tagline}</p>}
                       {biz.branchName && (
                         <p className="text-xs font-semibold text-slate-600 mt-0.5">
@@ -362,10 +361,10 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                     </div>
                   </div>
                   <div className="text-right shrink-0">
-                    <span className="text-[11px] font-semibold px-2.5 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-md">
+                    <span className="text-[11px] font-bold px-2.5 py-1 bg-[#101B3F] text-white border border-[#243B70] rounded-md">
                       INVOICE ({format.toUpperCase()})
                     </span>
-                    <p className="text-xs font-mono font-bold text-slate-900 mt-2">{sale.invoiceNumber}</p>
+                    <p className="text-xs font-mono font-bold text-[#101B3F] mt-2">{sale.invoiceNumber}</p>
                     <p className="text-[11px] text-slate-500">
                       {formatDate(sale.date, 'en')} · {formatTime(sale.date)}
                     </p>
@@ -512,6 +511,10 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                   <div className="text-center border-t border-slate-300 pt-1 w-36">
                     <p>Authorized Signature</p>
                   </div>
+                </div>
+                <div className="mt-5 pt-2.5 border-t border-slate-200 flex items-center justify-between text-[10px] text-slate-400">
+                  <span>Powered by <strong className="text-[#101B3F]">{APP_IDENTITY.name}</strong></span>
+                  <span>{APP_IDENTITY.subtitle}</span>
                 </div>
               </div>
             )}

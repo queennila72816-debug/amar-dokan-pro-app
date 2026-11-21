@@ -310,12 +310,12 @@ export const ReportsView: React.FC = () => {
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-lg font-bold text-slate-900 tracking-tight flex items-center gap-2">
-                <span className="p-1.5 rounded-[8px] bg-[#101B35] text-[#D6AD60]">
+                <span className="p-1.5 rounded-[8px] bg-[#101B3F] text-[#FF9D32]">
                   <TrendingUp className="w-4 h-4" />
                 </span>
                 <span>{'Profit/Loss & Financial Reports'}</span>
               </h2>
-              <span className="text-[11px] font-bold px-2 py-0.5 rounded-[6px] bg-[#101B35]/10 text-[#101B35] dark:bg-[#D6AD60]/15 dark:text-[#D6AD60] border border-[#D6AD60]/30">
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-[6px] bg-[#101B3F]/10 text-[#101B3F] dark:bg-[#FF9D32]/15 dark:text-[#FF9D32] border border-[#FF9D32]/35">
                 {biz.shopName}
                 {biz.branchName ? ` · ${biz.branchName}` : ''}
               </span>
