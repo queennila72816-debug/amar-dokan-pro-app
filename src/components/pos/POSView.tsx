@@ -41,7 +41,7 @@ import {
 import { comboOfferService, DetectedOfferMatch } from '../../services/comboOfferService';
 
 export const POSView: React.FC = () => {
-  const { products, categories: appCategories, customers, accounts, addCustomer, recordSale, settings, activeBranchId, currentUserRole, user, isAdmin, currentEmployee, addAuditLog, comboOffers, pendingPosSelection, setPendingPosSelection } = useApp();
+  const { products, categories: appCategories, customers, accounts, addCustomer, recordSale, settings, activeBranchId, currentUserRole, user, isAdmin, currentEmployee, employees, addAuditLog, comboOffers, pendingPosSelection, setPendingPosSelection } = useApp();
   const isBn = false;
   const lang = settings.language;
 
@@ -536,6 +536,18 @@ export const POSView: React.FC = () => {
       }
 
       const firstAppliedOffer = appliedOffers[0];
+      const matchedEmployee =
+        (currentEmployee &&
+        (!currentEmployee.userId || !user?.id || currentEmployee.userId === user.id) &&
+        (employees.length === 0 || employees.some(e => e.id === currentEmployee.id))
+          ? currentEmployee
+          : undefined) ||
+        (user?.id ? employees.find(e => e.userId === user.id) : undefined);
+      const staffDisplayName =
+        matchedEmployee?.name ||
+        user?.user_metadata?.full_name ||
+        user?.email?.split('@')[0] ||
+        (currentUserRole === 'seller' || currentUserRole === 'salesman' ? 'Seller' : 'Admin');
 
       const saleRecord = await recordSale({
         customerId: selectedCustomer?.id,
@@ -558,12 +570,12 @@ export const POSView: React.FC = () => {
         due: dueAmount,
         paymentMethod,
         payments,
-        servedBy: currentEmployee?.name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || (currentUserRole === 'seller' || currentUserRole === 'salesman' ? 'Seller' : 'Admin'),
+        servedBy: staffDisplayName,
         sellerId: user?.id,
-        sellerName: currentEmployee?.name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || (currentUserRole === 'seller' || currentUserRole === 'salesman' ? 'Seller' : 'Admin'),
-        employeeId: currentEmployee?.id || user?.id,
-        employeeCode: currentEmployee?.employeeCode,
-        employeeName: currentEmployee?.name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Admin',
+        sellerName: staffDisplayName,
+        employeeId: matchedEmployee?.id,
+        employeeCode: matchedEmployee?.employeeCode,
+        employeeName: staffDisplayName,
         branchId: activeBranchId,
         notes: effectiveAdminApprover ? `${notes ? notes + ' | ' : ''}Discount approved by Admin: ${effectiveAdminApprover}` : notes,
       });

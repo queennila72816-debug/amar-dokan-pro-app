@@ -3259,16 +3259,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const status: Sale['status'] =
       saleData.due <= 0 ? 'paid' : saleData.paid > 0 ? 'partial' : 'due';
 
+    const resolvedContextEmployee =
+      (currentEmployee &&
+      (!currentEmployee.userId || !user?.id || currentEmployee.userId === user.id) &&
+      (employees.length === 0 || employees.some(e => e.id === currentEmployee.id))
+        ? currentEmployee
+        : undefined) ||
+      (user?.id ? employees.find(e => e.userId === user.id) : undefined);
+
+    const explicitValidEmployee =
+      saleData.employeeId &&
+      (employees.some(e => e.id === saleData.employeeId) ||
+        (resolvedContextEmployee?.id === saleData.employeeId && saleData.employeeId !== user?.id))
+        ? employees.find(e => e.id === saleData.employeeId) || resolvedContextEmployee
+        : undefined;
+
+    const finalEmployee = explicitValidEmployee || resolvedContextEmployee;
+
     const currentSellerName =
       saleData.employeeName ||
       saleData.sellerName ||
-      currentEmployee?.name ||
+      finalEmployee?.name ||
       user?.user_metadata?.full_name ||
       user?.email?.split('@')[0] ||
       (isAdmin ? 'Admin' : 'Staff');
     const currentSellerId = saleData.sellerId || user?.id;
-    const currentEmployeeId = saleData.employeeId || currentEmployee?.id || user?.id;
-    const currentEmployeeCode = saleData.employeeCode || currentEmployee?.employeeCode;
+    const currentEmployeeId = isSupabaseConfigured
+      ? finalEmployee?.id
+      : saleData.employeeId || finalEmployee?.id || user?.id;
+    const currentEmployeeCode = saleData.employeeCode || finalEmployee?.employeeCode;
 
     const draftSale: Sale = {
       ...saleData,
