@@ -1,11 +1,9 @@
 import {
   supabase,
-  getEphemeralAuthClient,
   getFreshAccessToken,
   isSupabaseConfigured,
   isValidUuid,
   sanitizeUuid,
-  formatSupabaseError,
 } from '../lib/supabase';
 import { Seller, Sale } from '../types';
 import { initialSellers } from '../data/initialData';
@@ -358,128 +356,9 @@ export const sellerService = {
       }
 
       if (!handledByPrivilegedApi) {
-        try {
-          // Pre-check duplicates within this business before creating an auth.users account
-          const [{ data: empDup }, { data: buMembers }, { data: matchedProfs }] = await Promise.all([
-            supabase
-              .from('employees')
-              .select('id, username, email')
-              .eq('business_id', businessId)
-              .or(`username.eq.${cleanUsername},email.eq.${emailToUse}`)
-              .limit(1),
-            supabase.from('business_users').select('user_id').eq('business_id', businessId),
-            supabase
-              .from('user_profiles')
-              .select('id, username, email')
-              .or(`username.ilike.${cleanUsername},email.ilike.${emailToUse}`),
-          ]);
-
-          if (empDup && empDup.length > 0) {
-            const d = empDup[0];
-            if ((d.username || '').toLowerCase() === cleanUsername) {
-              throw new Error(`Username "${cleanUsername}" is already assigned to another staff member.`);
-            }
-            throw new Error(`An account with email "${emailToUse}" already exists in this business.`);
-          }
-
-          if (buMembers && buMembers.length > 0 && matchedProfs && matchedProfs.length > 0) {
-            const memberIds = new Set(buMembers.map((m: { user_id: string }) => m.user_id));
-            const collision = matchedProfs.find((p: { id: string }) => memberIds.has(p.id));
-            if (collision) {
-              if ((collision.username || '').toLowerCase() === cleanUsername) {
-                throw new Error(`Username "${cleanUsername}" is already assigned to another seller or staff member.`);
-              }
-              throw new Error(`An account with email "${emailToUse}" already exists in this business.`);
-            }
-          }
-
-          const tempClient = getEphemeralAuthClient();
-
-          const { data: authData, error: authErr } = await tempClient.auth.signUp({
-            email: emailToUse,
-            password: payload.password,
-            options: {
-              data: {
-                full_name: payload.fullName,
-                username: cleanUsername,
-                role: 'seller',
-                business_id: businessId,
-              },
-            },
-          });
-
-          if (authErr) {
-            if (authErr.message.toLowerCase().includes('already registered')) {
-              throw new Error(`A user with email or username "${cleanUsername}" already exists.`);
-            }
-            throw authErr;
-          }
-
-          if (!authData?.user?.id || !isValidUuid(authData.user.id)) {
-            throw new Error('Supabase Auth did not return a valid seller user UUID.');
-          }
-          if (Array.isArray(authData.user.identities) && authData.user.identities.length === 0) {
-            throw new Error(
-              `A user with email "${emailToUse}" already exists in Supabase Auth. Please use a different email or username.`
-            );
-          }
-
-          createdId = authData.user.id;
-
-          const { error: rpcErr } = await supabase.rpc('register_seller_profile', {
-            p_business_id: businessId,
-            p_seller_id: createdId,
-            p_email: emailToUse,
-            p_full_name: payload.fullName,
-            p_username: cleanUsername,
-            p_mobile: payload.phone,
-            p_branch_id: cleanBranchId,
-            p_status: payload.status,
-          });
-
-          if (rpcErr) {
-            const rpcMissing =
-              rpcErr?.code === 'PGRST202' ||
-              String(rpcErr?.message || '').toLowerCase().includes('could not find the function');
-
-            if (!rpcMissing) {
-              throw new Error(formatSupabaseError(rpcErr, 'Failed to synchronize seller account.'));
-            }
-
-            const { error: buErr } = await supabase.from('business_users').upsert(
-              {
-                business_id: businessId,
-                user_id: createdId,
-                branch_id: cleanBranchId,
-                role: 'seller',
-                status: payload.status,
-              },
-              { onConflict: 'business_id,user_id' }
-            );
-            if (buErr) {
-              throw new Error(formatSupabaseError(buErr, 'Failed to link seller business membership.'));
-            }
-
-            const { error: profErr } = await supabase.from('user_profiles').upsert({
-              id: createdId,
-              email: emailToUse,
-              full_name: payload.fullName,
-              username: cleanUsername,
-              mobile: payload.phone,
-            });
-            if (profErr) {
-              await supabase
-                .from('business_users')
-                .delete()
-                .eq('business_id', businessId)
-                .eq('user_id', createdId);
-              throw new Error(formatSupabaseError(profErr, 'Failed to save seller profile.'));
-            }
-          }
-        } catch (err: any) {
-          console.error('Error creating seller via Supabase Auth:', err);
-          throw err;
-        }
+        throw new Error(
+          'Unable to create confirmed seller account: the server Admin API (/api/staff/create with SUPABASE_SERVICE_ROLE_KEY) and the Supabase Edge Function "manage-staff-user" are currently unavailable. Deploy "manage-staff-user" or configure SUPABASE_SERVICE_ROLE_KEY on the backend so accounts can be created with email_confirm: true without sending confirmation emails.'
+        );
       }
     }
 
@@ -669,7 +548,14 @@ export const sellerService = {
         redirectTo: window.location.origin,
       });
 
-      if (error) throw error;
+      if (error) {
+        if (String(error.message || '').toLowerCase().includes('rate limit')) {
+          throw new Error(
+            'Supabase email rate limit exceeded while sending password reset email. Deploy Edge Function "manage-staff-user" (or configure custom SMTP) to reset seller passwords directly without sending emails.'
+          );
+        }
+        throw error;
+      }
 
       return {
         success: true,

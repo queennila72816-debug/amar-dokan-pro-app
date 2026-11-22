@@ -1,6 +1,5 @@
 import {
   supabase,
-  getEphemeralAuthClient,
   getFreshAccessToken,
   isSupabaseConfigured,
   isValidUuid,
@@ -678,214 +677,13 @@ export const staffRbacService = {
         }
       }
 
-      // 3. Controlled fallback via isolated Auth client + verified auth.users UUID check
+      // 3. Never fall back to public client auth.signUp() for admin-created employees:
+      //    auth.signUp() sends confirmation emails (triggering Supabase's 2/hr email rate limit),
+      //    leaves optional @amardokanpro.internal accounts unconfirmed, and cannot delete orphaned auth users on rollback.
       if (!handledByPrivilegedApi) {
-        // Pre-check duplicates in this business before touching auth.users
-        const { data: dupRows } = await supabase
-          .from('employees')
-          .select('id, username, employee_code, email')
-          .eq('business_id', businessId)
-          .or(
-            [
-              `username.eq.${cleanUsername}`,
-              cleanCode ? `employee_code.eq.${cleanCode}` : '',
-              `email.eq.${emailToUse}`,
-            ]
-              .filter(Boolean)
-              .join(',')
-          );
-
-        if (dupRows && dupRows.length > 0) {
-          const dup = dupRows[0];
-          if ((dup.username || '').toLowerCase() === cleanUsername) {
-            throw new Error(`Username "${cleanUsername}" is already assigned to another staff member.`);
-          }
-          if (cleanCode && (dup.employee_code || '').toUpperCase() === cleanCode) {
-            throw new Error(`Employee ID "${cleanCode}" already exists.`);
-          }
-          throw new Error(`An employee account with email "${emailToUse}" already exists.`);
-        }
-
-        // Also check business_users + user_profiles for Seller/Member collisions in this business
-        const [{ data: buMembers }, { data: matchedProfs }] = await Promise.all([
-          supabase.from('business_users').select('user_id').eq('business_id', businessId),
-          supabase
-            .from('user_profiles')
-            .select('id, username, email')
-            .or(`username.ilike.${cleanUsername},email.ilike.${emailToUse}`),
-        ]);
-        if (buMembers && buMembers.length > 0 && matchedProfs && matchedProfs.length > 0) {
-          const memberIds = new Set(buMembers.map((m: { user_id: string }) => m.user_id));
-          const collision = matchedProfs.find((p: { id: string }) => memberIds.has(p.id));
-          if (collision) {
-            if ((collision.username || '').toLowerCase() === cleanUsername) {
-              throw new Error(`Username "${cleanUsername}" is already assigned to another account in this business.`);
-            }
-            throw new Error(`An account with email "${emailToUse}" already exists in this business.`);
-          }
-        }
-
-        // Isolated shared ephemeral client so Admin session is NEVER overwritten
-        const tempClient = getEphemeralAuthClient();
-
-        const { data: authData, error: authErr } = await tempClient.auth.signUp({
-          email: emailToUse,
-          password: payload.password,
-          options: {
-            data: {
-              full_name: payload.fullName.trim(),
-              username: cleanUsername,
-              employee_code: cleanCode,
-              role: payload.roleKey,
-              business_id: businessId,
-            },
-          },
-        });
-
-        if (authErr) {
-          if (authErr.message.toLowerCase().includes('already registered')) {
-            throw new Error(
-              `An account with email "${emailToUse}" or username "${cleanUsername}" already exists in Supabase Auth.`
-            );
-          }
-          throw authErr;
-        }
-
-        const signedUpUser = authData?.user;
-        // CRITICAL: Supabase returns an obfuscated fake user with identities: [] when an email
-        // already exists and email confirmation / anti-enumeration is enabled.
-        // That fake UUID does NOT exist in auth.users and causes employees_user_id_fkey!
-        if (!signedUpUser?.id || !isValidUuid(signedUpUser.id)) {
-          throw new Error('Supabase Auth did not return a valid user UUID for this employee.');
-        }
-        if (Array.isArray(signedUpUser.identities) && signedUpUser.identities.length === 0) {
-          throw new Error(
-            `An authentication user with email "${emailToUse}" already exists in Supabase Auth. Please use a different email or username.`
-          );
-        }
-
-        const authUserId = signedUpUser.id;
-        const legacyRole = roleKeyToLegacyUserRole(payload.roleKey);
-
-        // Prefer atomic Postgres RPC that verifies auth.users.id existence before inserting
-        const { data: rpcEmp, error: rpcErr } = await supabase.rpc('create_employee_account_synced', {
-          p_business_id: businessId,
-          p_user_id: authUserId,
-          p_branch_id: cleanBranchId,
-          p_employee_code: cleanCode || null,
-          p_name: payload.fullName.trim(),
-          p_username: cleanUsername,
-          p_email: emailToUse,
-          p_mobile: payload.phone.trim(),
-          p_position: payload.position?.trim() || payload.roleName,
-          p_role_id: cleanRoleId,
-          p_role_key: payload.roleKey,
-          p_role: legacyRole,
-          p_salary: Number(payload.salary) || 0,
-          p_joining_date: payload.joiningDate || now.slice(0, 10),
-          p_account_status: payload.accountStatus,
-        });
-
-        if (!rpcErr && rpcEmp) {
-          newEmployee = mapDbEmployeeRow(rpcEmp, payload.roleName, payload.branchName);
-        } else {
-          const rpcMissing =
-            rpcErr?.code === 'PGRST202' ||
-            String(rpcErr?.message || '').toLowerCase().includes('could not find the function');
-
-          if (rpcErr && !rpcMissing) {
-            throw new Error(formatSupabaseError(rpcErr, 'Failed to synchronize employee record.'));
-          }
-
-          // Direct fallback if 20261120 migration RPC hasn't been applied yet
-          let resolvedRoleId = cleanRoleId;
-          if (!resolvedRoleId) {
-            const { data: roleRow } = await supabase
-              .from('user_roles')
-              .select('id')
-              .eq('business_id', businessId)
-              .eq('role_key', normalizeRoleKey(payload.roleKey))
-              .maybeSingle();
-            resolvedRoleId = roleRow?.id || null;
-          }
-
-          let createdBusinessUser = false;
-          let createdProfile = false;
-          try {
-            // Insert business_users BEFORE user_profiles so can_manage_user_profile RLS succeeds
-            const { error: buErr } = await supabase.from('business_users').upsert(
-              {
-                business_id: businessId,
-                user_id: authUserId,
-                branch_id: cleanBranchId,
-                role: legacyRole,
-                status: payload.accountStatus === 'active' ? 'active' : 'suspended',
-                updated_at: now,
-              },
-              { onConflict: 'business_id,user_id' }
-            );
-            if (buErr) {
-              throw new Error(formatSupabaseError(buErr, 'Failed to link staff business membership.'));
-            }
-            createdBusinessUser = true;
-
-            const { error: profErr } = await supabase.from('user_profiles').upsert({
-              id: authUserId,
-              email: emailToUse,
-              full_name: payload.fullName.trim(),
-              username: cleanUsername,
-              mobile: payload.phone.trim(),
-              updated_at: now,
-            });
-            if (profErr) {
-              throw new Error(formatSupabaseError(profErr, 'Failed to save staff profile.'));
-            }
-            createdProfile = true;
-
-            const { data: empInserted, error: empErr } = await supabase
-              .from('employees')
-              .insert({
-                business_id: businessId,
-                branch_id: cleanBranchId,
-                user_id: authUserId,
-                employee_code: cleanCode || null,
-                name: payload.fullName.trim(),
-                username: cleanUsername,
-                email: emailToUse,
-                mobile: payload.phone.trim(),
-                position: payload.position?.trim() || payload.roleName,
-                role: legacyRole,
-                role_id: resolvedRoleId,
-                role_key: payload.roleKey,
-                salary: Number(payload.salary) || 0,
-                joining_date: payload.joiningDate || now.slice(0, 10),
-                status: payload.accountStatus === 'active' ? 'active' : 'inactive',
-                account_status: payload.accountStatus,
-                created_by: cleanCreatorId,
-              })
-              .select()
-              .single();
-
-            if (empErr || !empInserted) {
-              throw new Error(formatSupabaseError(empErr, 'Failed to save employee record to database.'));
-            }
-
-            newEmployee = mapDbEmployeeRow(empInserted, payload.roleName, payload.branchName);
-          } catch (fallbackErr: any) {
-            // Rollback partial membership/profile rows on employee creation failure
-            if (createdProfile) {
-              await supabase.from('user_profiles').delete().eq('id', authUserId);
-            }
-            if (createdBusinessUser) {
-              await supabase
-                .from('business_users')
-                .delete()
-                .eq('business_id', businessId)
-                .eq('user_id', authUserId);
-            }
-            throw fallbackErr;
-          }
-        }
+        throw new Error(
+          'Unable to create confirmed employee account: the server Admin API (/api/staff/create with SUPABASE_SERVICE_ROLE_KEY) and the Supabase Edge Function "manage-staff-user" are currently unavailable. Deploy "manage-staff-user" or configure SUPABASE_SERVICE_ROLE_KEY on the backend so accounts can be created with email_confirm: true without sending confirmation emails.'
+        );
       }
     } else {
       const empId = `emp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -1182,7 +980,14 @@ export const staffRbacService = {
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: window.location.origin,
       });
-      if (error) throw error;
+      if (error) {
+        if (String(error.message || '').toLowerCase().includes('rate limit')) {
+          throw new Error(
+            'Supabase email rate limit exceeded while sending password reset email. Deploy Edge Function "manage-staff-user" (or configure custom SMTP) to reset staff passwords directly without sending emails.'
+          );
+        }
+        throw error;
+      }
 
       return {
         success: true,

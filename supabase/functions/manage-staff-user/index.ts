@@ -1,11 +1,42 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
+const BASE_CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Headers':
-    'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-api-version',
+    'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-api-version, traceparent, tracestate',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
+
+function getCorsHeaders(req?: Request): Record<string, string> {
+  const origin = (req?.headers.get('origin') || '').trim();
+  const allowedEnv = (Deno.env.get('ALLOWED_ORIGINS') || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  if (origin) {
+    try {
+      const parsed = new URL(origin);
+      const isLocal =
+        parsed.protocol === 'http:' &&
+        (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1');
+      const isHttps = parsed.protocol === 'https:';
+      const isAllowed =
+        allowedEnv.length > 0 ? allowedEnv.includes(parsed.origin) : isHttps || isLocal;
+
+      if (isAllowed) {
+        return {
+          ...BASE_CORS_HEADERS,
+          'Access-Control-Allow-Origin': parsed.origin,
+          Vary: 'Origin',
+        };
+      }
+    } catch {
+      // Ignore malformed origin header
+    }
+  }
+
+  return BASE_CORS_HEADERS;
+}
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -39,10 +70,14 @@ function roleKeyToLegacyUserRole(roleKey: string): string {
   return roleKey;
 }
 
-function jsonResponse(body: Record<string, unknown>, status = 200): Response {
+function jsonResponse(
+  body: Record<string, unknown>,
+  status = 200,
+  req?: Request
+): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...getCorsHeaders(req), 'Content-Type': 'application/json' },
   });
 }
 
@@ -68,6 +103,17 @@ async function authorizeBusinessStaffAction(
   ]);
 
   if (!buRow && !empRow) {
+    const { data: ownerBiz } = await supabaseAdmin
+      .from('businesses')
+      .select('id, owner_id, is_active')
+      .eq('id', businessId)
+      .eq('owner_id', callerId)
+      .maybeSingle();
+
+    if (ownerBiz && ownerBiz.is_active !== false) {
+      return { authorized: true };
+    }
+
     return {
       authorized: false,
       reason: 'Permission denied: you are not a member of this authorized business.',
@@ -393,11 +439,14 @@ async function findSafeExistingAuthUserForEmployee(
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { status: 200, headers: corsHeaders });
+    return new Response('ok', { status: 200, headers: getCorsHeaders(req) });
   }
 
+  const respond = (payload: Record<string, unknown>, status = 200) =>
+    jsonResponse(payload, status, req);
+
   if (req.method !== 'POST') {
-    return jsonResponse({ error: 'Method not allowed' }, 405);
+    return respond({ error: 'Method not allowed' }, 405);
   }
 
   try {
@@ -405,7 +454,7 @@ Deno.serve(async (req: Request) => {
     const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 
     if (!supabaseUrl || !serviceRoleKey) {
-      return jsonResponse(
+      return respond(
         { error: 'Edge Function is missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY secret.' },
         500
       );
@@ -414,7 +463,7 @@ Deno.serve(async (req: Request) => {
     const authHeader = req.headers.get('Authorization') || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
     if (!token) {
-      return jsonResponse({ error: 'Authentication required: missing Bearer token.' }, 401);
+      return respond({ error: 'Authentication required: missing Bearer token.' }, 401);
     }
 
     const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
@@ -424,25 +473,25 @@ Deno.serve(async (req: Request) => {
     // Verify requesting user's authenticated Supabase session on the server
     const { data: callerData, error: callerErr } = await supabaseAdmin.auth.getUser(token);
     if (callerErr || !callerData?.user || callerData.user.is_anonymous) {
-      return jsonResponse({ error: 'Invalid or expired authentication session. Please sign in again.' }, 401);
+      return respond({ error: 'Invalid or expired authentication session. Please sign in again.' }, 401);
     }
 
     const bannedUntil = callerData.user.banned_until ? new Date(callerData.user.banned_until).getTime() : 0;
     if (bannedUntil && bannedUntil > Date.now()) {
-      return jsonResponse({ error: 'Access denied: your account is currently suspended.' }, 403);
+      return respond({ error: 'Access denied: your account is currently suspended.' }, 403);
     }
 
     const caller = callerData.user;
     const body = await req.json().catch(() => null);
     if (!body || typeof body !== 'object') {
-      return jsonResponse({ error: 'Invalid JSON request payload.' }, 400);
+      return respond({ error: 'Invalid JSON request payload.' }, 400);
     }
 
     const action = String(body.action || 'create_employee');
     const businessId = sanitizeUuid(body.businessId);
 
     if (!businessId) {
-      return jsonResponse({ error: 'Invalid or missing authorized businessId.' }, 400);
+      return respond({ error: 'Invalid or missing authorized businessId.' }, 400);
     }
 
     // =========================================================================
@@ -456,7 +505,7 @@ Deno.serve(async (req: Request) => {
         'admin_only'
       );
       if (!authCheck.authorized) {
-        return jsonResponse(
+        return respond(
           { error: authCheck.reason || 'Permission denied: Admin role required.' },
           403
         );
@@ -469,7 +518,7 @@ Deno.serve(async (req: Request) => {
         .order('created_at', { ascending: true });
 
       if (empListErr) {
-        return jsonResponse({ error: `Failed to query employees: ${empListErr.message}` }, 500);
+        return respond({ error: `Failed to query employees: ${empListErr.message}` }, 500);
       }
 
       const allAuthUsers = await listAllAuthUsers(supabaseAdmin);
@@ -543,7 +592,7 @@ Deno.serve(async (req: Request) => {
         }
       }
 
-      return jsonResponse({
+      return respond({
         success: true,
         alreadyValidCount,
         repairedCount: repairedEmployees.length,
@@ -564,7 +613,7 @@ Deno.serve(async (req: Request) => {
         'admin_only'
       );
       if (!authCheck.authorized) {
-        return jsonResponse(
+        return respond(
           { error: authCheck.reason || 'Permission denied: Admin role required.' },
           403
         );
@@ -577,7 +626,7 @@ Deno.serve(async (req: Request) => {
       const newPassword = String(body.newPassword || '').trim();
 
       if (newPassword.length < 6) {
-        return jsonResponse({ error: 'New password must be at least 6 characters.' }, 400);
+        return respond({ error: 'New password must be at least 6 characters.' }, 400);
       }
 
       let resolvedUserId: string | null = null;
@@ -596,13 +645,13 @@ Deno.serve(async (req: Request) => {
           .maybeSingle();
 
         if (empErr) {
-          return jsonResponse({ error: `Failed to verify employee record: ${empErr.message}` }, 500);
+          return respond({ error: `Failed to verify employee record: ${empErr.message}` }, 500);
         }
         if (!foundEmp) {
-          return jsonResponse({ error: 'Target employee record was not found.' }, 404);
+          return respond({ error: 'Target employee record was not found.' }, 404);
         }
         if (foundEmp.business_id !== businessId) {
-          return jsonResponse(
+          return respond(
             { error: 'Access denied: target employee does not belong to your authorized business.' },
             403
           );
@@ -634,7 +683,7 @@ Deno.serve(async (req: Request) => {
           );
 
           if (lookup.conflictError) {
-            return jsonResponse({ error: lookup.conflictError }, 409);
+            return respond({ error: lookup.conflictError }, 409);
           }
 
           if (lookup.authUser) {
@@ -685,7 +734,7 @@ Deno.serve(async (req: Request) => {
 
             if (takenEmails.has(candidateEmail)) {
               if (explicitEmail) {
-                return jsonResponse(
+                return respond(
                   {
                     error: `Email "${explicitEmail}" is already used by another Supabase Auth user. Update this employee's email to a unique address first.`,
                   },
@@ -711,7 +760,7 @@ Deno.serve(async (req: Request) => {
               });
 
             if (createAuthErr || !createdAuth?.user?.id) {
-              return jsonResponse(
+              return respond(
                 {
                   error:
                     createAuthErr?.message ||
@@ -735,7 +784,7 @@ Deno.serve(async (req: Request) => {
               await supabaseAdmin.auth.admin.deleteUser(newAuthUserId);
               const syncMsg =
                 syncErr instanceof Error ? syncErr.message : 'Failed to synchronize employee Auth link.';
-              return jsonResponse({ error: syncMsg }, 400);
+              return respond({ error: syncMsg }, 400);
             }
 
             resolvedUserId = newAuthUserId;
@@ -763,7 +812,7 @@ Deno.serve(async (req: Request) => {
         ]);
 
         if (!buMember && !empMember) {
-          return jsonResponse(
+          return respond(
             { error: 'Access denied: target staff account does not belong to your authorized business.' },
             403
           );
@@ -775,14 +824,14 @@ Deno.serve(async (req: Request) => {
           finalEmail = empMember.email || null;
         }
       } else {
-        return jsonResponse(
+        return respond(
           { error: 'Missing target employeeId or userId for password reset.' },
           400
         );
       }
 
       if (!resolvedUserId) {
-        return jsonResponse(
+        return respond(
           { error: 'Unable to resolve a Supabase Auth account for this employee.' },
           400
         );
@@ -793,7 +842,7 @@ Deno.serve(async (req: Request) => {
           await supabaseAdmin.auth.admin.getUserById(resolvedUserId);
 
         if (fetchAuthErr || !existingAuthUser?.user) {
-          return jsonResponse(
+          return respond(
             {
               error:
                 'Linked Supabase Auth user was not found in auth.users. Please retry to re-provision their login account.',
@@ -809,7 +858,7 @@ Deno.serve(async (req: Request) => {
         });
 
         if (updErr) {
-          return jsonResponse(
+          return respond(
             { error: updErr.message || 'Failed to update employee password in Supabase Auth.' },
             400
           );
@@ -828,7 +877,7 @@ Deno.serve(async (req: Request) => {
         .filter(Boolean)
         .join(' · ');
 
-      return jsonResponse(
+      return respond(
         {
           success: true,
           repaired,
@@ -848,7 +897,7 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action !== 'create_employee' && action !== 'create_seller') {
-      return jsonResponse({ error: `Unsupported action "${action}".` }, 400);
+      return respond({ error: `Unsupported action "${action}".` }, 400);
     }
 
     const createAuthCheck = await authorizeBusinessStaffAction(
@@ -858,7 +907,7 @@ Deno.serve(async (req: Request) => {
       'create'
     );
     if (!createAuthCheck.authorized) {
-      return jsonResponse(
+      return respond(
         { error: createAuthCheck.reason || 'Permission denied: cannot create staff accounts.' },
         403
       );
@@ -881,7 +930,7 @@ Deno.serve(async (req: Request) => {
       : 'active';
 
     if (!fullName || !cleanUsername || password.length < 6) {
-      return jsonResponse(
+      return respond(
         { error: 'Full Name, Username, and Password (min 6 chars) are required.' },
         400
       );
@@ -895,7 +944,7 @@ Deno.serve(async (req: Request) => {
       .eq('username', cleanUsername)
       .maybeSingle();
     if (existingEmpUser) {
-      return jsonResponse(
+      return respond(
         { error: `Username "${cleanUsername}" is already assigned to another staff member.` },
         409
       );
@@ -908,7 +957,7 @@ Deno.serve(async (req: Request) => {
       .eq('email', emailToUse)
       .maybeSingle();
     if (existingEmpEmail) {
-      return jsonResponse(
+      return respond(
         { error: `An employee account with email "${emailToUse}" already exists in this business.` },
         409
       );
@@ -922,7 +971,7 @@ Deno.serve(async (req: Request) => {
         .eq('employee_code', cleanCode)
         .maybeSingle();
       if (existingEmpCode) {
-        return jsonResponse({ error: `Employee ID "${cleanCode}" already exists.` }, 409);
+        return respond({ error: `Employee ID "${cleanCode}" already exists.` }, 409);
       }
     }
 
@@ -952,7 +1001,7 @@ Deno.serve(async (req: Request) => {
         const isUsernameMatch = (matchingUsernames || []).some(
           (r: { id: string }) => r.id === existingMember.user_id
         );
-        return jsonResponse(
+        return respond(
           {
             error: isUsernameMatch
               ? `Username "${cleanUsername}" is already assigned to another account in this business.`
@@ -971,10 +1020,10 @@ Deno.serve(async (req: Request) => {
       .maybeSingle();
 
     if (!bizExists) {
-      return jsonResponse({ error: 'Target business does not exist.' }, 404);
+      return respond({ error: 'Target business does not exist.' }, 404);
     }
     if (bizExists.is_active === false || bizExists.status === 'suspended') {
-      return jsonResponse(
+      return respond(
         { error: 'Business workspace is currently suspended. Activate the subscription before adding staff.' },
         403
       );
@@ -995,14 +1044,14 @@ Deno.serve(async (req: Request) => {
 
     if (bizSub) {
       if (['suspended', 'cancelled', 'expired'].includes(String(bizSub.status || ''))) {
-        return jsonResponse(
+        return respond(
           { error: `Subscription is ${bizSub.status}. Please renew your plan to add new staff accounts.` },
           403
         );
       }
       const maxUsers = Number(bizSub.max_users || 0);
       if (maxUsers > 0 && Number(activeStaffCount || 0) >= maxUsers) {
-        return jsonResponse(
+        return respond(
           {
             code: 'PLAN_LIMIT_REACHED',
             error: `Plan limit reached: your current ${bizSub.plan_code} plan supports up to ${maxUsers} active users. Upgrade your subscription to add more staff.`,
@@ -1043,9 +1092,24 @@ Deno.serve(async (req: Request) => {
       resolvedRoleId = roleByKey?.id || null;
     }
 
-    // 1. Create authentic, email-confirmed Supabase Auth user
-    const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
-      email: emailToUse,
+    const isSyntheticInternalEmail = emailToUse.endsWith('@amardokanpro.internal');
+    let resolvedAuthEmail = emailToUse;
+    if (isSyntheticInternalEmail) {
+      const { data: globalEmailHit } = await supabaseAdmin
+        .from('user_profiles')
+        .select('id')
+        .ilike('email', resolvedAuthEmail)
+        .limit(1)
+        .maybeSingle();
+
+      if (globalEmailHit) {
+        resolvedAuthEmail = `${cleanUsername}.${businessId.slice(0, 6)}@amardokanpro.internal`;
+      }
+    }
+
+    // 1. Create authentic, email-confirmed Supabase Auth user (Admin API sends ZERO emails)
+    let { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+      email: resolvedAuthEmail,
       password,
       email_confirm: true,
       user_metadata: {
@@ -1057,10 +1121,32 @@ Deno.serve(async (req: Request) => {
       },
     });
 
+    if (
+      isSyntheticInternalEmail &&
+      authErr &&
+      authErr.message.toLowerCase().includes('already')
+    ) {
+      resolvedAuthEmail = `${cleanUsername}.${businessId.slice(0, 6)}.${crypto.randomUUID().slice(0, 4)}@amardokanpro.internal`;
+      const retryAuth = await supabaseAdmin.auth.admin.createUser({
+        email: resolvedAuthEmail,
+        password,
+        email_confirm: true,
+        user_metadata: {
+          full_name: fullName,
+          username: cleanUsername,
+          employee_code: cleanCode || undefined,
+          role: action === 'create_seller' ? 'seller' : normRoleKey,
+          business_id: businessId,
+        },
+      });
+      authData = retryAuth.data;
+      authErr = retryAuth.error;
+    }
+
     if (authErr || !authData?.user?.id || !isValidUuid(authData.user.id)) {
       const msg = authErr?.message || 'Failed to create Supabase Auth user.';
       const status = msg.toLowerCase().includes('already') ? 409 : 400;
-      return jsonResponse({ error: msg }, status);
+      return respond({ error: msg }, status);
     }
 
     const authUserId = authData.user.id;
@@ -1112,7 +1198,7 @@ Deno.serve(async (req: Request) => {
       // 2. Insert user_profiles
       const { error: profErr } = await supabaseAdmin.from('user_profiles').upsert({
         id: authUserId,
-        email: emailToUse,
+        email: resolvedAuthEmail,
         full_name: fullName,
         username: cleanUsername,
         mobile: phone,
@@ -1137,7 +1223,7 @@ Deno.serve(async (req: Request) => {
       createdBusinessUser = true;
 
       if (action === 'create_seller') {
-        return jsonResponse({ userId: authUserId, email: emailToUse }, 201);
+        return respond({ userId: authUserId, email: resolvedAuthEmail }, 201);
       }
 
       // 4. Insert employees with authentic auth.users.id as user_id
@@ -1150,7 +1236,7 @@ Deno.serve(async (req: Request) => {
           employee_code: cleanCode || null,
           name: fullName,
           username: cleanUsername,
-          email: emailToUse,
+          email: resolvedAuthEmail,
           mobile: phone,
           position: String(p.position || p.roleName || normRoleKey).trim(),
           role: legacyRole,
@@ -1171,7 +1257,7 @@ Deno.serve(async (req: Request) => {
       }
       insertedEmployeeId = empInserted.id;
 
-      return jsonResponse({ employee: empInserted, userId: authUserId }, 201);
+      return respond({ employee: empInserted, userId: authUserId }, 201);
     } catch (dbErr: unknown) {
       await rollback();
       const message = dbErr instanceof Error ? dbErr.message : 'Database synchronization failed.';
@@ -1179,10 +1265,10 @@ Deno.serve(async (req: Request) => {
         message.toLowerCase().includes('duplicate') || message.toLowerCase().includes('unique')
           ? 409
           : 400;
-      return jsonResponse({ error: message }, status);
+      return respond({ error: message }, status);
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unexpected server error.';
-    return jsonResponse({ error: message }, 500);
+    return respond({ error: message }, 500);
   }
 });

@@ -1,0 +1,66 @@
+name: Deploy Supabase Edge Function (manage-staff-user)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'supabase/functions/manage-staff-user/**'
+      - 'supabase/config.toml'
+      - '.github/workflows/deploy-edge-functions.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supabase-edge-functions
+  cancel-in-progress: false
+
+jobs:
+  deploy-manage-staff-user:
+    name: Deploy manage-staff-user
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate required Supabase CLI secrets
+        env:
+          HAS_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN != '' }}
+          HAS_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID != '' }}
+        run: |
+          if [ "$HAS_ACCESS_TOKEN" != "true" ]; then
+            echo "::error::Missing GitHub Repository Secret: SUPABASE_ACCESS_TOKEN"
+            exit 1
+          fi
+          if [ "$HAS_PROJECT_ID" != "true" ]; then
+            echo "::error::Missing GitHub Repository Secret: SUPABASE_PROJECT_ID"
+            exit 1
+          fi
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy manage-staff-user Edge Function
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        run: |
+          supabase functions deploy manage-staff-user \
+            --project-ref "$SUPABASE_PROJECT_ID" \
+            --no-verify-jwt
+
+      - name: Verify deployed Edge Function endpoint
+        env:
+          SUPABASE_PROJECT_ID: ${{ secrets.SUPABASE_PROJECT_ID }}
+        run: |
+          STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -X OPTIONS "https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/manage-staff-user")
+          echo "Edge Function OPTIONS preflight status: $STATUS"
+          if [ "$STATUS" != "200" ] && [ "$STATUS" != "204" ]; then
+            echo "::error::Edge Function endpoint verification failed with HTTP $STATUS"
+            exit 1
+          fi

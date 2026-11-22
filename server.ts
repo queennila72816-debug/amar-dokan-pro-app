@@ -122,7 +122,19 @@ async function authorizeStaffPermission(
       .maybeSingle(),
   ]);
 
-  if (!buRow && !empRow) return false;
+  if (!buRow && !empRow) {
+    const { data: ownerBiz } = await supabaseAdmin
+      .from('businesses')
+      .select('id, owner_id, is_active')
+      .eq('id', businessId)
+      .eq('owner_id', callerId)
+      .maybeSingle();
+
+    if (ownerBiz && ownerBiz.is_active !== false) {
+      return true;
+    }
+    return false;
+  }
 
   const empStatus = empRow?.account_status;
   const buStatus = buRow?.status || 'active';
@@ -814,9 +826,24 @@ export function createApp() {
         resolvedRoleId = roleByKey?.id || null;
       }
 
-      // Step 1: Create confirmed Supabase Auth user first to obtain authentic auth.users.id UUID
-      const { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
-        email: emailToUse,
+      const isSyntheticInternalEmail = emailToUse.endsWith('@amardokanpro.internal');
+      let resolvedAuthEmail = emailToUse;
+      if (isSyntheticInternalEmail) {
+        const { data: globalEmailHit } = await supabaseAdmin
+          .from('user_profiles')
+          .select('id')
+          .ilike('email', resolvedAuthEmail)
+          .limit(1)
+          .maybeSingle();
+
+        if (globalEmailHit) {
+          resolvedAuthEmail = `${cleanUsername}.${businessId.slice(0, 6)}@amardokanpro.internal`;
+        }
+      }
+
+      // Step 1: Create confirmed Supabase Auth user first (Admin API sends ZERO confirmation emails)
+      let { data: authData, error: authErr } = await supabaseAdmin.auth.admin.createUser({
+        email: resolvedAuthEmail,
         password,
         email_confirm: true,
         user_metadata: {
@@ -827,6 +854,28 @@ export function createApp() {
           business_id: businessId,
         },
       });
+
+      if (
+        isSyntheticInternalEmail &&
+        authErr &&
+        authErr.message.toLowerCase().includes('already')
+      ) {
+        resolvedAuthEmail = `${cleanUsername}.${businessId.slice(0, 6)}.${crypto.randomBytes(2).toString('hex')}@amardokanpro.internal`;
+        const retryAuth = await supabaseAdmin.auth.admin.createUser({
+          email: resolvedAuthEmail,
+          password,
+          email_confirm: true,
+          user_metadata: {
+            full_name: fullName,
+            username: cleanUsername,
+            employee_code: cleanCode || undefined,
+            role: mode === 'seller' ? 'seller' : normRoleKey,
+            business_id: businessId,
+          },
+        });
+        authData = retryAuth.data;
+        authErr = retryAuth.error;
+      }
 
       if (authErr || !authData?.user?.id || !isValidUuid(authData.user.id)) {
         const msg = authErr?.message || 'Failed to create Supabase Auth user.';
@@ -883,7 +932,7 @@ export function createApp() {
         // Step 2: Persist user_profiles
         const { error: profErr } = await supabaseAdmin.from('user_profiles').upsert({
           id: authUserId,
-          email: emailToUse,
+          email: resolvedAuthEmail,
           full_name: fullName,
           username: cleanUsername,
           mobile: phone,
@@ -912,7 +961,7 @@ export function createApp() {
         createdMembership = true;
 
         if (mode === 'seller') {
-          return res.status(201).json({ userId: authUserId, email: emailToUse });
+          return res.status(201).json({ userId: authUserId, email: resolvedAuthEmail });
         }
 
         // Step 4: Persist employees record with exact auth.users.id UUID
@@ -925,7 +974,7 @@ export function createApp() {
             employee_code: cleanCode || null,
             name: fullName,
             username: cleanUsername,
-            email: emailToUse,
+            email: resolvedAuthEmail,
             mobile: phone,
             position: String(p.position || p.roleName || normRoleKey).trim(),
             role: legacyRole,
