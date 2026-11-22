@@ -138,10 +138,43 @@ function mapDbEmployeeRow(
   };
 }
 
+function isPrivilegedApiUnavailable(res: Response, json: any): boolean {
+  if (
+    res.status === 404 ||
+    res.status === 405 ||
+    res.status === 501 ||
+    res.status === 502 ||
+    res.status === 503 ||
+    res.status === 504
+  ) {
+    return true;
+  }
+  if (json?.code === 'SERVICE_ROLE_NOT_CONFIGURED') {
+    return true;
+  }
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  if (json === null && !contentType.includes('application/json')) {
+    return true;
+  }
+  return false;
+}
+
+function isFetchConnectivityError(err: unknown): boolean {
+  const msg = String((err as { message?: string })?.message || err || '').toLowerCase();
+  return (
+    msg.includes('failed to fetch') ||
+    msg.includes('networkerror') ||
+    msg.includes('network request failed') ||
+    msg.includes('load failed') ||
+    msg.includes('fetch failed') ||
+    msg.includes('abort')
+  );
+}
+
 async function inspectEdgeFunctionError(
   fnErr: any,
   fnData: any
-): Promise<{ isUnavailable: boolean; message: string }> {
+): Promise<{ isUnavailable: boolean; message: string; status?: number }> {
   if (fnData && typeof fnData === 'object' && typeof fnData.error === 'string' && fnData.error.trim()) {
     return { isUnavailable: false, message: fnData.error.trim() };
   }
@@ -163,30 +196,40 @@ async function inspectEdgeFunctionError(
       const bodyMsg = String(body?.error || body?.message || '').trim();
 
       // Supabase gateway returns 404 NOT_FOUND when the function has not been deployed yet
-      if (status === 404 && (bodyCode === 'NOT_FOUND' || bodyMsg.toLowerCase().includes('requested function was not found'))) {
-        return { isUnavailable: true, message: bodyMsg || 'Edge Function manage-staff-user is not deployed.' };
+      if (
+        status === 404 &&
+        (bodyCode === 'NOT_FOUND' || bodyMsg.toLowerCase().includes('requested function was not found'))
+      ) {
+        return { isUnavailable: true, status, message: bodyMsg || 'Edge Function manage-staff-user is not deployed.' };
+      }
+
+      if (status === 405 || status === 502 || status === 503 || status === 504) {
+        return { isUnavailable: true, status, message: bodyMsg || `Edge Function unavailable (${status}).` };
       }
 
       if (bodyMsg) {
-        return { isUnavailable: false, message: bodyMsg };
+        return { isUnavailable: false, status, message: bodyMsg };
       }
     } catch {
       try {
         const clonedText = typeof fnErr.context.clone === 'function' ? fnErr.context.clone() : fnErr.context;
         const txt = String(await clonedText.text()).trim();
         if (status === 404 && (!txt || txt.toLowerCase().includes('not found'))) {
-          return { isUnavailable: true, message: 'Edge Function manage-staff-user is not deployed.' };
+          return { isUnavailable: true, status, message: 'Edge Function manage-staff-user is not deployed.' };
+        }
+        if (status === 405 || status === 502 || status === 503 || status === 504) {
+          return { isUnavailable: true, status, message: txt || `Edge Function unavailable (${status}).` };
         }
         if (txt) {
-          return { isUnavailable: false, message: txt };
+          return { isUnavailable: false, status, message: txt };
         }
       } catch {
         // Ignore text parse failures
       }
     }
 
-    if (status === 404) {
-      return { isUnavailable: true, message: 'Edge Function manage-staff-user is not deployed.' };
+    if (status === 404 || status === 405 || status === 502 || status === 503 || status === 504) {
+      return { isUnavailable: true, status, message: `Edge Function manage-staff-user unavailable (${status}).` };
     }
   }
 
@@ -202,6 +245,32 @@ async function inspectEdgeFunctionError(
     isUnavailable: isNetworkOrMissing,
     message: rawMsg || 'Edge Function invocation failed.',
   };
+}
+
+async function invokeManageStaffEdgeFunction(
+  body: Record<string, unknown>,
+  initialToken: string
+): Promise<{ data: any; error: any }> {
+  let token = initialToken;
+  let result = await supabase.functions.invoke('manage-staff-user', {
+    body,
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+
+  const status = Number(result.error?.context?.status || 0);
+  if (result.error && status === 401) {
+    try {
+      token = await getFreshAccessToken({ forceRefresh: true });
+      result = await supabase.functions.invoke('manage-staff-user', {
+        body,
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      // Keep original 401 result if refresh fails
+    }
+  }
+
+  return result;
 }
 
 export interface UpdateEmployeePayload {
@@ -570,24 +639,20 @@ export const staffRbacService = {
           if (res.ok && json?.employee) {
             newEmployee = mapDbEmployeeRow(json.employee, payload.roleName, payload.branchName);
             handledByPrivilegedApi = true;
-          } else if (
-            res.status !== 404 &&
-            res.status !== 501 &&
-            json?.code !== 'SERVICE_ROLE_NOT_CONFIGURED'
-          ) {
+          } else if (!isPrivilegedApiUnavailable(res, json)) {
             throw new Error(json?.error || `Failed to create employee account (${res.status}).`);
           }
         } catch (apiErr: any) {
-          if (apiErr instanceof Error && !apiErr.message.includes('Failed to fetch')) {
+          if (apiErr instanceof Error && !isFetchConnectivityError(apiErr)) {
             throw apiErr;
           }
         }
       }
 
-      // 2. Try Supabase Edge Function (`manage-staff-user`) if local server key isn't configured
+      // 2. Try Supabase Edge Function (`manage-staff-user`) if local /api/* backend is unavailable or unconfigured
       if (!handledByPrivilegedApi && accessToken) {
-        const { data: fnData, error: fnErr } = await supabase.functions.invoke('manage-staff-user', {
-          body: {
+        const { data: fnData, error: fnErr } = await invokeManageStaffEdgeFunction(
+          {
             action: 'create_employee',
             businessId,
             payload: {
@@ -599,7 +664,8 @@ export const staffRbacService = {
               roleId: cleanRoleId,
             },
           },
-        });
+          accessToken
+        );
 
         if (!fnErr && fnData?.employee) {
           newEmployee = mapDbEmployeeRow(fnData.employee, payload.roleName, payload.branchName);
@@ -638,6 +704,25 @@ export const staffRbacService = {
             throw new Error(`Employee ID "${cleanCode}" already exists.`);
           }
           throw new Error(`An employee account with email "${emailToUse}" already exists.`);
+        }
+
+        // Also check business_users + user_profiles for Seller/Member collisions in this business
+        const [{ data: buMembers }, { data: matchedProfs }] = await Promise.all([
+          supabase.from('business_users').select('user_id').eq('business_id', businessId),
+          supabase
+            .from('user_profiles')
+            .select('id, username, email')
+            .or(`username.ilike.${cleanUsername},email.ilike.${emailToUse}`),
+        ]);
+        if (buMembers && buMembers.length > 0 && matchedProfs && matchedProfs.length > 0) {
+          const memberIds = new Set(buMembers.map((m: { user_id: string }) => m.user_id));
+          const collision = matchedProfs.find((p: { id: string }) => memberIds.has(p.id));
+          if (collision) {
+            if ((collision.username || '').toLowerCase() === cleanUsername) {
+              throw new Error(`Username "${cleanUsername}" is already assigned to another account in this business.`);
+            }
+            throw new Error(`An account with email "${emailToUse}" already exists in this business.`);
+          }
         }
 
         // Isolated shared ephemeral client so Admin session is NEVER overwritten
@@ -1041,8 +1126,8 @@ export const staffRbacService = {
                 `Password updated successfully for ${employee.name} (${employee.employeeCode || employee.username || ''}).`,
             };
           }
-          if (res.status !== 404 && res.status !== 501 && json?.code !== 'SERVICE_ROLE_NOT_CONFIGURED') {
-            return { success: false, message: json?.error || 'Failed to update employee password.' };
+          if (!isPrivilegedApiUnavailable(res, json)) {
+            return { success: false, message: json?.error || `Failed to update employee password (${res.status}).` };
           }
         } catch {
           // Fall through to Supabase Edge Function
@@ -1050,8 +1135,8 @@ export const staffRbacService = {
       }
 
       // 2. Call Supabase Edge Function (`manage-staff-user`) using Admin session JWT
-      const { data: fnData, error: fnErr } = await supabase.functions.invoke('manage-staff-user', {
-        body: {
+      const { data: fnData, error: fnErr } = await invokeManageStaffEdgeFunction(
+        {
           action: 'reset_password',
           businessId: validBizId,
           employeeId: sanitizeUuid(employee.id),
@@ -1060,7 +1145,8 @@ export const staffRbacService = {
           username: employee.username,
           newPassword: cleanPass,
         },
-      });
+        accessToken
+      );
 
       if (!fnErr && fnData?.success) {
         return {
@@ -1163,20 +1249,21 @@ export const staffRbacService = {
             message: `Synced ${json.alreadyValidCount || 0} valid accounts, repaired ${json.repairedCount || 0} links, ${json.unlinkedRemaining || 0} need initial password setup (use Reset Password).`,
           };
         }
-        if (res.status !== 404 && res.status !== 501 && json?.code !== 'SERVICE_ROLE_NOT_CONFIGURED') {
-          throw new Error(json?.error || 'Failed to repair employee Auth links.');
+        if (!isPrivilegedApiUnavailable(res, json)) {
+          throw new Error(json?.error || `Failed to repair employee Auth links (${res.status}).`);
         }
       } catch (err: any) {
-        if (err instanceof Error && !err.message.includes('Failed to fetch')) {
+        if (err instanceof Error && !isFetchConnectivityError(err)) {
           throw err;
         }
       }
     }
 
     // 2. Try Supabase Edge Function (`manage-staff-user`)
-    const { data: fnData, error: fnErr } = await supabase.functions.invoke('manage-staff-user', {
-      body: { action: 'repair_employee_links', businessId: validBizId },
-    });
+    const { data: fnData, error: fnErr } = await invokeManageStaffEdgeFunction(
+      { action: 'repair_employee_links', businessId: validBizId },
+      accessToken
+    );
 
     if (!fnErr && fnData?.success) {
       return {

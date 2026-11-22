@@ -5114,9 +5114,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (rawPass.length < 6) {
         throw new Error('Login Password (minimum 6 characters) is required so the employee gets a linked Supabase Auth login.');
       }
-      const empCode =
-        empData.employeeCode?.trim().toUpperCase() ||
-        `EMP-${String(employees.length + 1).padStart(3, '0')}`;
+      let empCode = empData.employeeCode?.trim().toUpperCase() || '';
+      if (!empCode) {
+        const existingCodes = new Set(
+          employees.map(e => (e.employeeCode || '').trim().toUpperCase()).filter(Boolean)
+        );
+        let seq = employees.length + 1;
+        do {
+          empCode = `EMP-${String(seq).padStart(3, '0')}`;
+          seq += 1;
+        } while (existingCodes.has(empCode));
+      }
       const branchId = empData.branchId || activeBranchId || branches[0]?.id || '';
       const branchName = branches.find(b => b.id === branchId)?.name || empData.branchName;
 

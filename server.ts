@@ -582,6 +582,32 @@ export function createApp() {
   const app = express();
   app.use(express.json({ limit: '1mb' }));
 
+  // Clean CORS & preflight handling for /api/* routes (including cross-origin previews)
+  app.use('/api', (req, res, next) => {
+    const requestOrigin = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
+    const allowedEnv = (process.env.ALLOWED_ORIGINS || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    if (requestOrigin) {
+      if (allowedEnv.length === 0 || allowedEnv.includes(requestOrigin)) {
+        res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+        res.setHeader('Vary', 'Origin');
+      }
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Authorization, Content-Type, X-Client-Info, Apikey, X-Supabase-Client-Platform'
+    );
+
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+    return next();
+  });
+
   app.post('/api/staff/create', async (req, res) => {
     const supabaseAdmin = getSupabaseAdminClient();
     if (!supabaseAdmin) {
@@ -645,6 +671,19 @@ export function createApp() {
         });
       }
 
+      const { data: existingEmpEmail } = await supabaseAdmin
+        .from('employees')
+        .select('id')
+        .eq('business_id', businessId)
+        .eq('email', emailToUse)
+        .maybeSingle();
+
+      if (existingEmpEmail) {
+        return res.status(409).json({
+          error: `An employee account with email "${emailToUse}" already exists in this business.`,
+        });
+      }
+
       if (cleanCode) {
         const { data: existingCode } = await supabaseAdmin
           .from('employees')
@@ -656,6 +695,46 @@ export function createApp() {
         if (existingCode) {
           return res.status(409).json({
             error: `Employee ID "${cleanCode}" already exists.`,
+          });
+        }
+      }
+
+      // Check business_users + user_profiles for duplicate username or email (e.g. Sellers)
+      const [{ data: matchingUsernames }, { data: matchingEmails }] = await Promise.all([
+        supabaseAdmin
+          .from('user_profiles')
+          .select('id')
+          .ilike('username', cleanUsername),
+        supabaseAdmin
+          .from('user_profiles')
+          .select('id')
+          .ilike('email', emailToUse),
+      ]);
+
+      const candidateUserIds = Array.from(
+        new Set([
+          ...(matchingUsernames || []).map((r: { id: string }) => r.id),
+          ...(matchingEmails || []).map((r: { id: string }) => r.id),
+        ])
+      );
+
+      if (candidateUserIds.length > 0) {
+        const { data: existingMember } = await supabaseAdmin
+          .from('business_users')
+          .select('user_id')
+          .eq('business_id', businessId)
+          .in('user_id', candidateUserIds)
+          .limit(1)
+          .maybeSingle();
+
+        if (existingMember) {
+          const isUsernameMatch = (matchingUsernames || []).some(
+            (r: { id: string }) => r.id === existingMember.user_id
+          );
+          return res.status(409).json({
+            error: isUsernameMatch
+              ? `Username "${cleanUsername}" is already assigned to another account in this business.`
+              : `An account with email "${emailToUse}" already exists in this business.`,
           });
         }
       }
@@ -765,7 +844,17 @@ export function createApp() {
         try {
           if (insertedEmployeeId) {
             await supabaseAdmin.from('employees').delete().eq('id', insertedEmployeeId);
+          } else {
+            await supabaseAdmin
+              .from('employees')
+              .delete()
+              .eq('business_id', businessId)
+              .eq('user_id', authUserId);
           }
+        } catch {
+          // continue full rollback
+        }
+        try {
           if (createdMembership) {
             await supabaseAdmin
               .from('business_users')
@@ -773,11 +862,20 @@ export function createApp() {
               .eq('business_id', businessId)
               .eq('user_id', authUserId);
           }
+        } catch {
+          // continue full rollback
+        }
+        try {
           if (createdProfile) {
             await supabaseAdmin.from('user_profiles').delete().eq('id', authUserId);
           }
-        } finally {
+        } catch {
+          // continue full rollback
+        }
+        try {
           await supabaseAdmin.auth.admin.deleteUser(authUserId);
+        } catch {
+          // best-effort auth user cleanup
         }
       };
 
@@ -855,7 +953,8 @@ export function createApp() {
       } catch (dbErr: unknown) {
         await rollbackCreatedAccount();
         const message = dbErr instanceof Error ? dbErr.message : 'Failed to synchronize employee record.';
-        return res.status(400).json({ error: message });
+        const status = message.toLowerCase().includes('duplicate') || message.toLowerCase().includes('unique') ? 409 : 400;
+        return res.status(status).json({ error: message });
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Unexpected server error while creating staff account.';
@@ -2842,6 +2941,15 @@ export function createApp() {
 
     if (error || !data) return res.status(400).json({ error: error?.message || 'Failed to create support ticket.' });
     return res.status(201).json({ ticket: data });
+  });
+
+  // Explicit JSON guards so /api/* never falls through to Vite/static HTML
+  app.all('/api/staff/*', (req, res) => {
+    return res.status(405).json({ error: `Method ${req.method} is not allowed on ${req.path}. Use POST.` });
+  });
+
+  app.use('/api', (_req, res) => {
+    return res.status(404).json({ error: 'API endpoint not found.' });
   });
 
   return app;

@@ -2,7 +2,8 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers':
+    'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-api-version',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
@@ -392,7 +393,7 @@ async function findSafeExistingAuthUserForEmployee(
 
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+    return new Response('ok', { status: 200, headers: corsHeaders });
   }
 
   if (req.method !== 'POST') {
@@ -900,6 +901,19 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    const { data: existingEmpEmail } = await supabaseAdmin
+      .from('employees')
+      .select('id')
+      .eq('business_id', businessId)
+      .eq('email', emailToUse)
+      .maybeSingle();
+    if (existingEmpEmail) {
+      return jsonResponse(
+        { error: `An employee account with email "${emailToUse}" already exists in this business.` },
+        409
+      );
+    }
+
     if (cleanCode) {
       const { data: existingEmpCode } = await supabaseAdmin
         .from('employees')
@@ -909,6 +923,92 @@ Deno.serve(async (req: Request) => {
         .maybeSingle();
       if (existingEmpCode) {
         return jsonResponse({ error: `Employee ID "${cleanCode}" already exists.` }, 409);
+      }
+    }
+
+    // Check business_users + user_profiles for duplicate username or email (e.g. Sellers)
+    const [{ data: matchingUsernames }, { data: matchingEmails }] = await Promise.all([
+      supabaseAdmin.from('user_profiles').select('id').ilike('username', cleanUsername),
+      supabaseAdmin.from('user_profiles').select('id').ilike('email', emailToUse),
+    ]);
+
+    const candidateUserIds = Array.from(
+      new Set([
+        ...(matchingUsernames || []).map((r: { id: string }) => r.id),
+        ...(matchingEmails || []).map((r: { id: string }) => r.id),
+      ])
+    );
+
+    if (candidateUserIds.length > 0) {
+      const { data: existingMember } = await supabaseAdmin
+        .from('business_users')
+        .select('user_id')
+        .eq('business_id', businessId)
+        .in('user_id', candidateUserIds)
+        .limit(1)
+        .maybeSingle();
+
+      if (existingMember) {
+        const isUsernameMatch = (matchingUsernames || []).some(
+          (r: { id: string }) => r.id === existingMember.user_id
+        );
+        return jsonResponse(
+          {
+            error: isUsernameMatch
+              ? `Username "${cleanUsername}" is already assigned to another account in this business.`
+              : `An account with email "${emailToUse}" already exists in this business.`,
+          },
+          409
+        );
+      }
+    }
+
+    // Verify business status and subscription max_users quota
+    const { data: bizExists } = await supabaseAdmin
+      .from('businesses')
+      .select('id, is_active, status')
+      .eq('id', businessId)
+      .maybeSingle();
+
+    if (!bizExists) {
+      return jsonResponse({ error: 'Target business does not exist.' }, 404);
+    }
+    if (bizExists.is_active === false || bizExists.status === 'suspended') {
+      return jsonResponse(
+        { error: 'Business workspace is currently suspended. Activate the subscription before adding staff.' },
+        403
+      );
+    }
+
+    const [{ data: bizSub }, { count: activeStaffCount }] = await Promise.all([
+      supabaseAdmin
+        .from('business_subscriptions')
+        .select('max_users, status, plan_code')
+        .eq('business_id', businessId)
+        .maybeSingle(),
+      supabaseAdmin
+        .from('business_users')
+        .select('user_id', { count: 'exact', head: true })
+        .eq('business_id', businessId)
+        .eq('status', 'active'),
+    ]);
+
+    if (bizSub) {
+      if (['suspended', 'cancelled', 'expired'].includes(String(bizSub.status || ''))) {
+        return jsonResponse(
+          { error: `Subscription is ${bizSub.status}. Please renew your plan to add new staff accounts.` },
+          403
+        );
+      }
+      const maxUsers = Number(bizSub.max_users || 0);
+      if (maxUsers > 0 && Number(activeStaffCount || 0) >= maxUsers) {
+        return jsonResponse(
+          {
+            code: 'PLAN_LIMIT_REACHED',
+            error: `Plan limit reached: your current ${bizSub.plan_code} plan supports up to ${maxUsers} active users. Upgrade your subscription to add more staff.`,
+          },
+          403
+        );
       }
     }
 
@@ -957,7 +1057,7 @@ Deno.serve(async (req: Request) => {
       },
     });
 
-    if (authErr || !authData?.user?.id) {
+    if (authErr || !authData?.user?.id || !isValidUuid(authData.user.id)) {
       const msg = authErr?.message || 'Failed to create Supabase Auth user.';
       const status = msg.toLowerCase().includes('already') ? 409 : 400;
       return jsonResponse({ error: msg }, status);
@@ -970,20 +1070,42 @@ Deno.serve(async (req: Request) => {
     let createdProfile = false;
 
     const rollback = async () => {
-      if (insertedEmployeeId) {
-        await supabaseAdmin.from('employees').delete().eq('id', insertedEmployeeId);
+      try {
+        if (insertedEmployeeId) {
+          await supabaseAdmin.from('employees').delete().eq('id', insertedEmployeeId);
+        } else {
+          await supabaseAdmin
+            .from('employees')
+            .delete()
+            .eq('business_id', businessId)
+            .eq('user_id', authUserId);
+        }
+      } catch {
+        // continue full rollback
       }
-      if (createdBusinessUser) {
-        await supabaseAdmin
-          .from('business_users')
-          .delete()
-          .eq('business_id', businessId)
-          .eq('user_id', authUserId);
+      try {
+        if (createdBusinessUser) {
+          await supabaseAdmin
+            .from('business_users')
+            .delete()
+            .eq('business_id', businessId)
+            .eq('user_id', authUserId);
+        }
+      } catch {
+        // continue full rollback
       }
-      if (createdProfile) {
-        await supabaseAdmin.from('user_profiles').delete().eq('id', authUserId);
+      try {
+        if (createdProfile) {
+          await supabaseAdmin.from('user_profiles').delete().eq('id', authUserId);
+        }
+      } catch {
+        // continue full rollback
       }
-      await supabaseAdmin.auth.admin.deleteUser(authUserId);
+      try {
+        await supabaseAdmin.auth.admin.deleteUser(authUserId);
+      } catch {
+        // best-effort auth user cleanup
+      }
     };
 
     try {
@@ -1053,7 +1175,11 @@ Deno.serve(async (req: Request) => {
     } catch (dbErr: unknown) {
       await rollback();
       const message = dbErr instanceof Error ? dbErr.message : 'Database synchronization failed.';
-      return jsonResponse({ error: message }, 400);
+      const status =
+        message.toLowerCase().includes('duplicate') || message.toLowerCase().includes('unique')
+          ? 409
+          : 400;
+      return jsonResponse({ error: message }, status);
     }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Unexpected server error.';
