@@ -12,6 +12,7 @@ import {
   Account,
   AccountTransaction,
   Expense,
+  ExpensePaymentStatus,
   Employee,
   Branch,
   ShopSettings,
@@ -40,6 +41,11 @@ import {
   BusinessType,
   InvoicePaperSize,
 } from '../types';
+import {
+  getCurrentYearMonth,
+  getTodayDateInput,
+  parseYearMonth,
+} from '../utils/expenseHelpers';
 import {
   initialSettings,
   initialProducts,
@@ -269,13 +275,25 @@ interface AppContextType {
   updateAccount: (id: string, updates: Partial<Account>) => Promise<void>;
   deleteAccount: (id: string) => Promise<{ success: boolean; message?: string }>;
   addExpense: (expense: Omit<Expense, 'id' | 'date'>) => Promise<void>;
+  updateExpense: (expenseId: string, updates: Partial<Omit<Expense, 'id' | 'date'>>) => Promise<void>;
   transferMoney: (fromAccountId: string, toAccountId: string, amount: number, note?: string) => Promise<void>;
 
   // Employees & Payroll
   employees: Employee[];
   addEmployee: (employee: Omit<Employee, 'id'> & { password?: string }) => Promise<void>;
   updateEmployee: (id: string, employee: Partial<Employee>) => Promise<void>;
-  disburseSalary: (employeeId: string, month: string, accountId: string, amount: number) => Promise<void>;
+  disburseSalary: (
+    employeeId: string,
+    month: string,
+    accountId: string,
+    amount: number,
+    options?: {
+      paymentDate?: string;
+      paymentMethod?: PaymentMethod;
+      paymentStatus?: ExpensePaymentStatus;
+      note?: string;
+    }
+  ) => Promise<void>;
 
   // Sellers & Multi-user Management
   sellers: Seller[];
@@ -1423,6 +1441,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, [autoSyncEnabled, isOnline, user, activeBusinessId, isLoading, syncNow]);
+
+  // Real-time multi-user synchronization for business-scoped expenses & accounts
+  useEffect(() => {
+    if (!isSupabaseConfigured || !isOnline || !user || !isValidUuid(activeBusinessId)) {
+      return;
+    }
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleFinanceRefresh = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        refreshAfterFinance(activeBusinessId).catch(() => {});
+      }, 450);
+    };
+
+    const channel = supabase
+      .channel(`adp-expenses-sync-${activeBusinessId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'expenses',
+          filter: `business_id=eq.${activeBusinessId}`,
+        },
+        scheduleFinanceRefresh
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'accounts',
+          filter: `business_id=eq.${activeBusinessId}`,
+        },
+        scheduleFinanceRefresh
+      )
+      .subscribe();
+
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      supabase.removeChannel(channel).catch(() => {});
+    };
+  }, [isOnline, user, activeBusinessId, refreshAfterFinance]);
 
   const fetchBusinessRecord = useCallback(
     async (businessId: string): Promise<Record<string, any> | null> => {
@@ -4801,48 +4863,166 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addExpense = async (expenseData: Omit<Expense, 'id' | 'date'>): Promise<void> => {
+    const paymentStatus: ExpensePaymentStatus =
+      expenseData.paymentStatus === 'unpaid' ? 'unpaid' : 'paid';
+    const resolvedPaymentDate =
+      paymentStatus === 'paid'
+        ? expenseData.paymentDate || getTodayDateInput()
+        : expenseData.paymentDate || undefined;
+    const resolvedExpenseMonth =
+      parseYearMonth(expenseData.expenseMonth) ||
+      parseYearMonth(resolvedPaymentDate) ||
+      getCurrentYearMonth();
+
+    const normalizedExpense: Omit<Expense, 'id' | 'date'> = {
+      ...expenseData,
+      expenseMonth: resolvedExpenseMonth,
+      paymentDate: resolvedPaymentDate,
+      paymentStatus,
+    };
+
     let createdExp: Expense;
     if (isSupabaseConfigured) {
       ensureCloudContext();
       try {
-        createdExp = await financeService.insertExpense(expenseData, activeBusinessId, activeBranchId);
+        createdExp = await financeService.insertExpense(normalizedExpense, activeBusinessId, activeBranchId);
         await refreshAfterFinance(activeBusinessId);
       } catch (err) {
         throw raiseDbError(err, 'Failed to record expense in Supabase.');
       }
     } else {
       const now = new Date().toISOString();
-      const targetAccId = expenseData.accountId || accounts[0]?.id || '';
-      if (!targetAccId) throw new Error('Please create or select an account before recording an expense.');
+      const targetAccId = normalizedExpense.accountId || accounts[0]?.id || '';
+      if (paymentStatus === 'paid' && !targetAccId) {
+        throw new Error('Please create or select an account before recording a paid expense.');
+      }
+      const effectiveDateIso = resolvedPaymentDate
+        ? `${resolvedPaymentDate}T12:00:00.000Z`
+        : now;
       createdExp = {
-        ...expenseData,
+        ...normalizedExpense,
         accountId: targetAccId,
         id: `exp-${Date.now()}`,
-        date: now,
+        date: effectiveDateIso,
       };
-      const targetAcc = accounts.find(acc => acc.id === targetAccId);
       setExpenses(prev => [createdExp, ...prev]);
-      setAccounts(prev =>
-        prev.map(acc => (acc.id === targetAccId ? { ...acc, balance: acc.balance - expenseData.amount } : acc))
-      );
-      if (targetAcc) {
-        setAccountTransactions(prev => [
-          {
-            id: `atx-${Date.now()}-${targetAcc.id}`,
-            accountId: targetAcc.id,
-            accountName: targetAcc.name,
-            date: now,
-            type: 'expense',
-            amount: -expenseData.amount,
-            balanceAfter: targetAcc.balance - expenseData.amount,
-            note: `${expenseData.category} (${expenseData.paymentMethod})${expenseData.note ? `: ${expenseData.note}` : ''}`,
-          },
-          ...prev,
-        ]);
+
+      if (paymentStatus === 'paid' && targetAccId) {
+        const targetAcc = accounts.find(acc => acc.id === targetAccId);
+        setAccounts(prev =>
+          prev.map(acc => (acc.id === targetAccId ? { ...acc, balance: acc.balance - normalizedExpense.amount } : acc))
+        );
+        if (targetAcc) {
+          setAccountTransactions(prev => [
+            {
+              id: `atx-${Date.now()}-${targetAcc.id}`,
+              accountId: targetAcc.id,
+              accountName: targetAcc.name,
+              date: effectiveDateIso,
+              type: 'expense',
+              amount: -normalizedExpense.amount,
+              balanceAfter: targetAcc.balance - normalizedExpense.amount,
+              note: `${normalizedExpense.category} (${resolvedExpenseMonth}, ${normalizedExpense.paymentMethod})${normalizedExpense.note ? `: ${normalizedExpense.note}` : ''}`,
+            },
+            ...prev,
+          ]);
+        }
       }
     }
 
-    addAuditLog('EXPENSE_CREATED', 'expense', createdExp.id, `Expense recorded: ${createdExp.category}, ৳${createdExp.amount}`);
+    addAuditLog(
+      'EXPENSE_CREATED',
+      'expense',
+      createdExp.id,
+      `Expense recorded: ${createdExp.category} (${resolvedExpenseMonth}, ${paymentStatus}), ৳${createdExp.amount}`
+    );
+  };
+
+  const updateExpense = async (
+    expenseId: string,
+    updates: Partial<Omit<Expense, 'id' | 'date'>>
+  ): Promise<void> => {
+    if (!enforcePermission('expense_management', 'edit', `Expense #${expenseId}`)) {
+      throw new Error('Permission denied: missing Expense Management edit permission.');
+    }
+    const existing = expenses.find(e => e.id === expenseId);
+    if (!existing) throw new Error('Expense record not found.');
+
+    if (isSupabaseConfigured) {
+      ensureCloudContext();
+      try {
+        await financeService.updateExpense(expenseId, updates, activeBusinessId);
+        await refreshAfterFinance(activeBusinessId);
+      } catch (err) {
+        throw raiseDbError(err, 'Failed to update expense in Supabase.');
+      }
+    } else {
+      const oldStatus: ExpensePaymentStatus = existing.paymentStatus === 'unpaid' ? 'unpaid' : 'paid';
+      const newStatus: ExpensePaymentStatus =
+        updates.paymentStatus !== undefined ? updates.paymentStatus : oldStatus;
+      const newAmount = updates.amount !== undefined ? Number(updates.amount) : existing.amount;
+      const newAccId = updates.accountId !== undefined ? updates.accountId : existing.accountId;
+      const newPaymentDate =
+        updates.paymentDate !== undefined
+          ? updates.paymentDate || undefined
+          : newStatus === 'paid'
+          ? existing.paymentDate || getTodayDateInput()
+          : undefined;
+      const newMonth =
+        parseYearMonth(updates.expenseMonth) ||
+        existing.expenseMonth ||
+        parseYearMonth(newPaymentDate) ||
+        getCurrentYearMonth();
+
+      if (newStatus === 'paid' && !newAccId) {
+        throw new Error('Please select a payment account before marking this expense as Paid.');
+      }
+
+      setAccounts(prev =>
+        prev.map(acc => {
+          let nextBalance = acc.balance;
+          if (oldStatus === 'paid' && existing.accountId === acc.id) {
+            nextBalance += existing.amount;
+          }
+          if (newStatus === 'paid' && newAccId === acc.id) {
+            nextBalance -= newAmount;
+          }
+          return nextBalance !== acc.balance ? { ...acc, balance: nextBalance } : acc;
+        })
+      );
+
+      setExpenses(prev =>
+        prev.map(exp =>
+          exp.id === expenseId
+            ? {
+                ...exp,
+                ...updates,
+                employeeId:
+                  updates.employeeId !== undefined
+                    ? updates.employeeId || undefined
+                    : exp.employeeId,
+                staffName:
+                  updates.staffName !== undefined
+                    ? updates.staffName || undefined
+                    : exp.staffName,
+                amount: newAmount,
+                accountId: newAccId,
+                paymentStatus: newStatus,
+                paymentDate: newPaymentDate,
+                expenseMonth: newMonth,
+                date: newPaymentDate ? `${newPaymentDate}T12:00:00.000Z` : exp.date,
+              }
+            : exp
+        )
+      );
+    }
+
+    addAuditLog(
+      'EXPENSE_UPDATED',
+      'expense',
+      expenseId,
+      `Expense updated: ${updates.category || existing.category} (${updates.paymentStatus || existing.paymentStatus || 'paid'})`
+    );
   };
 
   const transferMoney = async (
@@ -5000,21 +5180,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     employeeId: string,
     month: string,
     accountId: string,
-    amount: number
+    amount: number,
+    options?: {
+      paymentDate?: string;
+      paymentMethod?: PaymentMethod;
+      paymentStatus?: ExpensePaymentStatus;
+      note?: string;
+    }
   ): Promise<void> => {
     const emp = employees.find(e => e.id === employeeId);
     if (!emp) return;
 
+    const normalizedMonth = parseYearMonth(month) || getCurrentYearMonth();
+    const paymentStatus: ExpensePaymentStatus =
+      options?.paymentStatus === 'unpaid' ? 'unpaid' : 'paid';
+    const paymentDate =
+      paymentStatus === 'paid'
+        ? options?.paymentDate || getTodayDateInput()
+        : options?.paymentDate || undefined;
+    const paymentMethod: PaymentMethod = options?.paymentMethod || 'cash';
+
     await addExpense({
       category: 'Staff Salary',
       amount,
-      paymentMethod: 'cash',
+      paymentMethod,
       accountId,
-      paidTo: `${emp.name} (${emp.position})`,
-      note: `Salary payment for ${month}`,
+      employeeId: emp.id,
+      staffName: emp.name,
+      expenseMonth: normalizedMonth,
+      paymentDate,
+      paymentStatus,
+      paidTo: `${emp.name}${emp.position ? ` (${emp.position})` : ''}`,
+      note: options?.note?.trim() || `Salary payment for ${normalizedMonth}`,
     });
 
-    addAuditLog('SALARY_DISBURSED', 'employee', employeeId, `Salary disbursed to ${emp.name}, ${month}, ৳${amount}`);
+    addAuditLog(
+      'SALARY_DISBURSED',
+      'employee',
+      employeeId,
+      `Salary (${paymentStatus}) recorded for ${emp.name}, ${normalizedMonth}, ৳${amount}`
+    );
   };
 
   // Sellers Management
@@ -5532,7 +5737,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         throw raiseDbError(err, 'Failed to delete expense in Supabase.');
       }
     } else {
-      if (target && target.accountId && target.amount > 0) {
+      if (target && target.paymentStatus !== 'unpaid' && target.accountId && target.amount > 0) {
         const now = new Date().toISOString();
         const targetAcc = accounts.find(a => a.id === target.accountId);
         setAccounts(prev =>
@@ -5911,6 +6116,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteAccount,
         expenses,
         addExpense,
+        updateExpense,
         transferMoney,
         employees,
         addEmployee,

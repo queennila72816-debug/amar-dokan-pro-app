@@ -510,13 +510,20 @@ export interface Account {
   balance: number;
 }
 
+export type ExpensePaymentStatus = 'paid' | 'unpaid';
+
 export interface Expense {
   id: string;
   date: string;
+  expenseMonth?: string; // YYYY-MM billing/salary month
+  paymentDate?: string; // YYYY-MM-DD actual payment date
   category: string;
   amount: number;
   paymentMethod: PaymentMethod;
   accountId: string;
+  employeeId?: string;
+  staffName?: string;
+  paymentStatus?: ExpensePaymentStatus; // Defaults to 'paid' for legacy records
   paidTo?: string;
   note?: string;
 }

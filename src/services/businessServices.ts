@@ -405,10 +405,15 @@ export const financeService = {
     return (data || []).map((e: any) => ({
       id: e.id,
       date: e.date || e.created_at,
+      expenseMonth: e.expense_month || undefined,
+      paymentDate: e.payment_date ? String(e.payment_date).slice(0, 10) : undefined,
       category: e.category,
       amount: Number(e.amount || 0),
       paymentMethod: e.payment_method,
       accountId: e.account_id || '',
+      employeeId: e.employee_id || undefined,
+      staffName: e.staff_name || undefined,
+      paymentStatus: e.payment_status === 'unpaid' ? 'unpaid' : 'paid',
       paidTo: e.paid_to || undefined,
       note: e.note || undefined,
     }));
@@ -416,6 +421,12 @@ export const financeService = {
 
   async insertExpense(expense: Omit<Expense, 'id' | 'date'>, businessId: string, branchId?: string): Promise<Expense> {
     if (!isSupabaseConfigured) throw new Error('Supabase client is not configured.');
+    const paymentStatus = expense.paymentStatus === 'unpaid' ? 'unpaid' : 'paid';
+    const paymentDate = expense.paymentDate ? expense.paymentDate.slice(0, 10) : null;
+    const expenseMonth = expense.expenseMonth?.trim() || null;
+    const employeeId = sanitizeUuid(expense.employeeId);
+    const staffName = expense.staffName?.trim() || null;
+
     const { data, error } = await supabase.rpc('record_expense_transaction', {
       p_business_id: businessId,
       p_branch_id: sanitizeUuid(branchId),
@@ -425,16 +436,119 @@ export const financeService = {
       p_payment_method: expense.paymentMethod,
       p_paid_to: expense.paidTo || null,
       p_note: expense.note || null,
+      p_expense_month: expenseMonth,
+      p_payment_date: paymentDate,
+      p_employee_id: employeeId,
+      p_staff_name: staffName,
+      p_payment_status: paymentStatus,
     });
-    if (error) throw error;
+
+    if (error) {
+      const code = String((error as any)?.code || '');
+      const msg = String((error as any)?.message || '').toLowerCase();
+      const isMissingNewRpc =
+        code === 'PGRST202' ||
+        code === '42883' ||
+        msg.includes('could not find the function public.record_expense_transaction');
+
+      if (isMissingNewRpc) {
+        if (paymentStatus === 'unpaid') {
+          throw new Error(
+            'Database migration required for Unpaid expense tracking. Please run supabase/migrations/20261126_expense_billing_month_staff_status.sql in Supabase SQL Editor.'
+          );
+        }
+        const legacyRes = await supabase.rpc('record_expense_transaction', {
+          p_business_id: businessId,
+          p_branch_id: sanitizeUuid(branchId),
+          p_account_id: sanitizeUuid(expense.accountId),
+          p_category: expense.category,
+          p_amount: expense.amount,
+          p_payment_method: expense.paymentMethod,
+          p_paid_to: expense.paidTo || null,
+          p_note: expense.note || null,
+        });
+        if (legacyRes.error) throw legacyRes.error;
+        const row = legacyRes.data;
+        return {
+          id: row.id,
+          date: row.date || row.created_at,
+          expenseMonth: expenseMonth || undefined,
+          paymentDate: paymentDate || undefined,
+          category: row.category,
+          amount: Number(row.amount),
+          paymentMethod: row.payment_method,
+          accountId: row.account_id || '',
+          employeeId: employeeId || undefined,
+          staffName: staffName || undefined,
+          paymentStatus: 'paid',
+          paidTo: row.paid_to || undefined,
+          note: row.note || undefined,
+        };
+      }
+      throw error;
+    }
 
     return {
       id: data.id,
       date: data.date || data.created_at,
+      expenseMonth: data.expense_month || expenseMonth || undefined,
+      paymentDate: data.payment_date ? String(data.payment_date).slice(0, 10) : paymentDate || undefined,
       category: data.category,
       amount: Number(data.amount),
       paymentMethod: data.payment_method,
       accountId: data.account_id || '',
+      employeeId: data.employee_id || employeeId || undefined,
+      staffName: data.staff_name || staffName || undefined,
+      paymentStatus: data.payment_status === 'unpaid' ? 'unpaid' : 'paid',
+      paidTo: data.paid_to || undefined,
+      note: data.note || undefined,
+    };
+  },
+
+  async updateExpense(
+    expenseId: string,
+    updates: Partial<Omit<Expense, 'id' | 'date'>>,
+    businessId: string
+  ): Promise<Expense> {
+    if (!isSupabaseConfigured) throw new Error('Supabase client is not configured.');
+    const { data, error } = await supabase.rpc('update_expense_transaction', {
+      p_business_id: businessId,
+      p_expense_id: expenseId,
+      p_category: updates.category ?? null,
+      p_amount: updates.amount ?? null,
+      p_payment_method: updates.paymentMethod ?? null,
+      p_account_id: updates.accountId !== undefined ? sanitizeUuid(updates.accountId) : null,
+      p_paid_to: updates.paidTo !== undefined ? updates.paidTo || '' : null,
+      p_note: updates.note !== undefined ? updates.note || '' : null,
+      p_expense_month: updates.expenseMonth !== undefined ? updates.expenseMonth || '' : null,
+      p_payment_date: updates.paymentDate ? updates.paymentDate.slice(0, 10) : null,
+      p_employee_id: updates.employeeId !== undefined ? sanitizeUuid(updates.employeeId) : null,
+      p_staff_name: updates.staffName !== undefined ? updates.staffName || '' : null,
+      p_payment_status: updates.paymentStatus ?? null,
+    });
+    if (error) {
+      const code = String((error as any)?.code || '');
+      const msg = String((error as any)?.message || '').toLowerCase();
+      if (code === 'PGRST202' || code === '42883' || msg.includes('update_expense_transaction')) {
+        throw new Error(
+          'Database migration required to update expense records. Please run supabase/migrations/20261126_expense_billing_month_staff_status.sql in Supabase SQL Editor.'
+        );
+      }
+      throw error;
+    }
+
+    return {
+      id: data.id,
+      date: data.date || data.created_at,
+      expenseMonth: data.expense_month || undefined,
+      paymentDate: data.payment_date ? String(data.payment_date).slice(0, 10) : undefined,
+      category: data.category,
+      amount: Number(data.amount),
+      paymentMethod: data.payment_method,
+      accountId: data.account_id || '',
+      employeeId: data.employee_id || undefined,
+      staffName: data.staff_name || undefined,
+      paymentStatus: data.payment_status === 'unpaid' ? 'unpaid' : 'paid',
       paidTo: data.paid_to || undefined,
       note: data.note || undefined,
     };

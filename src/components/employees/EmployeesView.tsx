@@ -1,31 +1,45 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Employee, UserRole } from '../../types';
-import { formatCurrency, formatDate, toBnNumber } from '../../utils/formatters';
+import { Employee, ExpensePaymentStatus, PaymentMethod, UserRole } from '../../types';
+import { formatCurrency } from '../../utils/formatters';
+import {
+  findDuplicateExpenses,
+  formatExpenseMonthLabel,
+  getCurrentYearMonth,
+  getEffectiveExpenseMonth,
+  getEffectivePaymentStatus,
+  getTodayDateInput,
+  isValidYearMonth,
+  parseYearMonth,
+} from '../../utils/expenseHelpers';
 import {
   UserCheck,
   Plus,
   CreditCard,
   X,
-  Phone,
-  Briefcase,
-  Shield,
   Trash2,
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
 } from 'lucide-react';
 
 export const EmployeesView: React.FC = () => {
-  const { employees, addEmployee, updateEmployee, deleteEmployee, isAdmin, isAuthenticatedAdmin, disburseSalary, accounts, settings, branches, hasPermission } = useApp();
+  const { employees, expenses, addEmployee, deleteEmployee, isAdmin, isAuthenticatedAdmin, disburseSalary, accounts, settings, branches, hasPermission } = useApp();
   const canViewSalary = isAdmin || isAuthenticatedAdmin;
   const canDisburseSalary = isAdmin || hasPermission('accounts_transactions', 'create');
   const canDeleteEmp = isAdmin || hasPermission('user_management', 'delete');
-  const isBn = false;
   const lang = settings.language;
+  const currentMonth = getCurrentYearMonth();
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [payingEmployee, setPayingEmployee] = useState<Employee | null>(null);
-  const [payMonth, setPayMonth] = useState('October 2026');
+  const [payMonth, setPayMonth] = useState(currentMonth);
+  const [payDate, setPayDate] = useState(getTodayDateInput());
+  const [payStatus, setPayStatus] = useState<ExpensePaymentStatus>('paid');
+  const [payMethod, setPayMethod] = useState<PaymentMethod>('cash');
   const [payAccountId, setPayAccountId] = useState(accounts[0]?.id || '');
   const [payAmount, setPayAmount] = useState<number>(0);
+  const [confirmDuplicateSalary, setConfirmDuplicateSalary] = useState(false);
 
   React.useEffect(() => {
     if (accounts.length > 0 && (!payAccountId || !accounts.some(a => a.id === payAccountId))) {
@@ -117,34 +131,70 @@ export const EmployeesView: React.FC = () => {
     }
   };
 
+  const salaryDuplicateWarning = useMemo(() => {
+    if (!payingEmployee) return null;
+    const normMonth = parseYearMonth(payMonth);
+    if (!normMonth) return null;
+    return findDuplicateExpenses(
+      {
+        category: 'Staff Salary',
+        expenseMonth: normMonth,
+        employeeId: payingEmployee.id,
+        staffName: payingEmployee.name,
+        paidTo: payingEmployee.name,
+      },
+      expenses,
+      employees
+    );
+  }, [payingEmployee, payMonth, expenses, employees]);
+
   const handleOpenPaySalary = (emp: Employee) => {
     setPayingEmployee(emp);
     setPayAmount(emp.salary);
-    setPayMonth('October 2026');
+    setPayMonth(getCurrentYearMonth());
+    setPayDate(getTodayDateInput());
+    setPayStatus('paid');
+    setPayMethod('cash');
     setPayAccountId(accounts[0]?.id || '');
+    setConfirmDuplicateSalary(false);
   };
 
   const handleSubmitSalary = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!payingEmployee || isSubmitting) return;
-    if (!payMonth.trim()) {
-      alert('Please enter the salary month.');
+    const normalizedMonth = parseYearMonth(payMonth);
+    if (!normalizedMonth || !isValidYearMonth(normalizedMonth)) {
+      alert('Please select a valid Salary Month (YYYY-MM).');
       return;
     }
     if (!payAmount || payAmount <= 0) {
       alert('Please enter a valid salary amount greater than 0.');
       return;
     }
-    const targetAccountId = payAccountId || accounts[0]?.id;
-    if (!targetAccountId) {
+    if (payStatus === 'paid' && !payDate) {
+      alert('Please select a Payment Date.');
+      return;
+    }
+    const targetAccountId = payAccountId || accounts[0]?.id || '';
+    if (payStatus === 'paid' && !targetAccountId) {
       alert('Please select or create a payment account first.');
+      return;
+    }
+    if (salaryDuplicateWarning && !confirmDuplicateSalary) {
+      alert('Duplicate salary entry detected for this month. Confirm the warning checkbox to proceed.');
       return;
     }
 
     setIsSubmitting(true);
     try {
-      await disburseSalary(payingEmployee.id, payMonth.trim(), targetAccountId, payAmount);
-      alert(`Salary of ৳${payAmount} for ${payMonth.trim()} disbursed successfully to ${payingEmployee.name}!`);
+      await disburseSalary(payingEmployee.id, normalizedMonth, targetAccountId, payAmount, {
+        paymentDate: payDate || undefined,
+        paymentMethod: payMethod,
+        paymentStatus: payStatus,
+      });
+      alert(
+        `Salary of ৳${payAmount} (${payStatus.toUpperCase()}) for ${formatExpenseMonthLabel(normalizedMonth)} (${normalizedMonth}) recorded for ${payingEmployee.name}!`
+      );
       setPayingEmployee(null);
     } catch (err: any) {
       alert(err?.message || 'Failed to disburse salary.');
@@ -189,11 +239,23 @@ export const EmployeesView: React.FC = () => {
                 <th className="px-4 py-3 font-semibold">{'System Role'}</th>
                 <th className="px-4 py-3 font-semibold">{'Joining Date'}</th>
                 {canViewSalary && <th className="px-4 py-3 font-semibold text-right">{'Salary'}</th>}
+                <th className="px-4 py-3 font-semibold">{`${formatExpenseMonthLabel(currentMonth, true)} Status`}</th>
                 <th className="px-4 py-3 font-semibold text-right">{'Actions'}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {employees.map(emp => (
+              {employees.map(emp => {
+                const monthSalaries = expenses.filter(
+                  e =>
+                    e.category.trim().toLowerCase() === 'staff salary' &&
+                    getEffectiveExpenseMonth(e) === currentMonth &&
+                    (e.employeeId === emp.id ||
+                      (e.staffName && e.staffName.trim().toLowerCase() === emp.name.trim().toLowerCase()))
+                );
+                const hasPaidSalary = monthSalaries.some(e => getEffectivePaymentStatus(e) === 'paid');
+                const hasUnpaidSalary = monthSalaries.some(e => getEffectivePaymentStatus(e) === 'unpaid');
+
+                return (
                 <tr key={emp.id} className="hover:bg-slate-50/80 transition-colors">
                   <td className="px-4 py-3">
                     <div className="font-semibold text-slate-900">
@@ -218,12 +280,30 @@ export const EmployeesView: React.FC = () => {
                       {formatCurrency(emp.salary, lang)}
                     </td>
                   )}
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {hasPaidSalary ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold text-[11px]">
+                        <CheckCircle2 className="w-3 h-3" />
+                        <span>Paid</span>
+                      </span>
+                    ) : hasUnpaidSalary ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-300 font-semibold text-[11px]">
+                        <Clock className="w-3 h-3" />
+                        <span>Unpaid</span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 font-medium text-[11px]">
+                        <Clock className="w-3 h-3" />
+                        <span>Not Recorded</span>
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
                     <div className="flex items-center justify-end gap-1.5">
                       {canDisburseSalary && (
                         <button
                           onClick={() => handleOpenPaySalary(emp)}
-                          className="flex items-center gap-1 px-2.5 py-1 text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded font-semibold transition-colors"
+                          className="flex items-center gap-1 px-2.5 py-1 text-emerald-800 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded font-semibold transition-colors cursor-pointer"
                         >
                           <CreditCard className="w-3.5 h-3.5 text-emerald-600" />
                           <span>{'Pay Salary'}</span>
@@ -242,7 +322,8 @@ export const EmployeesView: React.FC = () => {
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -274,47 +355,126 @@ export const EmployeesView: React.FC = () => {
                 <span className="font-bold text-sm text-slate-900 block">{payingEmployee.name} ({payingEmployee.position})</span>
               </div>
 
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">{'Salary Month *'}</label>
-                <input
-                  type="text"
-                  required
-                  value={payMonth}
-                  onChange={(e) => setPayMonth(e.target.value)}
-                  className="w-full p-2 border border-slate-200 rounded-lg bg-white"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">{'Salary Month (YYYY-MM) *'}</label>
+                  <input
+                    type="month"
+                    required
+                    value={payMonth}
+                    onChange={(e) => {
+                      setPayMonth(e.target.value);
+                      setConfirmDuplicateSalary(false);
+                    }}
+                    placeholder="YYYY-MM"
+                    pattern="\d{4}-(0[1-9]|1[0-2])"
+                    className="w-full p-2 border border-slate-200 rounded-lg bg-white font-mono"
+                  />
+                  {isValidYearMonth(payMonth) && (
+                    <span className="text-[10px] text-slate-500 mt-0.5 block">
+                      {formatExpenseMonthLabel(payMonth)} ({payMonth})
+                    </span>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    {payStatus === 'paid' ? 'Payment Date *' : 'Payment Date (Optional)'}
+                  </label>
+                  <input
+                    type="date"
+                    required={payStatus === 'paid'}
+                    value={payDate}
+                    onChange={(e) => setPayDate(e.target.value)}
+                    className="w-full p-2 border border-slate-200 rounded-lg bg-white font-mono"
+                  />
+                </div>
               </div>
 
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">{'Amount *'}</label>
-                <input
-                  type="number"
-                  required
-                  min="1"
-                  value={payAmount}
-                  onChange={(e) => setPayAmount(Number(e.target.value) || 0)}
-                  className="w-full p-2 border border-slate-200 rounded-lg font-mono-num font-bold text-base text-emerald-700"
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">{'Payment Status *'}</label>
+                  <select
+                    value={payStatus}
+                    onChange={(e) => setPayStatus(e.target.value as ExpensePaymentStatus)}
+                    className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+                  >
+                    <option value="paid">Paid (Deduct Account)</option>
+                    <option value="unpaid">Unpaid (Salary Due)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">{'Amount *'}</label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    value={payAmount}
+                    onChange={(e) => setPayAmount(Number(e.target.value) || 0)}
+                    className="w-full p-2 border border-slate-200 rounded-lg font-mono-num font-bold text-base text-emerald-700"
+                  />
+                </div>
               </div>
 
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">{'Deduct From'}</label>
-                <select
-                  aria-label={'Deduct From Account'}
-                  value={payAccountId}
-                  onChange={(e) => setPayAccountId(e.target.value)}
-                  className="w-full p-2 border border-slate-200 rounded-lg bg-white"
-                >
-                  {accounts.map(a => (
-                    <option key={a.id} value={a.id}>
-                      {a.name} (Balance: ৳{a.balance})
-                    </option>
-                  ))}
-                </select>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">{'Method'}</label>
+                  <select
+                    value={payMethod}
+                    onChange={(e) => setPayMethod(e.target.value as PaymentMethod)}
+                    className="w-full p-2 border border-slate-200 rounded-lg bg-white capitalize"
+                  >
+                    <option value="cash">Cash</option>
+                    <option value="bkash">bKash</option>
+                    <option value="bank">Bank</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    {payStatus === 'paid' ? 'Deduct From' : 'Preferred Account'}
+                  </label>
+                  <select
+                    aria-label={'Deduct From Account'}
+                    value={payAccountId}
+                    onChange={(e) => setPayAccountId(e.target.value)}
+                    className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+                  >
+                    {accounts.map(a => (
+                      <option key={a.id} value={a.id}>
+                        {a.name} (৳{a.balance})
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
+
+              {salaryDuplicateWarning && (
+                <div className="p-3 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 space-y-2">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-bold text-xs">{salaryDuplicateWarning.title}</p>
+                      <p className="text-[11px] text-amber-900">{salaryDuplicateWarning.message}</p>
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2 text-[11px] font-semibold cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={confirmDuplicateSalary}
+                      onChange={(e) => setConfirmDuplicateSalary(e.target.checked)}
+                      className="rounded border-amber-400"
+                    />
+                    <span>Record another salary entry for this month anyway</span>
+                  </label>
+                </div>
+              )}
 
               <p className="text-[11px] text-slate-500 bg-slate-50 p-2 rounded border">
-                Salary payment will be recorded under 'Staff Salary' and deducted from the selected account.
+                {payStatus === 'paid'
+                  ? "Salary payment will be recorded under 'Staff Salary' with this Salary Month and deducted from the selected account."
+                  : "Salary will be recorded as 'Unpaid' under Staff Salary without deducting any account balance until marked Paid."}
               </p>
             </div>
 
@@ -328,10 +488,10 @@ export const EmployeesView: React.FC = () => {
               </button>
               <button
                 type="submit"
-                disabled={isSubmitting}
-                className="px-4 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 rounded-lg"
+                disabled={isSubmitting || (Boolean(salaryDuplicateWarning) && !confirmDuplicateSalary)}
+                className="px-4 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 rounded-lg cursor-pointer"
               >
-                {isSubmitting ? 'Processing...' : 'Confirm Payment'}
+                {isSubmitting ? 'Processing...' : payStatus === 'paid' ? 'Confirm Payment' : 'Save Unpaid Salary'}
               </button>
             </div>
           </form>

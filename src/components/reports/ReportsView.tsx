@@ -4,13 +4,26 @@ import { resolveBusinessProfile } from '../../config/appIdentity';
 import { formatCurrency, formatDate, exportToCSV, toBnNumber } from '../../utils/formatters';
 import { getShopLogo, printFinancialReport } from '../../utils/printEngine';
 import {
+  EXPENSE_CATEGORIES,
+  buildMonthlyExpenseReport,
+  formatExpenseMonthLabel,
+  getEffectiveExpenseMonth,
+  getEffectivePaymentDate,
+  getEffectivePaymentStatus,
+  getExpenseStaffDisplay,
+  parseYearMonth,
+} from '../../utils/expenseHelpers';
+import {
   TrendingUp,
   Download,
   Printer,
+  CheckCircle2,
+  Clock,
+  RotateCcw,
 } from 'lucide-react';
 
 export const ReportsView: React.FC = () => {
-  const { sales, purchases, expenses, products, customers, suppliers, settings, branches, activeBranchId, hasPermission } = useApp();
+  const { sales, purchases, expenses, employees, accounts, products, customers, suppliers, settings, branches, activeBranchId, hasPermission } = useApp();
   const canExportReport = hasPermission('profit_loss_reports', 'export') || hasPermission('sales_reports', 'export');
   const lang = settings.language;
   const activeBranch = branches.find(b => b.id === activeBranchId) || branches[0];
@@ -19,6 +32,12 @@ export const ReportsView: React.FC = () => {
 
   const [dateRange, setDateRange] = useState<'today' | '7days' | 'month' | 'year' | 'all'>('month');
   const [reportTab, setReportTab] = useState<'pnl' | 'sales' | 'products' | 'variants' | 'expenses' | 'dues'>('pnl');
+  const [expCategoryFilter, setExpCategoryFilter] = useState('all');
+  const [expMonthFilter, setExpMonthFilter] = useState('');
+  const [expPaymentDateFilter, setExpPaymentDateFilter] = useState('');
+  const [expStaffFilter, setExpStaffFilter] = useState('all');
+  const [expStatusFilter, setExpStatusFilter] = useState<'all' | 'paid' | 'unpaid'>('all');
+  const [expUseTopDateRange, setExpUseTopDateRange] = useState(false);
 
   // Filter by Date Range
   const now = new Date();
@@ -139,7 +158,7 @@ export const ReportsView: React.FC = () => {
     };
   }, [filteredSales]);
 
-  // Category-wise Expense breakdown
+  // Category-wise Expense breakdown (used by P&L Statement)
   const categoryExpenseMap = useMemo(() => {
     const map = new Map<string, number>();
     filteredExpenses.forEach(e => {
@@ -147,6 +166,94 @@ export const ReportsView: React.FC = () => {
     });
     return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
   }, [filteredExpenses]);
+
+  // Dedicated Expense Breakdown & Month-wise Expense Report lists
+  const expenseReportCategories = useMemo(() => {
+    const set = new Set<string>(EXPENSE_CATEGORIES);
+    expenses.forEach(e => {
+      if (e.category?.trim()) set.add(e.category.trim());
+    });
+    return Array.from(set);
+  }, [expenses]);
+
+  const expenseReportStaffList = useMemo(() => {
+    const set = new Set<string>();
+    employees.forEach(emp => {
+      if (emp.name?.trim()) set.add(emp.name.trim());
+    });
+    expenses.forEach(e => {
+      const s = getExpenseStaffDisplay(e, employees);
+      if (s) set.add(s);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [employees, expenses]);
+
+  const detailedReportExpenses = useMemo(() => {
+    const monthNorm = parseYearMonth(expMonthFilter);
+    return expenses.filter(e => {
+      if (expUseTopDateRange && new Date(e.date) < filterDate) return false;
+      if (expCategoryFilter !== 'all' && e.category !== expCategoryFilter) return false;
+      if (monthNorm && getEffectiveExpenseMonth(e) !== monthNorm) return false;
+      if (expPaymentDateFilter && getEffectivePaymentDate(e) !== expPaymentDateFilter) return false;
+      if (expStatusFilter !== 'all' && getEffectivePaymentStatus(e) !== expStatusFilter) return false;
+      if (
+        expStaffFilter !== 'all' &&
+        getExpenseStaffDisplay(e, employees).toLowerCase() !== expStaffFilter.toLowerCase()
+      ) {
+        return false;
+      }
+      return true;
+    });
+  }, [
+    expenses,
+    employees,
+    expUseTopDateRange,
+    filterDate,
+    expCategoryFilter,
+    expMonthFilter,
+    expPaymentDateFilter,
+    expStatusFilter,
+    expStaffFilter,
+  ]);
+
+  const detailedReportCategoryMap = useMemo(() => {
+    const map = new Map<string, { paid: number; unpaid: number; total: number }>();
+    detailedReportExpenses.forEach(e => {
+      const cur = map.get(e.category) || { paid: 0, unpaid: 0, total: 0 };
+      const st = getEffectivePaymentStatus(e);
+      if (st === 'unpaid') cur.unpaid += e.amount;
+      else cur.paid += e.amount;
+      cur.total += e.amount;
+      map.set(e.category, cur);
+    });
+    return Array.from(map.entries()).sort((a, b) => b[1].total - a[1].total);
+  }, [detailedReportExpenses]);
+
+  const detailedReportTotal = useMemo(
+    () => detailedReportExpenses.reduce((sum, e) => sum + e.amount, 0),
+    [detailedReportExpenses]
+  );
+
+  const detailedReportPaidTotal = useMemo(
+    () =>
+      detailedReportExpenses
+        .filter(e => getEffectivePaymentStatus(e) === 'paid')
+        .reduce((sum, e) => sum + e.amount, 0),
+    [detailedReportExpenses]
+  );
+
+  const detailedReportUnpaidTotal = useMemo(
+    () =>
+      detailedReportExpenses
+        .filter(e => getEffectivePaymentStatus(e) === 'unpaid')
+        .reduce((sum, e) => sum + e.amount, 0),
+    [detailedReportExpenses]
+  );
+
+  const monthlyExpenseReport = useMemo(
+    () => buildMonthlyExpenseReport(detailedReportExpenses),
+    [detailedReportExpenses]
+  );
 
   // Export handler
   const handleExportCSV = () => {
@@ -182,11 +289,42 @@ export const ReportsView: React.FC = () => {
     } else if (reportTab === 'expenses') {
       const rows = [
         ['Business Name', biz.shopName],
-        ['Expense Category Breakdown'],
-        ['Category', 'Total Spent'],
-        ...categoryExpenseMap.map(([cat, amt]) => [cat, amt]),
+        ['Month-wise & Category Expense Report'],
+        ['Expense Month Filter', expMonthFilter || 'All Billing Months'],
+        [''],
+        ['Month-wise Summary'],
+        ['Billing Month', 'Month Code', 'Entries', 'Staff Salary', 'Rent & Utilities', 'Other Expenses', 'Paid Total', 'Unpaid Total', 'Total Expense'],
+        ...monthlyExpenseReport.map(m => [
+          m.label,
+          m.month,
+          m.count,
+          m.salaryTotal,
+          m.utilityAndRentTotal,
+          m.otherTotal,
+          m.paidTotal,
+          m.unpaidTotal,
+          m.total,
+        ]),
+        [''],
+        ['Category Breakdown'],
+        ['Category', 'Paid Amount', 'Unpaid Amount', 'Total Spent'],
+        ...detailedReportCategoryMap.map(([cat, stats]) => [cat, stats.paid, stats.unpaid, stats.total]),
+        [''],
+        ['Detailed Expense Entries'],
+        ['Expense Month', 'Payment Date', 'Category', 'Staff Member', 'Paid To', 'Status', 'Account', 'Amount', 'Note'],
+        ...detailedReportExpenses.map(e => [
+          getEffectiveExpenseMonth(e),
+          getEffectivePaymentDate(e) || 'Pending',
+          e.category,
+          getExpenseStaffDisplay(e, employees) || '—',
+          e.paidTo || '—',
+          getEffectivePaymentStatus(e).toUpperCase(),
+          accounts.find(a => a.id === e.accountId)?.name || e.paymentMethod,
+          e.amount,
+          e.note || '',
+        ]),
       ];
-      exportToCSV(`expense-report-${Date.now()}`, rows);
+      exportToCSV(`expense-report-${expMonthFilter || 'all'}-${Date.now()}`, rows);
     } else if (reportTab === 'variants') {
       const rows = [
         ['Business Name', biz.shopName],
@@ -246,15 +384,26 @@ export const ReportsView: React.FC = () => {
     }
 
     if (reportTab === 'expenses') {
+      const expenseScopeLabel = expMonthFilter
+        ? `${formatExpenseMonthLabel(expMonthFilter)} (${expMonthFilter})`
+        : expUseTopDateRange
+        ? periodLabel
+        : 'ALL BILLING MONTHS';
       printFinancialReport(
-        'Operating Expense Breakdown',
-        periodLabel,
+        'Month-wise & Operating Expense Report',
+        expenseScopeLabel,
         [
-          ...categoryExpenseMap.map(([cat, amt]) => ({
-            label: cat,
-            value: formatCurrency(amt, lang),
+          ...monthlyExpenseReport.map(m => ({
+            label: `${m.label} (${m.month}) · ${m.count} entries [Paid: ${formatCurrency(m.paidTotal, lang)} | Unpaid: ${formatCurrency(m.unpaidTotal, lang)}]`,
+            value: formatCurrency(m.total, lang),
           })),
-          { label: 'Total Operating Expenses', value: formatCurrency(totalExpensesAmount, lang), highlight: true },
+          ...detailedReportCategoryMap.map(([cat, stats]) => ({
+            label: `Category: ${cat}`,
+            value: formatCurrency(stats.total, lang),
+          })),
+          { label: 'Total Paid Expenses', value: formatCurrency(detailedReportPaidTotal, lang) },
+          { label: 'Total Unpaid / Pending Bills', value: formatCurrency(detailedReportUnpaidTotal, lang) },
+          { label: 'Total Operating Expenses', value: formatCurrency(detailedReportTotal, lang), highlight: true },
         ],
         settings,
         activeBranch
@@ -589,35 +738,320 @@ export const ReportsView: React.FC = () => {
       )}
 
       {reportTab === 'expenses' && (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
-              <tr>
-                <th className="px-4 py-3 font-semibold">{'Category'}</th>
-                <th className="px-4 py-3 font-semibold text-right">{'Total Spent'}</th>
-                <th className="px-4 py-3 font-semibold text-right">{'Percentage'}</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {categoryExpenseMap.map(([cat, amt], idx) => {
-                const pct = totalExpensesAmount > 0 ? Math.round((amt / totalExpensesAmount) * 100) : 0;
-                return (
-                  <tr key={idx} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="px-4 py-3 font-semibold text-slate-900">{cat}</td>
-                    <td className="px-4 py-3 text-right font-mono-num font-bold text-rose-700">{formatCurrency(amt, lang)}</td>
-                    <td className="px-4 py-3 text-right font-mono-num text-slate-600">{toBnNumber(pct, lang)}%</td>
+        <div className="space-y-4">
+          {/* Expense Report Filter Bar */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs space-y-3 text-xs">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">
+                  Month-wise Expense Reports &amp; Category Breakdown
+                </h3>
+                <p className="text-[11px] text-slate-500">
+                  Filter by Expense Month (YYYY-MM), Category, Payment Date, Staff Name &amp; Paid/Unpaid Status
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="inline-flex items-center gap-1.5 text-[11px] font-medium text-slate-600 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={expUseTopDateRange}
+                    onChange={(e) => setExpUseTopDateRange(e.target.checked)}
+                    className="rounded border-slate-300"
+                  />
+                  <span>Restrict by top Date Range ({dateRange})</span>
+                </label>
+                {(expCategoryFilter !== 'all' ||
+                  expMonthFilter ||
+                  expPaymentDateFilter ||
+                  expStaffFilter !== 'all' ||
+                  expStatusFilter !== 'all' ||
+                  expUseTopDateRange) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExpCategoryFilter('all');
+                      setExpMonthFilter('');
+                      setExpPaymentDateFilter('');
+                      setExpStaffFilter('all');
+                      setExpStatusFilter('all');
+                      setExpUseTopDateRange(false);
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 font-semibold cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Reset</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+              <select
+                aria-label="Report Expense Category Filter"
+                value={expCategoryFilter}
+                onChange={(e) => setExpCategoryFilter(e.target.value)}
+                className="px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white"
+              >
+                <option value="all">All Categories</option>
+                {expenseReportCategories.map(cat => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
+              </select>
+
+              <input
+                type="month"
+                aria-label="Report Expense Month Filter"
+                value={expMonthFilter}
+                onChange={(e) => setExpMonthFilter(e.target.value)}
+                placeholder="YYYY-MM"
+                className="px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white font-mono"
+              />
+
+              <input
+                type="date"
+                aria-label="Report Payment Date Filter"
+                value={expPaymentDateFilter}
+                onChange={(e) => setExpPaymentDateFilter(e.target.value)}
+                className="px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white font-mono"
+              />
+
+              <select
+                aria-label="Report Staff Name Filter"
+                value={expStaffFilter}
+                onChange={(e) => setExpStaffFilter(e.target.value)}
+                className="px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white"
+              >
+                <option value="all">All Staff</option>
+                {expenseReportStaffList.map(staff => (
+                  <option key={staff} value={staff}>
+                    {staff}
+                  </option>
+                ))}
+              </select>
+
+              <select
+                aria-label="Report Payment Status Filter"
+                value={expStatusFilter}
+                onChange={(e) => setExpStatusFilter(e.target.value as 'all' | 'paid' | 'unpaid')}
+                className="px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white"
+              >
+                <option value="all">All Status (Paid &amp; Unpaid)</option>
+                <option value="paid">Paid Only</option>
+                <option value="unpaid">Unpaid Only</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+              <div className="p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-between">
+                <span className="font-semibold text-emerald-800">Paid Expenses</span>
+                <span className="font-mono-num font-bold text-emerald-900">
+                  {formatCurrency(detailedReportPaidTotal, lang)}
+                </span>
+              </div>
+              <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-between">
+                <span className="font-semibold text-amber-800">Unpaid / Pending Bills</span>
+                <span className="font-mono-num font-bold text-amber-900">
+                  {formatCurrency(detailedReportUnpaidTotal, lang)}
+                </span>
+              </div>
+              <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 flex items-center justify-between">
+                <span className="font-semibold text-rose-800">
+                  Total ({detailedReportExpenses.length} entries)
+                </span>
+                <span className="font-mono-num font-bold text-rose-900">
+                  {formatCurrency(detailedReportTotal, lang)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Month-wise Expense Report Table */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-900">
+                Month-wise Expense Report
+              </span>
+              <span className="text-[11px] text-slate-500">
+                Click any month row to filter by that billing month
+              </span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                  <tr>
+                    <th className="px-4 py-3 font-semibold">{'Expense Month'}</th>
+                    <th className="px-4 py-3 font-semibold text-center">{'Entries'}</th>
+                    <th className="px-4 py-3 font-semibold text-right">{'Staff Salary'}</th>
+                    <th className="px-4 py-3 font-semibold text-right">{'Rent & Utilities'}</th>
+                    <th className="px-4 py-3 font-semibold text-right">{'Other'}</th>
+                    <th className="px-4 py-3 font-semibold text-right">{'Paid'}</th>
+                    <th className="px-4 py-3 font-semibold text-right">{'Unpaid'}</th>
+                    <th className="px-4 py-3 font-semibold text-right">{'Month Total'}</th>
                   </tr>
-                );
-              })}
-              {categoryExpenseMap.length === 0 && (
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {monthlyExpenseReport.map(row => (
+                    <tr
+                      key={row.month}
+                      onClick={() => setExpMonthFilter(prev => (prev === row.month ? '' : row.month))}
+                      className={`cursor-pointer transition-colors ${
+                        expMonthFilter === row.month
+                          ? 'bg-[#101B3F]/5'
+                          : 'hover:bg-slate-50/80'
+                      }`}
+                    >
+                      <td className="px-4 py-3">
+                        <div className="font-bold text-slate-900">{row.label}</div>
+                        <span className="text-[10px] font-mono text-slate-500">{row.month}</span>
+                      </td>
+                      <td className="px-4 py-3 text-center font-mono-num text-slate-700">
+                        {toBnNumber(row.count, lang)}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono-num text-slate-700">
+                        {formatCurrency(row.salaryTotal, lang)}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono-num text-slate-700">
+                        {formatCurrency(row.utilityAndRentTotal, lang)}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono-num text-slate-700">
+                        {formatCurrency(row.otherTotal, lang)}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono-num font-semibold text-emerald-700">
+                        {formatCurrency(row.paidTotal, lang)}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono-num font-semibold text-amber-700">
+                        {formatCurrency(row.unpaidTotal, lang)}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono-num font-bold text-rose-700">
+                        {formatCurrency(row.total, lang)}
+                      </td>
+                    </tr>
+                  ))}
+                  {monthlyExpenseReport.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="py-10 text-center text-slate-400 text-xs">
+                        {'No expenses match the selected filters.'}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Category Breakdown Table */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 font-bold text-xs text-slate-900">
+              Category-wise Breakdown {expMonthFilter ? `— ${formatExpenseMonthLabel(expMonthFilter)} (${expMonthFilter})` : ''}
+            </div>
+            <table className="w-full text-left text-xs">
+              <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
                 <tr>
-                  <td colSpan={3} className="py-12 text-center text-slate-400 text-xs">
-                    {'No expenses in selected range.'}
-                  </td>
+                  <th className="px-4 py-3 font-semibold">{'Category'}</th>
+                  <th className="px-4 py-3 font-semibold text-right">{'Paid'}</th>
+                  <th className="px-4 py-3 font-semibold text-right">{'Unpaid'}</th>
+                  <th className="px-4 py-3 font-semibold text-right">{'Total Spent'}</th>
+                  <th className="px-4 py-3 font-semibold text-right">{'Percentage'}</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {detailedReportCategoryMap.map(([cat, stats], idx) => {
+                  const pct = detailedReportTotal > 0 ? Math.round((stats.total / detailedReportTotal) * 100) : 0;
+                  return (
+                    <tr key={idx} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="px-4 py-3 font-semibold text-slate-900">{cat}</td>
+                      <td className="px-4 py-3 text-right font-mono-num text-emerald-700 font-semibold">
+                        {formatCurrency(stats.paid, lang)}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono-num text-amber-700 font-semibold">
+                        {formatCurrency(stats.unpaid, lang)}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono-num font-bold text-rose-700">
+                        {formatCurrency(stats.total, lang)}
+                      </td>
+                      <td className="px-4 py-3 text-right font-mono-num text-slate-600">
+                        {toBnNumber(pct, lang)}%
+                      </td>
+                    </tr>
+                  );
+                })}
+                {detailedReportCategoryMap.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="py-10 text-center text-slate-400 text-xs">
+                      {'No expenses in selected filters.'}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Filtered Detailed Expense Ledger */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 font-bold text-xs text-slate-900">
+              Detailed Expense Entries ({detailedReportExpenses.length})
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                  <tr>
+                    <th className="px-4 py-2.5 font-semibold">Expense Month</th>
+                    <th className="px-4 py-2.5 font-semibold">Payment Date</th>
+                    <th className="px-4 py-2.5 font-semibold">Category</th>
+                    <th className="px-4 py-2.5 font-semibold">Staff / Paid To</th>
+                    <th className="px-4 py-2.5 font-semibold">Status</th>
+                    <th className="px-4 py-2.5 font-semibold text-right">Amount</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {detailedReportExpenses.map(exp => {
+                    const effMonth = getEffectiveExpenseMonth(exp);
+                    const effDate = getEffectivePaymentDate(exp);
+                    const effStatus = getEffectivePaymentStatus(exp);
+                    const staff = getExpenseStaffDisplay(exp, employees);
+                    return (
+                      <tr key={exp.id} className="hover:bg-slate-50/80">
+                        <td className="px-4 py-2.5 whitespace-nowrap">
+                          <span className="font-semibold text-slate-900">{formatExpenseMonthLabel(effMonth, true)}</span>{' '}
+                          <span className="text-[10px] font-mono text-slate-500">({effMonth})</span>
+                        </td>
+                        <td className="px-4 py-2.5 text-slate-600 whitespace-nowrap">
+                          {effDate ? formatDate(effDate, lang) : 'Pending'}
+                        </td>
+                        <td className="px-4 py-2.5 font-semibold text-slate-900">{exp.category}</td>
+                        <td className="px-4 py-2.5 text-slate-700">{staff || exp.paidTo || '—'}</td>
+                        <td className="px-4 py-2.5 whitespace-nowrap">
+                          {effStatus === 'paid' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold text-[11px]">
+                              <CheckCircle2 className="w-3 h-3" />
+                              <span>Paid</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-300 font-semibold text-[11px]">
+                              <Clock className="w-3 h-3" />
+                              <span>Unpaid</span>
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-mono-num font-bold text-rose-700 whitespace-nowrap">
+                          {formatCurrency(exp.amount, lang)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {detailedReportExpenses.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="py-10 text-center text-slate-400 text-xs">
+                        No detailed expense entries match the selected filters.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 
