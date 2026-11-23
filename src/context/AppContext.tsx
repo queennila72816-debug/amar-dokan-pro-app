@@ -5299,6 +5299,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     branchName?: string;
     status: 'active' | 'inactive';
   }): Promise<Seller> => {
+    if (isSupabaseConfigured) {
+      ensureCloudContext();
+      if (!enforcePermission('user_management', 'create', 'Add New Seller')) {
+        throw new Error('Permission denied: Only authorized Admins can create seller accounts.');
+      }
+    }
     const limitCheck = checkPlanLimit('users');
     if (!limitCheck.allowed) {
       throw new Error(limitCheck.message || 'Staff user limit reached for your current plan.');

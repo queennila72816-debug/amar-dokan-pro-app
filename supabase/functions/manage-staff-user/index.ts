@@ -39,6 +39,16 @@ function getCorsHeaders(req?: Request): Record<string, string> {
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+function sanitizeInternalEmailLocalPart(username: string): string {
+  const cleaned = username
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '_')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 48);
+  return cleaned || 'staff';
+}
 
 function isValidUuid(val: unknown): val is string {
   return typeof val === 'string' && UUID_REGEX.test(val.trim());
@@ -920,7 +930,10 @@ Deno.serve(async (req: Request) => {
     const cleanCode = String(p.employeeCode || '').trim().toUpperCase();
     const password = String(p.password || '');
     const phone = String(p.phone || '').trim();
-    const emailToUse = (String(p.email || '').trim() || `${cleanUsername}@amardokanpro.internal`).toLowerCase();
+    const suppliedEmail = String(p.email || '').trim().toLowerCase();
+    const emailLocalPart = sanitizeInternalEmailLocalPart(cleanUsername);
+    const emailToUse = suppliedEmail || `${emailLocalPart}@amardokanpro.internal`;
+    const isSyntheticInternalEmail = emailToUse.endsWith('@amardokanpro.internal');
     const normRoleKey = normalizeRoleKey(String(p.roleKey || 'salesman'));
     const legacyRole = action === 'create_seller' ? 'seller' : roleKeyToLegacyUserRole(normRoleKey);
     const accountStatus = ['active', 'inactive', 'suspended', 'blocked'].includes(
@@ -931,9 +944,15 @@ Deno.serve(async (req: Request) => {
 
     if (!fullName || !cleanUsername || password.length < 6) {
       return respond(
-        { error: 'Full Name, Username, and Password (min 6 chars) are required.' },
+        { error: 'Full Name, Username, and Password (minimum 6 characters) are required.' },
         400
       );
+    }
+    if (password.length > 128) {
+      return respond({ error: 'Password cannot exceed 128 characters.' }, 400);
+    }
+    if (!EMAIL_REGEX.test(emailToUse)) {
+      return respond({ error: 'Please provide a valid email address.' }, 400);
     }
 
     // Check duplicates in business before touching auth.users
@@ -941,7 +960,8 @@ Deno.serve(async (req: Request) => {
       .from('employees')
       .select('id')
       .eq('business_id', businessId)
-      .eq('username', cleanUsername)
+      .ilike('username', cleanUsername)
+      .limit(1)
       .maybeSingle();
     if (existingEmpUser) {
       return respond(
@@ -954,7 +974,8 @@ Deno.serve(async (req: Request) => {
       .from('employees')
       .select('id')
       .eq('business_id', businessId)
-      .eq('email', emailToUse)
+      .ilike('email', emailToUse)
+      .limit(1)
       .maybeSingle();
     if (existingEmpEmail) {
       return respond(
@@ -1092,7 +1113,6 @@ Deno.serve(async (req: Request) => {
       resolvedRoleId = roleByKey?.id || null;
     }
 
-    const isSyntheticInternalEmail = emailToUse.endsWith('@amardokanpro.internal');
     let resolvedAuthEmail = emailToUse;
     if (isSyntheticInternalEmail) {
       const { data: globalEmailHit } = await supabaseAdmin
@@ -1103,7 +1123,23 @@ Deno.serve(async (req: Request) => {
         .maybeSingle();
 
       if (globalEmailHit) {
-        resolvedAuthEmail = `${cleanUsername}.${businessId.slice(0, 6)}@amardokanpro.internal`;
+        resolvedAuthEmail = `${emailLocalPart}.${businessId.slice(0, 6)}@amardokanpro.internal`;
+      }
+    } else {
+      const { data: globalEmailHit } = await supabaseAdmin
+        .from('user_profiles')
+        .select('id')
+        .ilike('email', resolvedAuthEmail)
+        .limit(1)
+        .maybeSingle();
+
+      if (globalEmailHit) {
+        return respond(
+          {
+            error: `Email "${resolvedAuthEmail}" is already registered to another account. Please use a unique email address.`,
+          },
+          409
+        );
       }
     }
 
@@ -1126,7 +1162,7 @@ Deno.serve(async (req: Request) => {
       authErr &&
       authErr.message.toLowerCase().includes('already')
     ) {
-      resolvedAuthEmail = `${cleanUsername}.${businessId.slice(0, 6)}.${crypto.randomUUID().slice(0, 4)}@amardokanpro.internal`;
+      resolvedAuthEmail = `${emailLocalPart}.${businessId.slice(0, 6)}.${crypto.randomUUID().slice(0, 4)}@amardokanpro.internal`;
       const retryAuth = await supabaseAdmin.auth.admin.createUser({
         email: resolvedAuthEmail,
         password,
@@ -1145,8 +1181,18 @@ Deno.serve(async (req: Request) => {
 
     if (authErr || !authData?.user?.id || !isValidUuid(authData.user.id)) {
       const msg = authErr?.message || 'Failed to create Supabase Auth user.';
-      const status = msg.toLowerCase().includes('already') ? 409 : 400;
-      return respond({ error: msg }, status);
+      const lower = msg.toLowerCase();
+      const isDuplicate =
+        lower.includes('already') || lower.includes('registered') || lower.includes('exists');
+      if (isDuplicate) {
+        return respond(
+          {
+            error: `Email "${resolvedAuthEmail}" is already registered in authentication. Please use a different email address.`,
+          },
+          409
+        );
+      }
+      return respond({ error: msg }, 400);
     }
 
     const authUserId = authData.user.id;

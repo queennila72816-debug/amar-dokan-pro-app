@@ -7,8 +7,18 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 const PORT = Number(process.env.PORT) || 3000;
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const PLATFORM_OWNER_EMAIL = 'queennila72816@gmail.com';
 const PLATFORM_ROLES = ['SUPER_ADMIN', 'SUPPORT_ADMIN', 'BILLING_ADMIN', 'PLATFORM_VIEWER'] as const;
+
+function sanitizeInternalEmailLocalPart(username: string): string {
+  const cleaned = username
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '_')
+    .replace(/^[._-]+|[._-]+$/g, '')
+    .slice(0, 48);
+  return cleaned || 'staff';
+}
 
 // In-memory sliding-window rate limiter for sensitive API routes
 const rateLimitStore = new Map<string, number[]>();
@@ -656,7 +666,10 @@ export function createApp() {
     const cleanCode = String(p.employeeCode || '').trim().toUpperCase();
     const password = String(p.password || '');
     const phone = String(p.phone || '').trim();
-    const emailToUse = (String(p.email || '').trim() || `${cleanUsername}@amardokanpro.internal`).toLowerCase();
+    const suppliedEmail = String(p.email || '').trim().toLowerCase();
+    const emailLocalPart = sanitizeInternalEmailLocalPart(cleanUsername);
+    const emailToUse = suppliedEmail || `${emailLocalPart}@amardokanpro.internal`;
+    const isSyntheticInternalEmail = emailToUse.endsWith('@amardokanpro.internal');
     const normRoleKey = normalizeRoleKey(p.roleKey || 'salesman');
     const legacyRole = mode === 'seller' ? 'seller' : roleKeyToLegacyUserRole(normRoleKey);
     const accountStatus = ['active', 'inactive', 'suspended', 'blocked'].includes(String(p.accountStatus || 'active'))
@@ -668,6 +681,12 @@ export function createApp() {
         error: 'Full Name, Username, and Password (minimum 6 characters) are required.',
       });
     }
+    if (password.length > 128) {
+      return res.status(400).json({ error: 'Password cannot exceed 128 characters.' });
+    }
+    if (!EMAIL_REGEX.test(emailToUse)) {
+      return res.status(400).json({ error: 'Please provide a valid email address.' });
+    }
 
     try {
       // Pre-flight duplicate checks inside business before provisioning auth.users
@@ -675,7 +694,8 @@ export function createApp() {
         .from('employees')
         .select('id')
         .eq('business_id', businessId)
-        .eq('username', cleanUsername)
+        .ilike('username', cleanUsername)
+        .limit(1)
         .maybeSingle();
 
       if (existingUsername) {
@@ -688,7 +708,8 @@ export function createApp() {
         .from('employees')
         .select('id')
         .eq('business_id', businessId)
-        .eq('email', emailToUse)
+        .ilike('email', emailToUse)
+        .limit(1)
         .maybeSingle();
 
       if (existingEmpEmail) {
@@ -827,7 +848,6 @@ export function createApp() {
         resolvedRoleId = roleByKey?.id || null;
       }
 
-      const isSyntheticInternalEmail = emailToUse.endsWith('@amardokanpro.internal');
       let resolvedAuthEmail = emailToUse;
       if (isSyntheticInternalEmail) {
         const { data: globalEmailHit } = await supabaseAdmin
@@ -838,7 +858,20 @@ export function createApp() {
           .maybeSingle();
 
         if (globalEmailHit) {
-          resolvedAuthEmail = `${cleanUsername}.${businessId.slice(0, 6)}@amardokanpro.internal`;
+          resolvedAuthEmail = `${emailLocalPart}.${businessId.slice(0, 6)}@amardokanpro.internal`;
+        }
+      } else {
+        const { data: globalEmailHit } = await supabaseAdmin
+          .from('user_profiles')
+          .select('id')
+          .ilike('email', resolvedAuthEmail)
+          .limit(1)
+          .maybeSingle();
+
+        if (globalEmailHit) {
+          return res.status(409).json({
+            error: `Email "${resolvedAuthEmail}" is already registered to another account. Please use a unique email address.`,
+          });
         }
       }
 
@@ -861,7 +894,7 @@ export function createApp() {
         authErr &&
         authErr.message.toLowerCase().includes('already')
       ) {
-        resolvedAuthEmail = `${cleanUsername}.${businessId.slice(0, 6)}.${crypto.randomBytes(2).toString('hex')}@amardokanpro.internal`;
+        resolvedAuthEmail = `${emailLocalPart}.${businessId.slice(0, 6)}.${crypto.randomBytes(2).toString('hex')}@amardokanpro.internal`;
         const retryAuth = await supabaseAdmin.auth.admin.createUser({
           email: resolvedAuthEmail,
           password,
@@ -880,8 +913,15 @@ export function createApp() {
 
       if (authErr || !authData?.user?.id || !isValidUuid(authData.user.id)) {
         const msg = authErr?.message || 'Failed to create Supabase Auth user.';
-        const status = msg.toLowerCase().includes('already') ? 409 : 400;
-        return res.status(status).json({ error: msg });
+        const lower = msg.toLowerCase();
+        const isDuplicate =
+          lower.includes('already') || lower.includes('registered') || lower.includes('exists');
+        if (isDuplicate) {
+          return res.status(409).json({
+            error: `Email "${resolvedAuthEmail}" is already registered in authentication. Please use a different email address.`,
+          });
+        }
+        return res.status(400).json({ error: msg });
       }
 
       const authUserId = authData.user.id;
