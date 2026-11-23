@@ -199,9 +199,9 @@ const MainLayout: React.FC = () => {
     );
   }
 
-  // If Supabase is configured and the user is not authenticated, show login/signup screen.
-  if (isSupabaseConfigured && !user) {
-    return <AuthModal onSuccess={() => {}} />;
+  // If the user is not authenticated, show the Protiva Welcome Screen first.
+  if (!user && (isSupabaseConfigured || !isBusinessConfigured)) {
+    return <AuthModal key="auth-welcome" initialMode="welcome" onSuccess={() => {}} />;
   }
 
   // If initialization failed while checking existing business membership, show retry screen instead of forcing setup

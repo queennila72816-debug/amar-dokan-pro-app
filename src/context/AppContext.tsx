@@ -1667,6 +1667,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Initialize Auth & Supabase Session
   useEffect(() => {
     let isMounted = true;
+    let initResolved = false;
 
     registerSessionExpiredHandler((reason: string) => {
       if (!isMounted || handlingSessionExpiryRef.current) return;
@@ -1692,7 +1693,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async function initSession() {
       if (!isSupabaseConfigured) {
         loadFromLocalStorageFallback();
-        setIsLoading(false);
+        initResolved = true;
+        if (isMounted) setIsLoading(false);
         return;
       }
 
@@ -1715,10 +1717,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       } catch (err: any) {
         if (!isMounted) return;
+        // Preserve any locally cached session on transient network errors so the user sees Retry Connection instead of Welcome/Registration
+        try {
+          const { data } = await supabase.auth.getSession();
+          if (data?.session?.user) {
+            setSession(data.session);
+            setUser(data.session.user);
+            initializedUserIdRef.current = data.session.user.id;
+          }
+        } catch {}
         const message = formatSupabaseError(err, 'Unable to connect to Supabase authentication.');
         setDbError(message);
         setInitError(message);
         setIsLoading(false);
+      } finally {
+        initResolved = true;
       }
     }
 
@@ -1728,10 +1741,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, newSession) => {
       if (!isMounted) return;
+
+      // Let initSession complete the verified initial session check before reacting to initial events.
+      if (!initResolved && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN')) {
+        return;
+      }
+
       setSession(newSession);
       setUser(newSession?.user ?? null);
 
-      if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
+      if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') {
         if (newSession?.user) {
           setSessionExpiredNotice(null);
         }
@@ -1989,7 +2008,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     logUserActivity('LOGOUT', 'user_management', 'logout', 'User signed out');
     initializedUserIdRef.current = null;
     if (isSupabaseConfigured) {
-      await supabase.auth.signOut();
+      try {
+        await supabase.auth.signOut();
+      } catch {
+        try {
+          await supabase.auth.signOut({ scope: 'local' });
+        } catch {}
+      }
     }
     setSession(null);
     setUser(null);
@@ -2003,9 +2028,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCurrentUserRoleState('owner');
     setActiveBusinessId('');
     setActiveBranchId('');
+    setProducts([]);
+    setSales([]);
+    setPurchases([]);
+    setCustomers([]);
+    setSuppliers([]);
+    setExpenses([]);
+    setCustomerTransactions([]);
+    setSupplierTransactions([]);
+    setAccountTransactions([]);
+    setStockMovements([]);
+    setStockTransfers([]);
     setIsBusinessConfigured(false);
+    setAuthBlockedReason(null);
+    setSessionExpiredNotice(null);
     setInitError(null);
     setDbError(null);
+    setIsLoading(false);
   };
 
   const addAuditLog = (action: string, entityType: string, entityId: string, details: string) => {

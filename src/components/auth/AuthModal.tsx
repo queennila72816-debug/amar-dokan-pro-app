@@ -1,20 +1,38 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured } from '../../lib/supabase';
 import { useApp } from '../../context/AppContext';
 import { staffRbacService } from '../../services/staffRbacService';
 import { APP_IDENTITY } from '../../config/appIdentity';
 import { evaluateBrowserCompatibility } from '../../utils/browserCompat';
-import { Store, Mail, Lock, User, ArrowRight, Loader2, AlertCircle, CheckCircle2, ShieldAlert, Eye, EyeOff, AlertTriangle } from 'lucide-react';
+import {
+  Store,
+  Mail,
+  Lock,
+  User,
+  ArrowRight,
+  ArrowLeft,
+  Loader2,
+  AlertCircle,
+  CheckCircle2,
+  ShieldAlert,
+  Eye,
+  EyeOff,
+  AlertTriangle,
+  LogIn,
+  UserPlus,
+} from 'lucide-react';
+
+export type AuthModalMode = 'welcome' | 'login' | 'register' | 'forgot' | 'recovery';
 
 interface AuthModalProps {
   onSuccess: () => void;
-  initialMode?: 'login' | 'register' | 'forgot' | 'recovery';
+  initialMode?: AuthModalMode;
   onRecoveryComplete?: () => void;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
   onSuccess,
-  initialMode = 'login',
+  initialMode = 'welcome',
   onRecoveryComplete,
 }) => {
   const {
@@ -23,7 +41,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     sessionExpiredNotice,
     clearSessionExpiredNotice,
   } = useApp();
-  const [mode, setMode] = useState<'login' | 'register' | 'forgot' | 'recovery'>(initialMode);
+  const [mode, setMode] = useState<AuthModalMode>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
@@ -33,6 +51,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [compatReport] = useState(() => evaluateBrowserCompatibility());
+
+  useEffect(() => {
+    setMode(initialMode);
+  }, [initialMode]);
+
+  const switchMode = (nextMode: AuthModalMode) => {
+    if (loading) return;
+    setMode(nextMode);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -137,15 +166,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       <div className="relative w-full max-w-md bg-white dark:bg-[#101B3F] rounded-[14px] shadow-2xl border border-[#E2E8F0] dark:border-[#243B70] overflow-hidden adp-modal-enter">
         {/* PROTIVA Official Brand Header */}
         <div className="p-6 bg-[#101B3F] bg-gradient-to-br from-[#101B3F] via-[#1B2F63] to-[#243B70] text-white text-center border-b border-[#FF9D32]/30">
-          <div className="inline-flex items-center justify-center bg-white rounded-[14px] px-4 py-2.5 shadow-lg shadow-black/25 border border-white/80 mb-2">
+          <div className="inline-flex items-center justify-center bg-white rounded-[14px] px-4 py-2.5 shadow-lg shadow-black/25 border border-white/80 mb-2.5">
             <img
               src={APP_IDENTITY.logoPath}
               alt={`${APP_IDENTITY.name} — ${APP_IDENTITY.subtitle}`}
               className="h-16 sm:h-20 w-auto object-contain select-none"
             />
           </div>
-          <p className="text-[11px] font-medium tracking-wide text-slate-200/90 mt-1">
-            Smart Multi-Tenant Business &amp; POS Platform
+          <h1 className="text-lg font-extrabold tracking-[0.18em] text-white uppercase">
+            {APP_IDENTITY.name}
+          </h1>
+          <p className="text-[11px] font-medium tracking-wide text-slate-200/90 mt-0.5">
+            {APP_IDENTITY.subtitle}
           </p>
         </div>
 
@@ -159,88 +191,162 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
         )}
 
-        {/* Tab Selection */}
-        {mode === 'recovery' ? (
-          <div className="py-3 px-6 bg-[#F5F7FC] dark:bg-[#0A122C]/70 border-b border-[#E2E8F0] dark:border-[#243B70] text-xs font-semibold text-[#243B70] dark:text-[#FF9D32] flex items-center justify-center gap-2">
-            <Lock className="w-3.5 h-3.5" />
-            <span>Reset Account Password</span>
+        {mode === 'welcome' ? (
+          <div className="p-6 space-y-5">
+            {authBlockedReason && (
+              <div className="p-3 rounded-[10px] bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-700/60 text-rose-800 dark:text-rose-200 text-xs flex items-start gap-2">
+                <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-[#F06464]" />
+                <div>
+                  <div className="font-bold">Access Restricted</div>
+                  <p className="mt-0.5">{authBlockedReason}</p>
+                </div>
+              </div>
+            )}
+
+            {!authBlockedReason && sessionExpiredNotice && (
+              <div className="p-3 rounded-[10px] bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700/60 text-amber-800 dark:text-amber-200 text-xs flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#F59E0B]" />
+                <div>
+                  <div className="font-bold">Session Expired</div>
+                  <p className="mt-0.5">{sessionExpiredNotice}</p>
+                </div>
+              </div>
+            )}
+
+            <div className="text-center space-y-2 pt-1">
+              <h2 className="text-xl font-bold text-[#101B3F] dark:text-white">
+                Welcome to {APP_IDENTITY.name}
+              </h2>
+              <p className="text-xs leading-relaxed text-[#64748B] dark:text-slate-300 max-w-sm mx-auto">
+                Your unified smart business, POS, inventory, and accounting workspace. Sign in with your existing account or create a new business account to begin.
+              </p>
+            </div>
+
+            <div className="space-y-3 pt-1">
+              <button
+                type="button"
+                onClick={() => switchMode('login')}
+                className="w-full py-3 px-4 bg-[#101B3F] bg-gradient-to-r from-[#101B3F] to-[#243B70] hover:brightness-110 text-white font-semibold rounded-[10px] text-xs flex items-center justify-between shadow-md shadow-[#101B3F]/25 border border-[#FF9D32]/35 transition-all cursor-pointer"
+              >
+                <span className="flex items-center gap-2.5">
+                  <LogIn className="w-4 h-4 text-[#FF9D32]" />
+                  <span>Login</span>
+                </span>
+                <ArrowRight className="w-4 h-4 text-[#FF9D32]" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => switchMode('register')}
+                className="w-full py-3 px-4 bg-[#F5F7FC] dark:bg-[#0D1736] hover:bg-[#E2E8F0]/70 dark:hover:bg-[#16254E] text-[#101B3F] dark:text-white font-semibold rounded-[10px] text-xs flex items-center justify-between border border-[#CBD5E1] dark:border-[#243B70] transition-colors cursor-pointer"
+              >
+                <span className="flex items-center gap-2.5">
+                  <UserPlus className="w-4 h-4 text-[#087F8C] dark:text-[#FF9D32]" />
+                  <span>Create New Account</span>
+                </span>
+                <ArrowRight className="w-4 h-4 text-[#64748B] dark:text-slate-400" />
+              </button>
+            </div>
           </div>
         ) : (
-          <div className="flex border-b border-[#E2E8F0] dark:border-[#243B70] bg-[#F5F7FC] dark:bg-[#0A122C]/60 text-xs font-semibold">
-            <button
-              type="button"
-              onClick={() => {
-                setMode('login');
-                setErrorMsg(null);
-                setSuccessMsg(null);
-              }}
-              className={`flex-1 py-3 text-center transition-colors cursor-pointer ${
-                mode === 'login'
-                  ? 'text-[#101B3F] dark:text-[#FF9D32] border-b-2 border-[#FF9D32] bg-white dark:bg-[#101B3F]'
-                  : 'text-[#64748B] dark:text-slate-400 hover:text-[#101B3F] dark:hover:text-white'
-              }`}
-            >
-              Sign In
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setMode('register');
-                setErrorMsg(null);
-                setSuccessMsg(null);
-              }}
-              className={`flex-1 py-3 text-center transition-colors cursor-pointer ${
-                mode === 'register'
-                  ? 'text-[#101B3F] dark:text-[#FF9D32] border-b-2 border-[#FF9D32] bg-white dark:bg-[#101B3F]'
-                  : 'text-[#64748B] dark:text-slate-400 hover:text-[#101B3F] dark:hover:text-white'
-              }`}
-            >
-              Create Account
-            </button>
-          </div>
-        )}
-
-        {/* Form Body */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          {authBlockedReason && (
-            <div className="p-3 rounded-[10px] bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-700/60 text-rose-800 dark:text-rose-200 text-xs flex items-start gap-2">
-              <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-[#F06464]" />
+          <>
+            {/* Navigation / Mode Header */}
+            {mode === 'recovery' ? (
+              <div className="py-3 px-6 bg-[#F5F7FC] dark:bg-[#0A122C]/70 border-b border-[#E2E8F0] dark:border-[#243B70] text-xs font-semibold text-[#243B70] dark:text-[#FF9D32] flex items-center justify-center gap-2">
+                <Lock className="w-3.5 h-3.5" />
+                <span>Reset Account Password</span>
+              </div>
+            ) : (
               <div>
-                <div className="font-bold">Access Restricted</div>
-                <p className="mt-0.5">{authBlockedReason}</p>
+                <div className="px-4 py-2 bg-[#F8FAFC] dark:bg-[#0A122C]/80 border-b border-[#E2E8F0] dark:border-[#243B70] flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={() => switchMode('welcome')}
+                    disabled={loading}
+                    className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#64748B] dark:text-slate-300 hover:text-[#101B3F] dark:hover:text-white transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Back to Welcome</span>
+                  </button>
+                  <span className="text-[11px] font-medium text-[#64748B] dark:text-slate-400">
+                    {mode === 'login'
+                      ? 'Account Sign In'
+                      : mode === 'register'
+                      ? 'New Account Registration'
+                      : 'Password Recovery'}
+                  </span>
+                </div>
+
+                {mode !== 'forgot' && (
+                  <div className="flex border-b border-[#E2E8F0] dark:border-[#243B70] bg-[#F5F7FC] dark:bg-[#0A122C]/60 text-xs font-semibold">
+                    <button
+                      type="button"
+                      onClick={() => switchMode('login')}
+                      className={`flex-1 py-3 text-center transition-colors cursor-pointer ${
+                        mode === 'login'
+                          ? 'text-[#101B3F] dark:text-[#FF9D32] border-b-2 border-[#FF9D32] bg-white dark:bg-[#101B3F]'
+                          : 'text-[#64748B] dark:text-slate-400 hover:text-[#101B3F] dark:hover:text-white'
+                      }`}
+                    >
+                      Login
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => switchMode('register')}
+                      className={`flex-1 py-3 text-center transition-colors cursor-pointer ${
+                        mode === 'register'
+                          ? 'text-[#101B3F] dark:text-[#FF9D32] border-b-2 border-[#FF9D32] bg-white dark:bg-[#101B3F]'
+                          : 'text-[#64748B] dark:text-slate-400 hover:text-[#101B3F] dark:hover:text-white'
+                      }`}
+                    >
+                      Create New Account
+                    </button>
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            )}
 
-          {!authBlockedReason && sessionExpiredNotice && (
-            <div className="p-3 rounded-[10px] bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700/60 text-amber-800 dark:text-amber-200 text-xs flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#F59E0B]" />
-              <div>
-                <div className="font-bold">Session Expired</div>
-                <p className="mt-0.5">{sessionExpiredNotice}</p>
-              </div>
-            </div>
-          )}
+            {/* Form Body */}
+            <form onSubmit={handleSubmit} className="p-6 space-y-4">
+              {authBlockedReason && (
+                <div className="p-3 rounded-[10px] bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-700/60 text-rose-800 dark:text-rose-200 text-xs flex items-start gap-2">
+                  <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-[#F06464]" />
+                  <div>
+                    <div className="font-bold">Access Restricted</div>
+                    <p className="mt-0.5">{authBlockedReason}</p>
+                  </div>
+                </div>
+              )}
 
-          {errorMsg && (
-            <div className="p-3 rounded-[10px] bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-700/60 text-rose-700 dark:text-rose-200 text-xs flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#F06464]" />
-              <span>{errorMsg}</span>
-            </div>
-          )}
+              {!authBlockedReason && sessionExpiredNotice && (
+                <div className="p-3 rounded-[10px] bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700/60 text-amber-800 dark:text-amber-200 text-xs flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#F59E0B]" />
+                  <div>
+                    <div className="font-bold">Session Expired</div>
+                    <p className="mt-0.5">{sessionExpiredNotice}</p>
+                  </div>
+                </div>
+              )}
 
-          {successMsg && (
-            <div className="p-3 rounded-[10px] bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-700/60 text-emerald-800 dark:text-emerald-200 text-xs flex items-start gap-2">
-              <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-[#10B981]" />
-              <span>{successMsg}</span>
-            </div>
-          )}
+              {errorMsg && (
+                <div className="p-3 rounded-[10px] bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-700/60 text-rose-700 dark:text-rose-200 text-xs flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-[#F06464]" />
+                  <span>{errorMsg}</span>
+                </div>
+              )}
 
-          {mode === 'register' && (
-            <>
-              <div className="p-2.5 rounded-[10px] bg-[#087F8C]/10 border border-[#087F8C]/25 text-[11px] text-[#087F8C] dark:text-[#5EEAD4]">
-                Every registered owner gets an isolated multi-branch shop workspace with a 14-day Free Trial. Staff accounts are created internally by your Shop Owner.
-              </div>
+              {successMsg && (
+                <div className="p-3 rounded-[10px] bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-700/60 text-emerald-800 dark:text-emerald-200 text-xs flex items-start gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-[#10B981]" />
+                  <span>{successMsg}</span>
+                </div>
+              )}
+
+              {mode === 'register' && (
+                <>
+                  <div className="p-2.5 rounded-[10px] bg-[#087F8C]/10 border border-[#087F8C]/25 text-[11px] text-[#087F8C] dark:text-[#5EEAD4]">
+                    Every registered owner gets an isolated multi-branch shop workspace with a 14-day Free Trial. Staff accounts are created internally by your Shop Owner.
+                  </div>
               <div>
                 <label className="block text-xs font-semibold text-[#172033] dark:text-slate-200 mb-1">Full Name *</label>
                 <div className="relative">
@@ -372,7 +478,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </button>
             </div>
           )}
-        </form>
+            </form>
+          </>
+        )}
 
         {/* Footer info */}
         <div className="p-4 bg-[#F5F7FC] dark:bg-[#0A122C]/70 border-t border-[#E2E8F0] dark:border-[#243B70] text-center text-[11px] text-[#64748B] dark:text-slate-400">
