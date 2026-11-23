@@ -3099,7 +3099,13 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
+    const publicCfg = getPublicBrowserConfig();
     console.log(`PROTIVA server listening on http://0.0.0.0:${PORT}`);
+    console.log('[PROTIVA] Server env presence:', {
+      VITE_SUPABASE_URL: Boolean(publicCfg.VITE_SUPABASE_URL),
+      VITE_SUPABASE_ANON_KEY: Boolean(publicCfg.VITE_SUPABASE_ANON_KEY),
+      SUPABASE_SERVICE_ROLE_KEY: Boolean((process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim()),
+    });
   });
 }
 

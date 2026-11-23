@@ -84,17 +84,37 @@ function createConfiguredClient(url: string, key: string): SupabaseClient {
   });
 }
 
-if (!globalScope.__adpSupabaseClient || globalScope.__adpSupabaseClientConfigured !== isSupabaseConfigured) {
-  const resolvedUrl = isSupabaseConfigured ? supabaseUrl : 'https://placeholder.supabase.co';
-  const resolvedKey = isSupabaseConfigured ? supabaseAnonKey : 'placeholder-anon-key';
-  globalScope.__adpSupabaseClient = createConfiguredClient(resolvedUrl, resolvedKey);
-  globalScope.__adpSupabaseClientConfigured = isSupabaseConfigured;
+function getOrCreateSupabaseClient(): SupabaseClient {
+  if (!globalScope.__adpSupabaseClient || globalScope.__adpSupabaseClientConfigured !== isSupabaseConfigured) {
+    const resolvedUrl = isSupabaseConfigured ? supabaseUrl : 'https://placeholder.supabase.co';
+    const resolvedKey = isSupabaseConfigured ? supabaseAnonKey : 'placeholder-anon-key';
+    globalScope.__adpSupabaseClient = createConfiguredClient(resolvedUrl, resolvedKey);
+    globalScope.__adpSupabaseClientConfigured = isSupabaseConfigured;
+  }
+  return globalScope.__adpSupabaseClient;
 }
 
+getOrCreateSupabaseClient();
+
 /**
- * Single shared Supabase client instance across the entire frontend runtime.
+ * Single shared Supabase client Proxy across the entire frontend runtime.
+ * Automatically forwards to the newly configured client if runtime config hydrates asynchronously.
  */
-export let supabase: SupabaseClient = globalScope.__adpSupabaseClient;
+export const supabase: SupabaseClient = new Proxy({} as SupabaseClient, {
+  get(_target, prop) {
+    const client = getOrCreateSupabaseClient();
+    const value = Reflect.get(client as unknown as object, prop, client);
+    return typeof value === 'function' ? value.bind(client) : value;
+  },
+  set(_target, prop, value) {
+    const client = getOrCreateSupabaseClient();
+    return Reflect.set(client as unknown as object, prop, value, client);
+  },
+});
+
+export function getIsSupabaseConfigured(): boolean {
+  return isSupabaseConfigured;
+}
 
 let runtimeHydrationPromise: Promise<boolean> | null = null;
 
@@ -111,7 +131,6 @@ function applyRuntimePublicConfig(rawUrlInput?: string, rawKeyInput?: string): b
   globalScope.__adpSupabaseClient = createConfiguredClient(supabaseUrl, supabaseAnonKey);
   globalScope.__adpSupabaseClientConfigured = true;
   globalScope.__adpEphemeralAuthClient = undefined;
-  supabase = globalScope.__adpSupabaseClient;
   return true;
 }
 
