@@ -1,5 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { supabase, isSupabaseConfigured } from '../../lib/supabase';
+import {
+  supabase,
+  isSupabaseConfigured,
+  ensureSupabaseRuntimeConfigured,
+  getSupabaseDiagnostics,
+  type SupabaseRuntimeDiagnostics,
+} from '../../lib/supabase';
 import { useApp } from '../../context/AppContext';
 import { staffRbacService } from '../../services/staffRbacService';
 import { APP_IDENTITY } from '../../config/appIdentity';
@@ -51,10 +57,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [compatReport] = useState(() => evaluateBrowserCompatibility());
+  const [diagnostics, setDiagnostics] = useState<SupabaseRuntimeDiagnostics>(() =>
+    getSupabaseDiagnostics()
+  );
 
   useEffect(() => {
     setMode(initialMode);
   }, [initialMode]);
+
+  useEffect(() => {
+    let active = true;
+    ensureSupabaseRuntimeConfigured().then(() => {
+      if (active) {
+        setDiagnostics(getSupabaseDiagnostics());
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const switchMode = (nextMode: AuthModalMode) => {
     if (loading) return;
@@ -71,7 +92,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     clearSessionExpiredNotice();
     setLoading(true);
 
-    if (!isSupabaseConfigured) {
+    const configured = isSupabaseConfigured || (await ensureSupabaseRuntimeConfigured());
+    setDiagnostics(getSupabaseDiagnostics());
+
+    if (!configured) {
       setErrorMsg('Supabase is not configured. Please check VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.');
       setLoading(false);
       return;
@@ -481,6 +505,43 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </form>
           </>
         )}
+
+        {/* Safe Runtime Diagnostics (YES/NO only, never exposes keys or secrets) */}
+        <div className="mx-6 mb-4 p-3 rounded-[10px] bg-[#F8FAFC] dark:bg-[#0A122C]/70 border border-[#E2E8F0] dark:border-[#243B70] text-[11px] space-y-1">
+          <div className="font-bold text-[#101B3F] dark:text-slate-200 mb-1">
+            Connection Diagnostics
+          </div>
+          <div className="flex items-center justify-between text-[#475569] dark:text-slate-300">
+            <span>Supabase URL detected:</span>
+            <span className={`font-bold ${diagnostics.urlDetected ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+              {diagnostics.urlDetected ? 'YES' : 'NO'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-[#475569] dark:text-slate-300">
+            <span>Public key detected:</span>
+            <span className={`font-bold ${diagnostics.publicKeyDetected ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+              {diagnostics.publicKeyDetected ? 'YES' : 'NO'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-[#475569] dark:text-slate-300">
+            <span>URL format valid:</span>
+            <span className={`font-bold ${diagnostics.urlFormatValid ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+              {diagnostics.urlFormatValid ? 'YES' : 'NO'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-[#475569] dark:text-slate-300">
+            <span>Supabase client initialized:</span>
+            <span className={`font-bold ${diagnostics.clientInitialized ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+              {diagnostics.clientInitialized ? 'YES' : 'NO'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-[#475569] dark:text-slate-300 pt-1 border-t border-[#E2E8F0] dark:border-[#243B70]">
+            <span>Supabase configuration status:</span>
+            <span className={`font-bold ${diagnostics.configured ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+              {diagnostics.configured ? 'YES' : 'NO'}
+            </span>
+          </div>
+        </div>
 
         {/* Footer info */}
         <div className="p-4 bg-[#F5F7FC] dark:bg-[#0A122C]/70 border-t border-[#E2E8F0] dark:border-[#243B70] text-center text-[11px] text-[#64748B] dark:text-slate-400">

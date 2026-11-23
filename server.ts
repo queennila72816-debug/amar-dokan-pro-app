@@ -2993,6 +2993,12 @@ export function createApp() {
     return res.status(201).json({ ticket: data });
   });
 
+  app.get('/api/public-config', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.json(getPublicBrowserConfig());
+  });
+
   // Explicit JSON guards so /api/* never falls through to Vite/static HTML
   app.all('/api/staff/*', (req, res) => {
     return res.status(405).json({ error: `Method ${req.method} is not allowed on ${req.path}. Use POST.` });
@@ -3005,6 +3011,26 @@ export function createApp() {
   return app;
 }
 
+function getPublicBrowserConfig() {
+  const clean = (v?: string) => (v || '').trim().replace(/^['"]+|['"]+$/g, '');
+  const url = clean(process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL);
+  const anon = clean(
+    process.env.VITE_SUPABASE_ANON_KEY ||
+      process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+      process.env.SUPABASE_ANON_KEY
+  );
+  return {
+    VITE_SUPABASE_URL: url,
+    VITE_SUPABASE_ANON_KEY: anon.startsWith('sb_secret_') ? '' : anon,
+  };
+}
+
+function injectPublicConfigIntoHtml(html: string): string {
+  const configJson = JSON.stringify(getPublicBrowserConfig()).replace(/</g, '\\u003c');
+  const injection = `<script>window.__PROTIVA_PUBLIC_CONFIG__=${configJson};</script>`;
+  return html.includes('</head>') ? html.replace('</head>', `${injection}</head>`) : `${injection}${html}`;
+}
+
 async function startServer() {
   const app = createApp();
   const isProd = process.env.NODE_ENV === 'production';
@@ -3015,22 +3041,37 @@ async function startServer() {
       server: { middlewareMode: true },
       appType: 'spa',
     });
+
+    app.use(async (req, res, next) => {
+      const reqPath = req.path || '';
+      const acceptsHtml = (req.headers.accept || '').includes('text/html');
+      const isDirectHtmlRoute = reqPath === '/' || reqPath === '/index.html';
+      const isSpaNavigation =
+        req.method === 'GET' &&
+        acceptsHtml &&
+        !reqPath.startsWith('/api/') &&
+        !reqPath.startsWith('/src/') &&
+        !reqPath.startsWith('/node_modules/') &&
+        !reqPath.startsWith('/@') &&
+        !path.extname(reqPath);
+
+      if (req.method === 'GET' && (isDirectHtmlRoute || isSpaNavigation)) {
+        try {
+          const templatePath = path.resolve(process.cwd(), 'index.html');
+          const template = fs.readFileSync(templatePath, 'utf8');
+          const transformed = await vite.transformIndexHtml(req.originalUrl, template);
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          return res.status(200).type('html').send(injectPublicConfigIntoHtml(transformed));
+        } catch (err) {
+          return next(err);
+        }
+      }
+      return next();
+    });
+
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
-    const getPublicBrowserConfig = () => {
-      const clean = (v?: string) => (v || '').trim().replace(/^['"]+|['"]+$/g, '');
-      const url = clean(process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL);
-      const anon = clean(
-        process.env.VITE_SUPABASE_ANON_KEY ||
-          process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-          process.env.SUPABASE_ANON_KEY
-      );
-      return {
-        VITE_SUPABASE_URL: url,
-        VITE_SUPABASE_ANON_KEY: anon.startsWith('sb_secret_') ? '' : anon,
-      };
-    };
 
     app.use(
       express.static(distDir, {
@@ -3050,12 +3091,7 @@ async function startServer() {
       const indexPath = path.join(distDir, 'index.html');
       try {
         const html = fs.readFileSync(indexPath, 'utf8');
-        const configJson = JSON.stringify(getPublicBrowserConfig()).replace(/</g, '\\u003c');
-        const injection = `<script>window.__PROTIVA_PUBLIC_CONFIG__=${configJson};</script>`;
-        const hydratedHtml = html.includes('</head>')
-          ? html.replace('</head>', `${injection}</head>`)
-          : `${injection}${html}`;
-        res.type('html').send(hydratedHtml);
+        res.type('html').send(injectPublicConfigIntoHtml(html));
       } catch {
         res.sendFile(indexPath);
       }

@@ -83,6 +83,7 @@ import { generateSafeUuid } from '../utils/polyfills';
 import {
   supabase,
   isSupabaseConfigured,
+  ensureSupabaseRuntimeConfigured,
   formatSupabaseError,
   sanitizeUuid,
   isValidUuid,
@@ -1690,13 +1691,82 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
     });
 
+    let authSubscription: { unsubscribe: () => void } | null = null;
+
     async function initSession() {
+      await ensureSupabaseRuntimeConfigured();
+      if (!isMounted) return;
+
       if (!isSupabaseConfigured) {
         loadFromLocalStorageFallback();
         initResolved = true;
         if (isMounted) setIsLoading(false);
         return;
       }
+
+      const {
+        data: { subscription },
+      } = supabase.auth.onAuthStateChange(async (event, newSession) => {
+        if (!isMounted) return;
+
+        // Let initSession complete the verified initial session check before reacting to initial events.
+        if (!initResolved && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN')) {
+          return;
+        }
+
+        setSession(newSession);
+        setUser(newSession?.user ?? null);
+
+        if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') {
+          if (newSession?.user) {
+            setSessionExpiredNotice(null);
+          }
+          return;
+        }
+
+        if (event === 'SIGNED_IN' && newSession?.user) {
+          setSessionExpiredNotice(null);
+          setAuthBlockedReason(null);
+          // Avoid unmounting active UI (such as BusinessSetupWizard steps) when Supabase
+          // re-emits SIGNED_IN on initial hydration, tab focus, or token refresh for the same user.
+          if (initializedUserIdRef.current === newSession.user.id) {
+            return;
+          }
+          initializedUserIdRef.current = newSession.user.id;
+          setIsLoading(true);
+          await initializeUserBusiness(newSession.user);
+          if (isMounted) setIsLoading(false);
+        } else if (event === 'SIGNED_OUT') {
+          initializedUserIdRef.current = null;
+          setPlatformAdmin(null);
+          setPlatformViewActive(false);
+          setUserBusinesses([]);
+          setActiveSubscription(null);
+          setCreateNewBusinessModalOpen(false);
+          setActiveBusinessId('');
+          setActiveBranchId('');
+          setProducts([]);
+          setSales([]);
+          setPurchases([]);
+          setCustomers([]);
+          setSuppliers([]);
+          setExpenses([]);
+          setCustomerTransactions([]);
+          setSupplierTransactions([]);
+          setAccountTransactions([]);
+          setStockMovements([]);
+          setStockTransfers([]);
+          setIsBusinessConfigured(false);
+          setInitError(null);
+          setIsLoading(false);
+        }
+      });
+
+      if (!isMounted) {
+        subscription.unsubscribe();
+        return;
+      }
+      authSubscription = subscription;
 
       try {
         // Ensure any cached session with an expired access token is automatically refreshed
@@ -1737,68 +1807,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     initSession();
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (event, newSession) => {
-      if (!isMounted) return;
-
-      // Let initSession complete the verified initial session check before reacting to initial events.
-      if (!initResolved && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN')) {
-        return;
-      }
-
-      setSession(newSession);
-      setUser(newSession?.user ?? null);
-
-      if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'INITIAL_SESSION') {
-        if (newSession?.user) {
-          setSessionExpiredNotice(null);
-        }
-        return;
-      }
-
-      if (event === 'SIGNED_IN' && newSession?.user) {
-        setSessionExpiredNotice(null);
-        setAuthBlockedReason(null);
-        // Avoid unmounting active UI (such as BusinessSetupWizard steps) when Supabase
-        // re-emits SIGNED_IN on initial hydration, tab focus, or token refresh for the same user.
-        if (initializedUserIdRef.current === newSession.user.id) {
-          return;
-        }
-        initializedUserIdRef.current = newSession.user.id;
-        setIsLoading(true);
-        await initializeUserBusiness(newSession.user);
-        if (isMounted) setIsLoading(false);
-      } else if (event === 'SIGNED_OUT') {
-        initializedUserIdRef.current = null;
-        setPlatformAdmin(null);
-        setPlatformViewActive(false);
-        setUserBusinesses([]);
-        setActiveSubscription(null);
-        setCreateNewBusinessModalOpen(false);
-        setActiveBusinessId('');
-        setActiveBranchId('');
-        setProducts([]);
-        setSales([]);
-        setPurchases([]);
-        setCustomers([]);
-        setSuppliers([]);
-        setExpenses([]);
-        setCustomerTransactions([]);
-        setSupplierTransactions([]);
-        setAccountTransactions([]);
-        setStockMovements([]);
-        setStockTransfers([]);
-        setIsBusinessConfigured(false);
-        setInitError(null);
-        setIsLoading(false);
-      }
-    });
-
     return () => {
       isMounted = false;
       registerSessionExpiredHandler(null);
-      subscription.unsubscribe();
+      authSubscription?.unsubscribe();
     };
   }, [initializeUserBusiness]);
 

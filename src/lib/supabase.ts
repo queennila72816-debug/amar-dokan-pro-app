@@ -6,32 +6,27 @@ interface ProtivaPublicConfig {
   VITE_SUPABASE_PUBLISHABLE_KEY?: string;
 }
 
+export interface SupabaseRuntimeDiagnostics {
+  urlDetected: boolean;
+  publicKeyDetected: boolean;
+  urlFormatValid: boolean;
+  clientInitialized: boolean;
+  configured: boolean;
+}
+
 const cleanEnvValue = (value?: string): string =>
   (value || '').trim().replace(/^['"]+|['"]+$/g, '');
 
-const runtimePublicConfig: ProtivaPublicConfig =
-  (globalThis as typeof globalThis & { __PROTIVA_PUBLIC_CONFIG__?: ProtivaPublicConfig })
-    .__PROTIVA_PUBLIC_CONFIG__ ?? {};
+const normalizeSupabaseUrl = (value?: string): string =>
+  cleanEnvValue(value)
+    .replace(/\/rest\/v1\/?$/i, '')
+    .replace(/\/auth\/v1\/?$/i, '')
+    .replace(/\/+$/, '');
 
-const buildTimeUrl = cleanEnvValue(import.meta.env?.VITE_SUPABASE_URL);
-const runtimeUrl = cleanEnvValue(runtimePublicConfig.VITE_SUPABASE_URL);
-const rawUrl = buildTimeUrl || runtimeUrl;
-
-export const supabaseUrl = rawUrl
-  .replace(/\/rest\/v1\/?$/i, '')
-  .replace(/\/auth\/v1\/?$/i, '')
-  .replace(/\/+$/, '');
-
-const buildTimeAnonKey = cleanEnvValue(
-  import.meta.env?.VITE_SUPABASE_ANON_KEY || import.meta.env?.VITE_SUPABASE_PUBLISHABLE_KEY
-);
-const runtimeAnonKey = cleanEnvValue(
-  runtimePublicConfig.VITE_SUPABASE_ANON_KEY || runtimePublicConfig.VITE_SUPABASE_PUBLISHABLE_KEY
-);
-const candidateAnonKey = buildTimeAnonKey || runtimeAnonKey;
-
-// Never allow a secret/service-role key in browser configuration.
-export const supabaseAnonKey = candidateAnonKey.startsWith('sb_secret_') ? '' : candidateAnonKey;
+const sanitizePublicAnonKey = (value?: string): string => {
+  const cleaned = cleanEnvValue(value);
+  return cleaned.startsWith('sb_secret_') ? '' : cleaned;
+};
 
 const isValidHttpUrl = (value: string): boolean => {
   if (!value) return false;
@@ -48,22 +43,39 @@ const isValidHttpUrl = (value: string): boolean => {
   }
 };
 
-export const isSupabaseConfigured =
-  isValidHttpUrl(supabaseUrl) &&
-  supabaseAnonKey.length > 0 &&
-  !supabaseAnonKey.startsWith('placeholder-') &&
-  !supabaseAnonKey.includes('your-supabase-');
+const isValidPublicAnonKey = (value: string): boolean =>
+  value.length > 0 &&
+  !value.startsWith('placeholder-') &&
+  !value.includes('your-supabase-') &&
+  !value.startsWith('sb_secret_');
+
+const runtimePublicConfig: ProtivaPublicConfig =
+  (globalThis as typeof globalThis & { __PROTIVA_PUBLIC_CONFIG__?: ProtivaPublicConfig })
+    .__PROTIVA_PUBLIC_CONFIG__ ?? {};
+
+const buildTimeUrl = normalizeSupabaseUrl(import.meta.env?.VITE_SUPABASE_URL);
+const windowRuntimeUrl = normalizeSupabaseUrl(runtimePublicConfig.VITE_SUPABASE_URL);
+
+const buildTimeAnonKey = sanitizePublicAnonKey(
+  import.meta.env?.VITE_SUPABASE_ANON_KEY || import.meta.env?.VITE_SUPABASE_PUBLISHABLE_KEY
+);
+const windowRuntimeAnonKey = sanitizePublicAnonKey(
+  runtimePublicConfig.VITE_SUPABASE_ANON_KEY || runtimePublicConfig.VITE_SUPABASE_PUBLISHABLE_KEY
+);
+
+export let supabaseUrl = buildTimeUrl || windowRuntimeUrl;
+export let supabaseAnonKey = buildTimeAnonKey || windowRuntimeAnonKey;
+export let isSupabaseConfigured =
+  isValidHttpUrl(supabaseUrl) && isValidPublicAnonKey(supabaseAnonKey);
 
 const globalScope = globalThis as typeof globalThis & {
   __adpSupabaseClient?: SupabaseClient;
+  __adpSupabaseClientConfigured?: boolean;
   __adpEphemeralAuthClient?: SupabaseClient;
 };
 
-const resolvedUrl = isSupabaseConfigured ? supabaseUrl : 'https://placeholder.supabase.co';
-const resolvedKey = isSupabaseConfigured ? supabaseAnonKey : 'placeholder-anon-key';
-
-if (!globalScope.__adpSupabaseClient) {
-  globalScope.__adpSupabaseClient = createClient(resolvedUrl, resolvedKey, {
+function createConfiguredClient(url: string, key: string): SupabaseClient {
+  return createClient(url, key, {
     auth: {
       persistSession: true,
       autoRefreshToken: true,
@@ -72,10 +84,106 @@ if (!globalScope.__adpSupabaseClient) {
   });
 }
 
+if (!globalScope.__adpSupabaseClient || globalScope.__adpSupabaseClientConfigured !== isSupabaseConfigured) {
+  const resolvedUrl = isSupabaseConfigured ? supabaseUrl : 'https://placeholder.supabase.co';
+  const resolvedKey = isSupabaseConfigured ? supabaseAnonKey : 'placeholder-anon-key';
+  globalScope.__adpSupabaseClient = createConfiguredClient(resolvedUrl, resolvedKey);
+  globalScope.__adpSupabaseClientConfigured = isSupabaseConfigured;
+}
+
 /**
  * Single shared Supabase client instance across the entire frontend runtime.
  */
-export const supabase: SupabaseClient = globalScope.__adpSupabaseClient;
+export let supabase: SupabaseClient = globalScope.__adpSupabaseClient;
+
+let runtimeHydrationPromise: Promise<boolean> | null = null;
+
+function applyRuntimePublicConfig(rawUrlInput?: string, rawKeyInput?: string): boolean {
+  const nextUrl = normalizeSupabaseUrl(rawUrlInput);
+  const nextKey = sanitizePublicAnonKey(rawKeyInput);
+  if (!isValidHttpUrl(nextUrl) || !isValidPublicAnonKey(nextKey)) {
+    return false;
+  }
+
+  supabaseUrl = nextUrl;
+  supabaseAnonKey = nextKey;
+  isSupabaseConfigured = true;
+  globalScope.__adpSupabaseClient = createConfiguredClient(supabaseUrl, supabaseAnonKey);
+  globalScope.__adpSupabaseClientConfigured = true;
+  globalScope.__adpEphemeralAuthClient = undefined;
+  supabase = globalScope.__adpSupabaseClient;
+  return true;
+}
+
+/**
+ * Ensures runtime public Supabase configuration is checked before deciding the app is unconfigured.
+ * Re-reads window.__PROTIVA_PUBLIC_CONFIG__ and falls back to /api/public-config when needed.
+ */
+export async function ensureSupabaseRuntimeConfigured(): Promise<boolean> {
+  if (isSupabaseConfigured && globalScope.__adpSupabaseClientConfigured) {
+    return true;
+  }
+
+  const latestWindowConfig =
+    (globalThis as typeof globalThis & { __PROTIVA_PUBLIC_CONFIG__?: ProtivaPublicConfig })
+      .__PROTIVA_PUBLIC_CONFIG__ ?? {};
+  if (
+    applyRuntimePublicConfig(
+      latestWindowConfig.VITE_SUPABASE_URL,
+      latestWindowConfig.VITE_SUPABASE_ANON_KEY || latestWindowConfig.VITE_SUPABASE_PUBLISHABLE_KEY
+    )
+  ) {
+    return true;
+  }
+
+  if (typeof fetch !== 'function' || typeof window === 'undefined') {
+    return isSupabaseConfigured;
+  }
+
+  if (runtimeHydrationPromise) {
+    return runtimeHydrationPromise;
+  }
+
+  runtimeHydrationPromise = (async () => {
+    try {
+      const res = await fetch('/api/public-config', {
+        method: 'GET',
+        cache: 'no-store',
+        headers: { Accept: 'application/json' },
+      });
+      if (!res.ok) return isSupabaseConfigured;
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      if (!contentType.includes('application/json')) return isSupabaseConfigured;
+      const payload = (await res.json()) as ProtivaPublicConfig;
+      return applyRuntimePublicConfig(
+        payload?.VITE_SUPABASE_URL,
+        payload?.VITE_SUPABASE_ANON_KEY || payload?.VITE_SUPABASE_PUBLISHABLE_KEY
+      );
+    } catch {
+      return isSupabaseConfigured;
+    } finally {
+      runtimeHydrationPromise = null;
+    }
+  })();
+
+  return runtimeHydrationPromise;
+}
+
+export function getSupabaseDiagnostics(): SupabaseRuntimeDiagnostics {
+  const urlDetected = supabaseUrl.length > 0;
+  const publicKeyDetected = isValidPublicAnonKey(supabaseAnonKey);
+  const urlFormatValid = isValidHttpUrl(supabaseUrl);
+  const clientInitialized = Boolean(supabase && globalScope.__adpSupabaseClientConfigured);
+  const configured = urlDetected && publicKeyDetected && urlFormatValid && clientInitialized;
+
+  return {
+    urlDetected,
+    publicKeyDetected,
+    urlFormatValid,
+    clientInitialized,
+    configured,
+  };
+}
 
 /**
  * Isolated, non-persisting auth client used exclusively for creating staff/seller Auth accounts
@@ -84,6 +192,8 @@ export const supabase: SupabaseClient = globalScope.__adpSupabaseClient;
  */
 export function getEphemeralAuthClient(): SupabaseClient {
   if (!globalScope.__adpEphemeralAuthClient) {
+    const resolvedUrl = isSupabaseConfigured ? supabaseUrl : 'https://placeholder.supabase.co';
+    const resolvedKey = isSupabaseConfigured ? supabaseAnonKey : 'placeholder-anon-key';
     globalScope.__adpEphemeralAuthClient = createClient(resolvedUrl, resolvedKey, {
       auth: {
         storageKey: 'adp-ephemeral-staff-signup',
