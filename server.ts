@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
@@ -3017,8 +3018,23 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
+    const getPublicBrowserConfig = () => {
+      const clean = (v?: string) => (v || '').trim().replace(/^['"]+|['"]+$/g, '');
+      const url = clean(process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL);
+      const anon = clean(
+        process.env.VITE_SUPABASE_ANON_KEY ||
+          process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+          process.env.SUPABASE_ANON_KEY
+      );
+      return {
+        VITE_SUPABASE_URL: url,
+        VITE_SUPABASE_ANON_KEY: anon.startsWith('sb_secret_') ? '' : anon,
+      };
+    };
+
     app.use(
       express.static(distDir, {
+        index: false,
         setHeaders(res, filePath) {
           if (filePath.endsWith('.html') || filePath.endsWith('.webmanifest') || filePath.endsWith('sw.js')) {
             res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -3031,7 +3047,18 @@ async function startServer() {
     );
     app.get('*', (_req, res) => {
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      res.sendFile(path.join(distDir, 'index.html'));
+      const indexPath = path.join(distDir, 'index.html');
+      try {
+        const html = fs.readFileSync(indexPath, 'utf8');
+        const configJson = JSON.stringify(getPublicBrowserConfig()).replace(/</g, '\\u003c');
+        const injection = `<script>window.__PROTIVA_PUBLIC_CONFIG__=${configJson};</script>`;
+        const hydratedHtml = html.includes('</head>')
+          ? html.replace('</head>', `${injection}</head>`)
+          : `${injection}${html}`;
+        res.type('html').send(hydratedHtml);
+      } catch {
+        res.sendFile(indexPath);
+      }
     });
   }
 

@@ -1,16 +1,37 @@
 import { createClient, Session, SupabaseClient } from '@supabase/supabase-js';
 
-const viteEnv = (import.meta as { env?: Record<string, string | undefined> }).env ?? {};
-const rawUrl = (viteEnv.VITE_SUPABASE_URL || '').trim();
+interface ProtivaPublicConfig {
+  VITE_SUPABASE_URL?: string;
+  VITE_SUPABASE_ANON_KEY?: string;
+  VITE_SUPABASE_PUBLISHABLE_KEY?: string;
+}
+
+const cleanEnvValue = (value?: string): string =>
+  (value || '').trim().replace(/^['"]+|['"]+$/g, '');
+
+const runtimePublicConfig: ProtivaPublicConfig =
+  (globalThis as typeof globalThis & { __PROTIVA_PUBLIC_CONFIG__?: ProtivaPublicConfig })
+    .__PROTIVA_PUBLIC_CONFIG__ ?? {};
+
+const buildTimeUrl = cleanEnvValue(import.meta.env?.VITE_SUPABASE_URL);
+const runtimeUrl = cleanEnvValue(runtimePublicConfig.VITE_SUPABASE_URL);
+const rawUrl = buildTimeUrl || runtimeUrl;
+
 export const supabaseUrl = rawUrl
-  .replace(/\/rest\/v1\/?$/, '')
+  .replace(/\/rest\/v1\/?$/i, '')
+  .replace(/\/auth\/v1\/?$/i, '')
   .replace(/\/+$/, '');
 
-export const supabaseAnonKey = (
-  viteEnv.VITE_SUPABASE_ANON_KEY ||
-  viteEnv.VITE_SUPABASE_PUBLISHABLE_KEY ||
-  ''
-).trim();
+const buildTimeAnonKey = cleanEnvValue(
+  import.meta.env?.VITE_SUPABASE_ANON_KEY || import.meta.env?.VITE_SUPABASE_PUBLISHABLE_KEY
+);
+const runtimeAnonKey = cleanEnvValue(
+  runtimePublicConfig.VITE_SUPABASE_ANON_KEY || runtimePublicConfig.VITE_SUPABASE_PUBLISHABLE_KEY
+);
+const candidateAnonKey = buildTimeAnonKey || runtimeAnonKey;
+
+// Never allow a secret/service-role key in browser configuration.
+export const supabaseAnonKey = candidateAnonKey.startsWith('sb_secret_') ? '' : candidateAnonKey;
 
 const isValidHttpUrl = (value: string): boolean => {
   if (!value) return false;

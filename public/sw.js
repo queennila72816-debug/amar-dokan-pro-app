@@ -1,5 +1,5 @@
 // PROTIVA PWA Service Worker — safe network-first navigation & immutable asset caching
-const CACHE_NAME = 'protiva-pwa-v1';
+const CACHE_NAME = 'protiva-pwa-v2';
 const APP_SHELL_ASSETS = [
   '/protiva-logo.png',
   '/protiva-symbol.png',

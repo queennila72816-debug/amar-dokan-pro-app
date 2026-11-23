@@ -2,10 +2,33 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import autoprefixer from 'autoprefixer';
 import path from 'path';
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import { COMPAT_BROWSERSLIST, createCssCompatPostcssPlugin } from './vite.cssCompat.ts';
 
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
+  const loadedEnv = loadEnv(mode, process.cwd(), '');
+  const publicSupabaseUrl = (
+    process.env.VITE_SUPABASE_URL ||
+    loadedEnv.VITE_SUPABASE_URL ||
+    process.env.SUPABASE_URL ||
+    loadedEnv.SUPABASE_URL ||
+    ''
+  ).trim();
+  const publicSupabaseAnonKey = (
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    loadedEnv.VITE_SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    loadedEnv.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    ''
+  ).trim();
+
+  if (publicSupabaseUrl && !process.env.VITE_SUPABASE_URL) {
+    process.env.VITE_SUPABASE_URL = publicSupabaseUrl;
+  }
+  if (publicSupabaseAnonKey && !process.env.VITE_SUPABASE_ANON_KEY && !publicSupabaseAnonKey.startsWith('sb_secret_')) {
+    process.env.VITE_SUPABASE_ANON_KEY = publicSupabaseAnonKey;
+  }
+
   return {
     base: process.env.GITHUB_PAGES ? '/Amar-Dokan-Pro/' : '/',
 
