@@ -33,6 +33,17 @@ export const MODULE_THEMES: Record<string, ModuleThemeConfig> = {
     headerAccentText: 'text-[#087F8C]',
     pillBg: 'bg-[#087F8C]/15 text-[#087F8C] dark:text-[#2DD4BF]',
   },
+  scanner: {
+    id: 'scanner',
+    label: 'Barcode & QR Scanner',
+    hex: '#087F8C',
+    sidebarActiveBg: 'bg-[#162749] bg-gradient-to-r from-[#087F8C]/30 to-[#FF9D32]/12 text-white',
+    sidebarActiveBorder: 'border-[#087F8C]/60',
+    sidebarIconColor: 'text-[#FF9D32]',
+    sidebarBadgeBg: 'bg-[#FF9D32] text-[#101B3F]',
+    headerAccentText: 'text-[#087F8C]',
+    pillBg: 'bg-[#087F8C]/15 text-[#087F8C] dark:text-[#2DD4BF]',
+  },
   sales: {
     id: 'sales',
     label: 'Sales & Invoices',

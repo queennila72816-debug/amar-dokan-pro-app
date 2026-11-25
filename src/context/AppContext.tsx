@@ -24,6 +24,7 @@ import {
   Seller,
   BusinessSetupData,
   ComboOffer,
+  ComboOfferUsage,
   OfferStatus,
   AccountStatus,
   PermissionAction,
@@ -139,6 +140,12 @@ interface AppContextType {
   setPendingCatalogProductId: (productId: string | null) => void;
   pendingPosSelection: { productId: string; variantId?: string; colorId?: string } | null;
   setPendingPosSelection: (selection: { productId: string; variantId?: string; colorId?: string } | null) => void;
+  pendingLabelSelection: { productId: string; variantId?: string } | null;
+  setPendingLabelSelection: (selection: { productId: string; variantId?: string } | null) => void;
+  pendingNewProductBarcode: string | null;
+  setPendingNewProductBarcode: (barcode: string | null) => void;
+  pendingEditProductId: string | null;
+  setPendingEditProductId: (productId: string | null) => void;
   addProductColor: (productId: string, colorName: string, colorHex?: string) => Promise<ProductColor>;
   updateProductColor: (
     productId: string,
@@ -185,8 +192,16 @@ interface AppContextType {
   recordSale: (saleData: Omit<Sale, 'id' | 'invoiceNumber' | 'date' | 'status'>) => Promise<Sale>;
   recordSaleReturn: (
     saleId: string,
-    items: { productId: string; variantId?: string; quantity: number; unitPrice: number; reason: string }[],
-    refundType: 'cash' | 'adjust_due'
+    items: {
+      productId: string;
+      variantId?: string;
+      quantity: number;
+      unitPrice: number;
+      reason: string;
+      condition?: 'sellable' | 'damaged';
+    }[],
+    refundType: 'cash' | 'adjust_due',
+    returnTxId?: string
   ) => Promise<void>;
   quickRefundSale: (saleId: string, reason?: string) => Promise<boolean>;
   voidSale: (saleId: string, reason?: string) => Promise<boolean>;
@@ -380,10 +395,12 @@ interface AppContextType {
 
   // Combo & Bundle Offers
   comboOffers: ComboOffer[];
+  comboUsageLogs: ComboOfferUsage[];
   addComboOffer: (offer: Omit<ComboOffer, 'id' | 'createdAt' | 'updatedAt' | 'usageCount'>) => Promise<ComboOffer>;
   updateComboOffer: (id: string, updates: Partial<ComboOffer>) => Promise<void>;
   toggleOfferStatus: (id: string, status: OfferStatus) => Promise<void>;
   archiveComboOffer: (id: string) => Promise<void>;
+  deleteComboOffer: (id: string) => Promise<boolean>;
   reloadComboOffers: () => Promise<void>;
 
   canAccess: (module: LegacyAppModule) => boolean;
@@ -487,6 +504,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [comboOffers, setComboOffers] = useState<ComboOffer[]>([]);
+  const [comboUsageLogs, setComboUsageLogs] = useState<ComboOfferUsage[]>([]);
+  const processedClientTxIdsRef = useRef<Map<string, Sale>>(new Map());
+  const inFlightClientTxIdsRef = useRef<Set<string>>(new Set());
+  const processedReturnTxIdsRef = useRef<Set<string>>(new Set());
 
   // Multi-Tenant SaaS & Platform Super Admin State
   const [platformAdmin, setPlatformAdmin] = useState<PlatformAdmin | null>(null);
@@ -882,6 +903,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         transfersRes,
         logsRes,
         offersRes,
+        offerUsageRes,
         rolesRes,
         employeesRes,
         activityRes,
@@ -900,6 +922,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         inventoryService.fetchStockTransfers(businessId),
         auditService.fetchLogs(businessId),
         comboOfferService.fetchOffers(businessId),
+        comboOfferService.fetchUsageLogs(businessId),
         staffRbacService.fetchRolesAndPermissions(businessId),
         staffRbacService.fetchEmployees(businessId),
         staffRbacService.fetchActivityLogs(businessId),
@@ -921,6 +944,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (transfersRes.status === 'fulfilled') setStockTransfers(transfersRes.value);
       if (logsRes.status === 'fulfilled') setAuditLogs(logsRes.value);
       if (offersRes.status === 'fulfilled') setComboOffers(offersRes.value);
+      if (offerUsageRes.status === 'fulfilled') setComboUsageLogs(offerUsageRes.value);
       if (rolesRes.status === 'fulfilled') setRoles(rolesRes.value);
       if (employeesRes.status === 'fulfilled') setEmployees(employeesRes.value);
       if (activityRes.status === 'fulfilled') setActivityLogs(activityRes.value);
@@ -978,21 +1002,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setStockAdjustments([]);
         setStockTransfers([]);
         setAuditLogs([]);
-        setComboOffers([]);
-        setEmployees([]);
-        setSellers([]);
-        setRoles(createDefaultRolesForBusiness('local'));
-        setActivityLogs([]);
-        setSettings(initialSettings);
-        return;
-      }
+      setComboOffers([]);
+      setComboUsageLogs([]);
+      setEmployees([]);
+      setSellers([]);
+      setRoles(createDefaultRolesForBusiness('local'));
+      setActivityLogs([]);
+      setSettings(initialSettings);
+      return;
+    }
 
-      setIsBusinessConfigured(true);
-      if (storedBizId) setActiveBusinessId(storedBizId);
-      staffRbacService.fetchRolesAndPermissions(storedBizId || 'local').then(setRoles);
-      staffRbacService.fetchEmployees(storedBizId || 'local').then(setEmployees);
-      staffRbacService.fetchActivityLogs(storedBizId || 'local').then(setActivityLogs);
-      comboOfferService.fetchOffers(storedBizId || 'default-business').then(setComboOffers);
+    setIsBusinessConfigured(true);
+    if (storedBizId) setActiveBusinessId(storedBizId);
+    staffRbacService.fetchRolesAndPermissions(storedBizId || 'local').then(setRoles);
+    staffRbacService.fetchEmployees(storedBizId || 'local').then(setEmployees);
+    staffRbacService.fetchActivityLogs(storedBizId || 'local').then(setActivityLogs);
+    comboOfferService.fetchOffers(storedBizId || 'default-business').then(setComboOffers);
+    comboOfferService.fetchUsageLogs(storedBizId || 'default-business').then(setComboUsageLogs);
 
       const bizPrefix = storedBizId ? `${STORAGE_KEY}_${storedBizId}` : STORAGE_KEY;
 
@@ -1820,6 +1846,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     variantId?: string;
     colorId?: string;
   } | null>(null);
+  const [pendingLabelSelection, setPendingLabelSelection] = useState<{
+    productId: string;
+    variantId?: string;
+  } | null>(null);
+  const [pendingNewProductBarcode, setPendingNewProductBarcode] = useState<string | null>(null);
+  const [pendingEditProductId, setPendingEditProductId] = useState<string | null>(null);
 
   const reloadProducts = useCallback(async () => {
     if (activeBusinessId && isSupabaseConfigured) {
@@ -3357,126 +3389,203 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return found ? found.id : accounts[0]?.id || '';
   };
 
-  // Sales & POS (Database-first atomic RPC execution)
+  // Sales & POS (Database-first atomic RPC execution + clientTxId idempotency + aggregate stock validation)
   const recordSale = async (
     saleData: Omit<Sale, 'id' | 'invoiceNumber' | 'date' | 'status'>
   ): Promise<Sale> => {
-    const now = new Date().toISOString();
-    const invoiceNumber = generateInvoiceNumber('INV');
-    const status: Sale['status'] =
-      saleData.due <= 0 ? 'paid' : saleData.paid > 0 ? 'partial' : 'due';
-
-    const resolvedContextEmployee =
-      (currentEmployee &&
-      (!currentEmployee.userId || !user?.id || currentEmployee.userId === user.id) &&
-      (employees.length === 0 || employees.some(e => e.id === currentEmployee.id))
-        ? currentEmployee
-        : undefined) ||
-      (user?.id ? employees.find(e => e.userId === user.id) : undefined);
-
-    const explicitValidEmployee =
-      saleData.employeeId &&
-      (employees.some(e => e.id === saleData.employeeId) ||
-        (resolvedContextEmployee?.id === saleData.employeeId && saleData.employeeId !== user?.id))
-        ? employees.find(e => e.id === saleData.employeeId) || resolvedContextEmployee
-        : undefined;
-
-    const finalEmployee = explicitValidEmployee || resolvedContextEmployee;
-
-    const currentSellerName =
-      saleData.employeeName ||
-      saleData.sellerName ||
-      finalEmployee?.name ||
-      user?.user_metadata?.full_name ||
-      user?.email?.split('@')[0] ||
-      (isAdmin ? 'Admin' : 'Staff');
-    const currentSellerId = saleData.sellerId || user?.id;
-    const currentEmployeeId = isSupabaseConfigured
-      ? finalEmployee?.id
-      : saleData.employeeId || finalEmployee?.id || user?.id;
-    const currentEmployeeCode = saleData.employeeCode || finalEmployee?.employeeCode;
-
-    const draftSale: Sale = {
-      ...saleData,
-      id: `sale-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      invoiceNumber,
-      date: now,
-      status,
-      employeeId: currentEmployeeId,
-      employeeCode: currentEmployeeCode,
-      employeeName: currentSellerName,
-      sellerId: currentSellerId,
-      sellerName: currentSellerName,
-      servedBy: saleData.servedBy || currentSellerName,
-    };
-
-    if (isSupabaseConfigured) {
-      ensureCloudContext();
-      try {
-        const result = await salesService.completeSale(draftSale, activeBusinessId);
-        const persistedSaleId = result.saleId || draftSale.id;
-        const persistedInvoice = result.invoiceNumber || invoiceNumber;
-
-        if (draftSale.appliedOffers && draftSale.appliedOffers.length > 0) {
-          for (const appOffer of draftSale.appliedOffers) {
-            await comboOfferService
-              .recordOfferUsage(
-                appOffer.offerId,
-                persistedSaleId,
-                persistedInvoice,
-                appOffer.discountAmount,
-                draftSale.total,
-                draftSale.items.reduce((sum, it) => sum + (it.purchasePrice || 0) * it.quantity, 0),
-                activeBusinessId,
-                draftSale.branchId,
-                draftSale.customerId,
-                draftSale.customerName
-              )
-              .catch(err => console.warn('Offer usage tracking notice:', err));
-          }
-          const updatedOffers = await comboOfferService.fetchOffers(activeBusinessId).catch(() => comboOffers);
-          setComboOffers(updatedOffers);
-        }
-
-        await refreshAfterSale(activeBusinessId);
-        const canonicalSale: Sale = {
-          ...draftSale,
-          id: persistedSaleId,
-          invoiceNumber: persistedInvoice,
-        };
-
-        setSellers(prevSellers =>
-          prevSellers.map(s =>
-            s.id === currentSellerId || s.fullName === currentSellerName || s.username === currentSellerName
-              ? {
-                  ...s,
-                  totalSalesCount: (s.totalSalesCount || 0) + 1,
-                  totalSalesAmount: (s.totalSalesAmount || 0) + canonicalSale.total,
-                }
-              : s
-          )
-        );
-
-        addAuditLog(
-          'SALE_CREATED',
-          'sale',
-          canonicalSale.id,
-          `Sale completed: ${persistedInvoice}, Total: ৳${canonicalSale.total} by ${currentSellerName}`
-        );
-        logUserActivity(
-          'SALE_CREATED',
-          'pos_new_sale',
-          'create',
-          `Created invoice ${persistedInvoice} · Amount ৳${canonicalSale.total} · Discount ৳${canonicalSale.discount} · ${canonicalSale.paymentMethod.toUpperCase()}`,
-          'sale',
-          persistedInvoice
-        );
-
-        return canonicalSale;
-      } catch (err) {
-        throw raiseDbError(err, 'Failed to record sale transaction.');
+    const clientTxId = saleData.clientTxId?.trim();
+    if (clientTxId) {
+      const existingCompleted =
+        processedClientTxIdsRef.current.get(clientTxId) ||
+        sales.find(s => s.clientTxId === clientTxId);
+      if (existingCompleted) {
+        return existingCompleted;
       }
+      if (inFlightClientTxIdsRef.current.has(clientTxId)) {
+        throw new Error('This checkout transaction is already being processed.');
+      }
+      inFlightClientTxIdsRef.current.add(clientTxId);
     }
+
+    try {
+      // Pre-validate aggregate stock across all regular + combo items for exact branch
+      const stockCheck = comboOfferService.validateAggregateCartStock(
+        saleData.items.map(it => ({
+          productId: it.productId,
+          variantId: it.variantId,
+          productName: it.productName,
+          variantDetails: it.variantDetails,
+          quantity: it.quantity,
+        })),
+        products,
+        saleData.branchId || activeBranchId
+      );
+      if (!stockCheck.valid) {
+        throw new Error(stockCheck.errors[0] || 'Insufficient inventory stock for one or more items.');
+      }
+
+      const now = new Date().toISOString();
+      const invoiceNumber = generateInvoiceNumber('INV');
+      const status: Sale['status'] =
+        saleData.due <= 0 ? 'paid' : saleData.paid > 0 ? 'partial' : 'due';
+
+      const resolvedContextEmployee =
+        (currentEmployee &&
+        (!currentEmployee.userId || !user?.id || currentEmployee.userId === user.id) &&
+        (employees.length === 0 || employees.some(e => e.id === currentEmployee.id))
+          ? currentEmployee
+          : undefined) ||
+        (user?.id ? employees.find(e => e.userId === user.id) : undefined);
+
+      const explicitValidEmployee =
+        saleData.employeeId &&
+        (employees.some(e => e.id === saleData.employeeId) ||
+          (resolvedContextEmployee?.id === saleData.employeeId && saleData.employeeId !== user?.id))
+          ? employees.find(e => e.id === saleData.employeeId) || resolvedContextEmployee
+          : undefined;
+
+      const finalEmployee = explicitValidEmployee || resolvedContextEmployee;
+
+      const currentSellerName =
+        saleData.employeeName ||
+        saleData.sellerName ||
+        finalEmployee?.name ||
+        user?.user_metadata?.full_name ||
+        user?.email?.split('@')[0] ||
+        (isAdmin ? 'Admin' : 'Staff');
+      const currentSellerId = saleData.sellerId || user?.id;
+      const currentEmployeeId = isSupabaseConfigured
+        ? finalEmployee?.id
+        : saleData.employeeId || finalEmployee?.id || user?.id;
+      const currentEmployeeCode = saleData.employeeCode || finalEmployee?.employeeCode;
+
+      const draftSale: Sale = {
+        ...saleData,
+        id: `sale-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        invoiceNumber,
+        date: now,
+        status,
+        employeeId: currentEmployeeId,
+        employeeCode: currentEmployeeCode,
+        employeeName: currentSellerName,
+        sellerId: currentSellerId,
+        sellerName: currentSellerName,
+        servedBy: saleData.servedBy || currentSellerName,
+      };
+
+      if (isSupabaseConfigured) {
+        ensureCloudContext();
+        try {
+          const result = await salesService.completeSale(draftSale, activeBusinessId);
+          const persistedSaleId = result.saleId || draftSale.id;
+          const persistedInvoice = result.invoiceNumber || invoiceNumber;
+
+          if (!result.idempotentHit && draftSale.appliedOffers && draftSale.appliedOffers.length > 0) {
+            for (const appOffer of draftSale.appliedOffers) {
+              const pkg = draftSale.comboPackages?.find(
+                p => p.offerId === appOffer.offerId && (!appOffer.comboInstanceId || p.instanceId === appOffer.comboInstanceId)
+              );
+              const comboItems = draftSale.items.filter(
+                it =>
+                  it.comboOfferId === appOffer.offerId &&
+                  (!appOffer.comboInstanceId || it.comboInstanceId === appOffer.comboInstanceId)
+              );
+              const pkgRevenue =
+                pkg?.lineTotal ??
+                (comboItems.length > 0
+                  ? comboItems.reduce((s, it) => s + it.total, 0)
+                  : draftSale.total);
+              const pkgCogs =
+                comboItems.length > 0
+                  ? comboItems.reduce((s, it) => s + (it.purchasePrice || 0) * it.quantity, 0)
+                  : draftSale.items.reduce((sum, it) => sum + (it.purchasePrice || 0) * it.quantity, 0);
+
+              await comboOfferService
+                .recordOfferUsage(
+                  appOffer.offerId,
+                  persistedSaleId,
+                  persistedInvoice,
+                  appOffer.discountAmount,
+                  pkgRevenue,
+                  pkgCogs,
+                  activeBusinessId,
+                  draftSale.branchId,
+                  draftSale.customerId,
+                  draftSale.customerName,
+                  {
+                    comboQuantity: appOffer.comboQuantity || pkg?.quantity || 1,
+                    comboInstanceId: appOffer.comboInstanceId || pkg?.instanceId,
+                    sellerId: currentSellerId,
+                    clientTxId,
+                    offerName: appOffer.offerName,
+                    components: pkg?.components.map(c => ({
+                      productId: c.productId,
+                      productName: c.productName,
+                      variantId: c.variantId,
+                      variantDetails: c.variantDetails,
+                      sku: c.sku,
+                      qtyPerCombo: c.qtyPerCombo,
+                      totalQtyDeducted: c.totalQty,
+                      allocatedUnitPrice: c.allocatedUnitPrice,
+                      allocatedTotal: c.allocatedTotal,
+                    })),
+                  }
+                )
+                .catch(err => console.warn('Offer usage tracking notice:', err));
+            }
+            const [updatedOffers, updatedUsageLogs] = await Promise.all([
+              comboOfferService.fetchOffers(activeBusinessId).catch(() => comboOffers),
+              comboOfferService.fetchUsageLogs(activeBusinessId).catch(() => comboUsageLogs),
+            ]);
+            setComboOffers(updatedOffers);
+            setComboUsageLogs(updatedUsageLogs);
+          }
+
+          await refreshAfterSale(activeBusinessId);
+          const canonicalSale: Sale = {
+            ...draftSale,
+            id: persistedSaleId,
+            invoiceNumber: persistedInvoice,
+          };
+
+          if (clientTxId) {
+            processedClientTxIdsRef.current.set(clientTxId, canonicalSale);
+          }
+
+          if (!result.idempotentHit) {
+            setSellers(prevSellers =>
+              prevSellers.map(s =>
+                s.id === currentSellerId || s.fullName === currentSellerName || s.username === currentSellerName
+                  ? {
+                      ...s,
+                      totalSalesCount: (s.totalSalesCount || 0) + 1,
+                      totalSalesAmount: (s.totalSalesAmount || 0) + canonicalSale.total,
+                    }
+                  : s
+              )
+            );
+
+            addAuditLog(
+              'SALE_CREATED',
+              'sale',
+              canonicalSale.id,
+              `Sale completed: ${persistedInvoice}, Total: ৳${canonicalSale.total} by ${currentSellerName}`
+            );
+            logUserActivity(
+              'SALE_CREATED',
+              'pos_new_sale',
+              'create',
+              `Created invoice ${persistedInvoice} · Amount ৳${canonicalSale.total} · Discount ৳${canonicalSale.discount} · ${canonicalSale.paymentMethod.toUpperCase()}`,
+              'sale',
+              persistedInvoice
+            );
+          }
+
+          return canonicalSale;
+        } catch (err) {
+          throw raiseDbError(err, 'Failed to record sale transaction.');
+        }
+      }
 
     // Local offline fallback mode (when Supabase is not configured)
     const saleStockMoves: StockMovement[] = [];
@@ -3592,69 +3701,126 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
     }
-    if (draftSale.appliedOffers && draftSale.appliedOffers.length > 0) {
-      const offerBizId = activeBusinessId || 'default-business';
-      const totalCogs = draftSale.items.reduce((sum, it) => sum + (it.purchasePrice || 0) * it.quantity, 0);
-      for (const appOffer of draftSale.appliedOffers) {
-        await comboOfferService
-          .recordOfferUsage(
-            appOffer.offerId,
-            draftSale.id,
-            invoiceNumber,
-            appOffer.discountAmount,
-            draftSale.total,
-            totalCogs,
-            offerBizId,
-            draftSale.branchId,
-            draftSale.customerId,
-            draftSale.customerName
-          )
-          .catch(() => {});
+      if (draftSale.appliedOffers && draftSale.appliedOffers.length > 0) {
+        const offerBizId = activeBusinessId || 'default-business';
+        const qtyAddedMap = new Map<string, number>();
+
+        for (const appOffer of draftSale.appliedOffers) {
+          const pkg = draftSale.comboPackages?.find(
+            p => p.offerId === appOffer.offerId && (!appOffer.comboInstanceId || p.instanceId === appOffer.comboInstanceId)
+          );
+          const comboItems = draftSale.items.filter(
+            it =>
+              it.comboOfferId === appOffer.offerId &&
+              (!appOffer.comboInstanceId || it.comboInstanceId === appOffer.comboInstanceId)
+          );
+          const pkgQty = appOffer.comboQuantity || pkg?.quantity || 1;
+          qtyAddedMap.set(appOffer.offerId, (qtyAddedMap.get(appOffer.offerId) || 0) + pkgQty);
+
+          const pkgRevenue =
+            pkg?.lineTotal ??
+            (comboItems.length > 0
+              ? comboItems.reduce((s, it) => s + it.total, 0)
+              : draftSale.total);
+          const pkgCogs =
+            comboItems.length > 0
+              ? comboItems.reduce((s, it) => s + (it.purchasePrice || 0) * it.quantity, 0)
+              : draftSale.items.reduce((sum, it) => sum + (it.purchasePrice || 0) * it.quantity, 0);
+
+          await comboOfferService
+            .recordOfferUsage(
+              appOffer.offerId,
+              draftSale.id,
+              invoiceNumber,
+              appOffer.discountAmount,
+              pkgRevenue,
+              pkgCogs,
+              offerBizId,
+              draftSale.branchId,
+              draftSale.customerId,
+              draftSale.customerName,
+              {
+                comboQuantity: pkgQty,
+                comboInstanceId: appOffer.comboInstanceId || pkg?.instanceId,
+                sellerId: currentSellerId,
+                clientTxId,
+                offerName: appOffer.offerName,
+                components: pkg?.components.map(c => ({
+                  productId: c.productId,
+                  productName: c.productName,
+                  variantId: c.variantId,
+                  variantDetails: c.variantDetails,
+                  sku: c.sku,
+                  qtyPerCombo: c.qtyPerCombo,
+                  totalQtyDeducted: c.totalQty,
+                  allocatedUnitPrice: c.allocatedUnitPrice,
+                  allocatedTotal: c.allocatedTotal,
+                })),
+              }
+            )
+            .catch(() => {});
+        }
+        const [updatedOffers, updatedLogs] = await Promise.all([
+          comboOfferService.fetchOffers(offerBizId),
+          comboOfferService.fetchUsageLogs(offerBizId),
+        ]);
+        if (updatedOffers.length > 0) {
+          setComboOffers(updatedOffers);
+        } else {
+          setComboOffers(prev =>
+            prev.map(o => {
+              const inc = qtyAddedMap.get(o.id);
+              if (!inc) return o;
+              const nextCount = (o.usageCount || 0) + inc;
+              const isExpired = o.maxUsageLimit && nextCount >= o.maxUsageLimit;
+              return {
+                ...o,
+                usageCount: nextCount,
+                status: isExpired ? ('expired' as const) : o.status,
+                updatedAt: now,
+              };
+            })
+          );
+        }
+        setComboUsageLogs(updatedLogs);
       }
-      setComboOffers(prev =>
-        prev.map(o => {
-          const used = draftSale.appliedOffers?.some(a => a.offerId === o.id);
-          if (!used) return o;
-          const nextCount = (o.usageCount || 0) + 1;
-          const isExpired = o.maxUsageLimit && nextCount >= o.maxUsageLimit;
-          return {
-            ...o,
-            usageCount: nextCount,
-            status: isExpired ? ('expired' as const) : o.status,
-            updatedAt: now,
-          };
-        })
+
+      setSellers(prevSellers =>
+        prevSellers.map(s =>
+          s.id === currentSellerId || s.fullName === currentSellerName || s.username === currentSellerName
+            ? {
+                ...s,
+                totalSalesCount: (s.totalSalesCount || 0) + 1,
+                totalSalesAmount: (s.totalSalesAmount || 0) + draftSale.total,
+              }
+            : s
+        )
       );
+
+      if (clientTxId) {
+        processedClientTxIdsRef.current.set(clientTxId, draftSale);
+      }
+      setSales(prev => [draftSale, ...prev]);
+      addAuditLog(
+        'SALE_CREATED',
+        'sale',
+        draftSale.id,
+        `Sale completed: ${invoiceNumber}, Total: ৳${draftSale.total} by ${currentSellerName}`
+      );
+      logUserActivity(
+        'SALE_CREATED',
+        'pos_new_sale',
+        'create',
+        `Created invoice ${invoiceNumber} · Amount ৳${draftSale.total} · Discount ৳${draftSale.discount} · ${draftSale.paymentMethod.toUpperCase()}`,
+        'sale',
+        invoiceNumber
+      );
+      return draftSale;
+    } finally {
+      if (clientTxId) {
+        inFlightClientTxIdsRef.current.delete(clientTxId);
+      }
     }
-
-    setSellers(prevSellers =>
-      prevSellers.map(s =>
-        s.id === currentSellerId || s.fullName === currentSellerName || s.username === currentSellerName
-          ? {
-              ...s,
-              totalSalesCount: (s.totalSalesCount || 0) + 1,
-              totalSalesAmount: (s.totalSalesAmount || 0) + draftSale.total,
-            }
-          : s
-      )
-    );
-
-    setSales(prev => [draftSale, ...prev]);
-    addAuditLog(
-      'SALE_CREATED',
-      'sale',
-      draftSale.id,
-      `Sale completed: ${invoiceNumber}, Total: ৳${draftSale.total} by ${currentSellerName}`
-    );
-    logUserActivity(
-      'SALE_CREATED',
-      'pos_new_sale',
-      'create',
-      `Created invoice ${invoiceNumber} · Amount ৳${draftSale.total} · Discount ৳${draftSale.discount} · ${draftSale.paymentMethod.toUpperCase()}`,
-      'sale',
-      invoiceNumber
-    );
-    return draftSale;
   };
 
   // Quick Refund Sale
@@ -3671,7 +3837,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ensureCloudContext();
       try {
         await salesService.refundSale(saleId, { amount: sale.paid, reason: refundReason }, activeBusinessId);
-        await refreshAfterSale(activeBusinessId);
+        await Promise.all([
+          refreshAfterSale(activeBusinessId),
+          reloadComboOffers(),
+        ]);
       } catch (err) {
         throw raiseDbError(err, 'Failed to process sale refund in Supabase.');
       }
@@ -3711,6 +3880,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (restockMoves.length > 0) {
         setStockMovements(prev => [...restockMoves, ...prev]);
       }
+      await comboOfferService.reverseOfferUsageForSale(saleId, activeBusinessId || 'default-business');
+      await reloadComboOffers();
       if (sale.customerId) {
         const custTarget = customers.find(c => c.id === sale.customerId);
         setCustomers(prev =>
@@ -3803,7 +3974,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ensureCloudContext();
       try {
         await salesService.voidSale(saleId, voidReason, activeBusinessId);
-        await refreshAfterSale(activeBusinessId);
+        await Promise.all([
+          refreshAfterSale(activeBusinessId),
+          reloadComboOffers(),
+        ]);
       } catch (err) {
         throw raiseDbError(err, 'Failed to void sale invoice in Supabase.');
       }
@@ -3844,6 +4018,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (restockMoves.length > 0) {
         setStockMovements(prev => [...restockMoves, ...prev]);
       }
+      await comboOfferService.reverseOfferUsageForSale(saleId, activeBusinessId || 'default-business');
+      await reloadComboOffers();
       if (sale.customerId) {
         const custTarget = customers.find(c => c.id === sale.customerId);
         setCustomers(prev =>
@@ -3927,13 +4103,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const recordSaleReturn = async (
     saleId: string,
-    returnItems: { productId: string; variantId?: string; quantity: number; unitPrice: number; reason: string }[],
-    refundType: 'cash' | 'adjust_due'
+    returnItems: {
+      productId: string;
+      variantId?: string;
+      quantity: number;
+      unitPrice: number;
+      reason: string;
+      condition?: 'sellable' | 'damaged';
+    }[],
+    refundType: 'cash' | 'adjust_due',
+    returnTxId?: string
   ): Promise<void> => {
     const sale = sales.find(s => s.id === saleId);
     if (!sale) return;
 
-    const totalRefund = returnItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
+    const dedupKey = returnTxId?.trim();
+    if (dedupKey) {
+      if (processedReturnTxIdsRef.current.has(dedupKey)) {
+        return;
+      }
+      processedReturnTxIdsRef.current.add(dedupKey);
+    }
+
+    const totalRefund = Math.round(returnItems.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0) * 100) / 100;
     const now = new Date().toISOString();
 
     if (isSupabaseConfigured) {
@@ -3945,16 +4137,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           );
           return {
             productId: it.productId,
+            variantId: it.variantId,
             productName: saleItem?.productName || 'Item',
             quantity: it.quantity,
             unitPrice: it.unitPrice,
-            totalRefund: it.quantity * it.unitPrice,
+            totalRefund: Math.round(it.quantity * it.unitPrice * 100) / 100,
             reason: it.reason,
+            condition: it.condition || 'sellable',
           };
         });
-        await salesService.recordPartialReturn(saleId, mappedItems, refundType, activeBusinessId);
+        await salesService.recordPartialReturn(saleId, mappedItems, refundType, activeBusinessId, dedupKey);
         await refreshAfterSale(activeBusinessId);
       } catch (err) {
+        if (dedupKey) processedReturnTxIdsRef.current.delete(dedupKey);
         throw raiseDbError(err, 'Failed to record sale return in Supabase.');
       }
     } else {
@@ -3963,25 +4158,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         prev.map(prod => {
           const matched = returnItems.filter(it => it.productId === prod.id);
           if (matched.length === 0) return prod;
-          const retQty = matched.reduce((s, it) => s + it.quantity, 0);
+          const sellableMatched = matched.filter(it => it.condition !== 'damaged');
+          const damagedQty = matched
+            .filter(it => it.condition === 'damaged')
+            .reduce((s, it) => s + it.quantity, 0);
+          const retQty = sellableMatched.reduce((s, it) => s + it.quantity, 0);
           const nextStock = prod.currentStock + retQty;
-          restockMoves.push({
-            id: `sm-${Date.now()}-${prod.id}`,
-            productId: prod.id,
-            productName: prod.name,
-            date: now,
-            type: 'sale_return',
-            quantity: retQty,
-            previousStock: prod.currentStock,
-            newStock: nextStock,
-            reference: sale.invoiceNumber,
-            branchId: sale.branchId,
-            note: `Partial return (${sale.invoiceNumber})`,
-          });
+          if (retQty > 0) {
+            restockMoves.push({
+              id: `sm-${Date.now()}-${prod.id}-sellable`,
+              productId: prod.id,
+              productName: prod.name,
+              date: now,
+              type: 'sale_return',
+              quantity: retQty,
+              previousStock: prod.currentStock,
+              newStock: nextStock,
+              reference: sale.invoiceNumber,
+              branchId: sale.branchId,
+              note: `Partial return (${sale.invoiceNumber})`,
+            });
+          }
+          if (damagedQty > 0) {
+            restockMoves.push({
+              id: `sm-${Date.now()}-${prod.id}-damaged`,
+              productId: prod.id,
+              productName: prod.name,
+              date: now,
+              type: 'adjustment',
+              quantity: 0,
+              previousStock: nextStock,
+              newStock: nextStock,
+              reference: sale.invoiceNumber,
+              branchId: sale.branchId,
+              note: `Damaged return quarantined (${damagedQty} pcs) from ${sale.invoiceNumber}`,
+            });
+          }
           let nextVariants = prod.variants;
-          if (prod.hasVariants && prod.variants) {
+          if (prod.hasVariants && prod.variants && retQty > 0) {
             nextVariants = prod.variants.map(v => {
-              const varRetQty = matched
+              const varRetQty = sellableMatched
                 .filter(it => it.variantId === v.id)
                 .reduce((s, it) => s + it.quantity, 0);
               return varRetQty > 0 ? { ...v, stock: v.stock + varRetQty } : v;
@@ -5583,7 +5799,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ensureCloudContext();
       try {
         await salesService.deleteSale(saleId, activeBusinessId);
-        await refreshAfterSale(activeBusinessId);
+        await Promise.all([
+          refreshAfterSale(activeBusinessId),
+          reloadComboOffers(),
+        ]);
       } catch (err) {
         throw raiseDbError(err, 'Failed to delete sale invoice in Supabase.');
       }
@@ -5607,6 +5826,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             return { ...prod, currentStock: prod.currentStock + restoreQty, variants: nextVariants, updatedAt: now };
           })
         );
+        await comboOfferService.reverseOfferUsageForSale(saleId, activeBusinessId || 'default-business');
+        await reloadComboOffers();
         if (target.customerId) {
           setCustomers(prev =>
             prev.map(c =>
@@ -6030,10 +6251,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Combo & Bundle Offers
+  // Combo & Bundle Offers (RBAC-protected write mutations + full analytics sync)
   const addComboOffer = async (
     offerData: Omit<ComboOffer, 'id' | 'createdAt' | 'updatedAt' | 'usageCount'>
   ): Promise<ComboOffer> => {
+    if (!isAdmin && !hasPermission('product_management', 'create')) {
+      throw new Error('Unauthorized: Only Admin or Store Manager can create combo offers.');
+    }
     const businessId = activeBusinessId || 'default-business';
     const now = new Date().toISOString();
     const offerPayload: ComboOffer = {
@@ -6055,6 +6279,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateComboOffer = async (id: string, updates: Partial<ComboOffer>) => {
+    if (!isAdmin && !hasPermission('product_management', 'edit')) {
+      throw new Error('Unauthorized: Only Admin or Store Manager can edit combo offers.');
+    }
     const businessId = activeBusinessId || 'default-business';
     const existing = comboOffers.find(o => o.id === id);
     if (!existing) return;
@@ -6069,6 +6296,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const toggleOfferStatus = async (id: string, status: OfferStatus) => {
+    if (!isAdmin && !hasPermission('product_management', 'edit')) {
+      throw new Error('Unauthorized: Only Admin or Store Manager can change combo offer status.');
+    }
     const businessId = activeBusinessId || 'default-business';
     const existing = comboOffers.find(o => o.id === id);
     if (!existing) return;
@@ -6083,6 +6313,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const archiveComboOffer = async (id: string) => {
+    if (!isAdmin && !hasPermission('product_management', 'edit')) {
+      throw new Error('Unauthorized: Only Admin or Store Manager can archive combo offers.');
+    }
     const businessId = activeBusinessId || 'default-business';
     const existing = comboOffers.find(o => o.id === id);
     if (!existing) return;
@@ -6096,10 +6329,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const deleteComboOffer = async (id: string): Promise<boolean> => {
+    if (!isAdmin && !hasPermission('product_management', 'delete')) {
+      throw new Error('Unauthorized: Only Admin or authorized Store Manager can delete combo offers.');
+    }
+    const businessId = activeBusinessId || 'default-business';
+    const existing = comboOffers.find(o => o.id === id);
+    try {
+      await comboOfferService.deleteOffer(id, businessId);
+      setComboOffers(prev => prev.filter(o => o.id !== id));
+      addAuditLog('COMBO_OFFER_DELETED', 'combo_offer', id, `Deleted combo offer: ${existing?.name || id}`);
+      return true;
+    } catch (err) {
+      throw raiseDbError(err, 'Failed to delete combo offer.');
+    }
+  };
+
   const reloadComboOffers = async () => {
-    if (!activeBusinessId) return;
-    const offers = await comboOfferService.fetchOffers(activeBusinessId);
+    const businessId = activeBusinessId || 'default-business';
+    const [offers, logs] = await Promise.all([
+      comboOfferService.fetchOffers(businessId),
+      comboOfferService.fetchUsageLogs(businessId),
+    ]);
     setComboOffers(offers);
+    setComboUsageLogs(logs);
   };
 
   return (
@@ -6140,6 +6393,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setPendingCatalogProductId,
         pendingPosSelection,
         setPendingPosSelection,
+        pendingLabelSelection,
+        setPendingLabelSelection,
+        pendingNewProductBarcode,
+        setPendingNewProductBarcode,
+        pendingEditProductId,
+        setPendingEditProductId,
         addProductColor,
         updateProductColor,
         deleteProductColor,
@@ -6229,10 +6488,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         resetToDemoData,
         canAccess,
         comboOffers,
+        comboUsageLogs,
         addComboOffer,
         updateComboOffer,
         toggleOfferStatus,
         archiveComboOffer,
+        deleteComboOffer,
         reloadComboOffers,
         platformAdmin,
         isPlatformAdmin,

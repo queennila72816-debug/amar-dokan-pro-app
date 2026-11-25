@@ -367,7 +367,8 @@ export type LegacyAppModule =
   | 'reorder'
   | 'combos'
   | 'users'
-  | 'billing';
+  | 'billing'
+  | 'scanner';
 
 export function mapLegacyModuleToPermissionKeys(module: LegacyAppModule): PermissionModuleKey[] {
   switch (module) {
@@ -375,6 +376,8 @@ export function mapLegacyModuleToPermissionKeys(module: LegacyAppModule): Permis
       return ['dashboard'];
     case 'pos':
       return ['pos_new_sale'];
+    case 'scanner':
+      return ['pos_new_sale', 'product_management', 'stock_management', 'barcode_label_printing'];
     case 'sales':
     case 'returns':
       return ['sales_history'];

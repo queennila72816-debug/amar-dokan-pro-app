@@ -1,8 +1,9 @@
 /**
- * High-performance, lightweight Code 128B and EAN-13 vector barcode generator
- * Generates crisp, scannable single-path SVG barcodes with proper quiet zones
+ * High-performance, lightweight Code 128B, EAN-13, and QR vector generator
+ * Generates crisp, scannable single-path SVG barcodes & QR codes with proper quiet zones
  * and internal memoization caching for fast batch label preview & printing.
  */
+import QRCode from 'qrcode';
 
 // Code 128 Symbol Patterns (Index 0-106)
 // Each string represents alternating bar and space widths (1-4 modules)
@@ -62,6 +63,9 @@ const MAX_BARCODE_CACHE_SIZE = 600;
 const elementsCache = new Map<string, BarcodeElementsResult>();
 const svgMarkupCache = new Map<string, string>();
 
+const qrElementsCache = new Map<string, { pathData: string; moduleCount: number; text: string }>();
+const qrSvgMarkupCache = new Map<string, string>();
+
 function setBoundedCache<T>(cache: Map<string, T>, key: string, value: T): void {
   if (cache.size >= MAX_BARCODE_CACHE_SIZE) {
     const firstKey = cache.keys().next().value;
@@ -73,11 +77,13 @@ function setBoundedCache<T>(cache: Map<string, T>, key: string, value: T): void 
 }
 
 /**
- * Clear internal barcode caches (useful for testing or memory reset)
+ * Clear internal barcode & QR caches (useful for testing or memory reset)
  */
 export function clearBarcodeCache(): void {
   elementsCache.clear();
   svgMarkupCache.clear();
+  qrElementsCache.clear();
+  qrSvgMarkupCache.clear();
 }
 
 /**
@@ -368,7 +374,232 @@ export function generateClothingSku(
  * Generate a standard retail 13-digit EAN-13 barcode
  */
 export function generateRetailBarcode(prefix: string = '890'): string {
+  const cleanPrefix = (prefix.replace(/\D/g, '') || '890').slice(0, 3).padEnd(3, '0');
   const randomPart = Math.floor(100000000 + Math.random() * 900000000).toString();
-  const raw = `${prefix}${randomPart}`.slice(0, 12);
+  const raw = `${cleanPrefix}${randomPart}`.slice(0, 12);
   return calculateEAN13CheckDigit(raw);
+}
+
+/**
+ * Strict EAN-13 validation: requires exact 13 digits AND valid GS1 check digit.
+ */
+export function isValidEAN13(input: string): boolean {
+  const clean = (input || '').trim();
+  if (!/^\d{13}$/.test(clean)) return false;
+  return calculateEAN13CheckDigit(clean.slice(0, 12)) === clean;
+}
+
+/**
+ * Validate a barcode or QR string according to chosen format.
+ */
+export function validateBarcodeValue(
+  value: string,
+  format: 'CODE128' | 'EAN13' | 'QR'
+): { valid: boolean; error?: string; normalized: string } {
+  const trimmed = (value || '').trim();
+  if (!trimmed) {
+    return { valid: false, error: 'Barcode value cannot be empty.', normalized: '' };
+  }
+
+  if (format === 'EAN13') {
+    const digitsOnly = trimmed.replace(/\s+/g, '');
+    if (/^\d{12}$/.test(digitsOnly)) {
+      const completed = calculateEAN13CheckDigit(digitsOnly);
+      return { valid: true, normalized: completed };
+    }
+    if (!/^\d{13}$/.test(digitsOnly)) {
+      return {
+        valid: false,
+        error: 'EAN-13 must be exactly 13 numeric digits (or 12 digits to auto-compute check digit).',
+        normalized: trimmed,
+      };
+    }
+    if (!isValidEAN13(digitsOnly)) {
+      const expected = calculateEAN13CheckDigit(digitsOnly.slice(0, 12));
+      return {
+        valid: false,
+        error: `Invalid EAN-13 check digit. Expected last digit '${expected[12]}' (full code: ${expected}).`,
+        normalized: digitsOnly,
+      };
+    }
+    return { valid: true, normalized: digitsOnly };
+  }
+
+  if (format === 'CODE128') {
+    if (!/^[\x20-\x7E]+$/.test(trimmed)) {
+      return {
+        valid: false,
+        error: 'Code 128 supports printable ASCII letters, numbers, and symbols only.',
+        normalized: trimmed,
+      };
+    }
+    if (trimmed.length > 48) {
+      return {
+        valid: false,
+        error: 'Code 128 label values should be 48 characters or fewer for reliable scanning.',
+        normalized: trimmed,
+      };
+    }
+    return { valid: true, normalized: trimmed };
+  }
+
+  // QR supports broader UTF-8 payloads
+  if (trimmed.length > 512) {
+    return {
+      valid: false,
+      error: 'QR payload exceeds 512 character recommended label density limit.',
+      normalized: trimmed,
+    };
+  }
+  return { valid: true, normalized: trimmed };
+}
+
+/**
+ * Generate a guaranteed-unique EAN-13 barcode against a set of existing barcodes (lowercased).
+ */
+export function generateUniqueEan13Barcode(
+  existingCodes: Set<string>,
+  prefix: string = '894'
+): string {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const candidate = generateRetailBarcode(prefix);
+    if (!existingCodes.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+  // Deterministic fallback using high-res timestamp slice
+  const ts12 = `${(prefix.replace(/\D/g, '') || '894').slice(0, 3)}${Date.now().toString().slice(-9)}`;
+  return calculateEAN13CheckDigit(ts12.slice(0, 12));
+}
+
+/**
+ * Generate a guaranteed-unique Code 128 alphanumeric barcode against existing barcodes.
+ */
+export function generateUniqueCode128Barcode(
+  prefix: string,
+  existingCodes: Set<string>
+): string {
+  const cleanPrefix =
+    (prefix || 'PTV')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '')
+      .slice(0, 6) || 'PTV';
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const rand = Math.floor(100000 + Math.random() * 900000);
+    const candidate = `${cleanPrefix}-${rand}`;
+    if (!existingCodes.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+  return `${cleanPrefix}-${Date.now().toString().slice(-8)}`;
+}
+
+/**
+ * Build a stable, privacy-safe PROTIVA QR payload referencing only internal IDs (no PII/prices/customer info).
+ */
+export function buildProductQrPayload(
+  productId?: string,
+  variantId?: string,
+  fallbackCode?: string
+): string {
+  const cleanProd = (productId || '').trim();
+  const cleanVar = (variantId || '').trim();
+  if (cleanProd && cleanVar) {
+    return `PROTIVA:V:${cleanProd}:${cleanVar}`;
+  }
+  if (cleanProd) {
+    return `PROTIVA:P:${cleanProd}`;
+  }
+  return (fallbackCode || '').trim() || 'PROTIVA:ITEM';
+}
+
+/**
+ * Synchronous single-path SVG QR module generator powered by `qrcode`.
+ */
+export function generateQrSvgElements(text: string): {
+  pathData: string;
+  moduleCount: number;
+  text: string;
+} {
+  const cleanText = (text || 'PROTIVA').trim() || 'PROTIVA';
+  const cached = qrElementsCache.get(cleanText);
+  if (cached) return cached;
+
+  const qr = QRCode.create(cleanText, { errorCorrectionLevel: 'M' });
+  const moduleCount = qr.modules.size;
+  const parts: string[] = [];
+
+  for (let r = 0; r < moduleCount; r++) {
+    let c = 0;
+    while (c < moduleCount) {
+      const dark = Boolean(qr.modules.get ? qr.modules.get(r, c) : qr.modules.data[r * moduleCount + c]);
+      if (dark) {
+        let run = 1;
+        while (
+          c + run < moduleCount &&
+          Boolean(qr.modules.get ? qr.modules.get(r, c + run) : qr.modules.data[r * moduleCount + (c + run)])
+        ) {
+          run++;
+        }
+        parts.push(`M${c} ${r}h${run}v1h-${run}z`);
+        c += run;
+      } else {
+        c++;
+      }
+    }
+  }
+
+  const result = {
+    pathData: parts.join(''),
+    moduleCount,
+    text: cleanText,
+  };
+  setBoundedCache(qrElementsCache, cleanText, result);
+  return result;
+}
+
+/**
+ * Synchronous standalone high-contrast B&W QR code SVG markup string for label printing & previews.
+ */
+export function generateQrSvgMarkup(
+  text: string,
+  options?: {
+    size?: number;
+    quietModules?: number;
+    showText?: boolean;
+    caption?: string;
+    fontSize?: number;
+  }
+): string {
+  const size = options?.size ?? 120;
+  const quietModules = options?.quietModules ?? 2;
+  const showText = options?.showText ?? false;
+  const caption = (options?.caption ?? text ?? '').trim();
+  const fontSize = options?.fontSize ?? 9;
+  const cleanText = (text || 'PROTIVA').trim() || 'PROTIVA';
+
+  const cacheKey = `${cleanText}|${size}|${quietModules}|${showText ? 1 : 0}|${caption}|${fontSize}`;
+  const cached = qrSvgMarkupCache.get(cacheKey);
+  if (cached) return cached;
+
+  const { pathData, moduleCount } = generateQrSvgElements(cleanText);
+  const totalUnits = moduleCount + quietModules * 2;
+  const captionUnits = showText && caption ? Math.max(3, Math.ceil((fontSize + 4) / (size / totalUnits))) : 0;
+  const viewH = totalUnits + captionUnits;
+
+  const safeCaption = caption
+    .slice(0, 32)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  const textTag =
+    showText && safeCaption
+      ? `<text x="${totalUnits / 2}" y="${totalUnits + captionUnits * 0.72}" text-anchor="middle" fill="#000000" font-size="${Math.max(1.8, captionUnits * 0.65)}" font-family="'JetBrains Mono',monospace" font-weight="700">${safeCaption}</text>`
+      : '';
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalUnits} ${viewH}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" style="display:block;max-width:100%;max-height:100%;shape-rendering:crispEdges;background:#ffffff;"><rect width="${totalUnits}" height="${viewH}" fill="#ffffff"/><g transform="translate(${quietModules},${quietModules})"><path fill="#000000" d="${pathData}"/></g>${textTag}</svg>`;
+
+  setBoundedCache(qrSvgMarkupCache, cacheKey, svg);
+  return svg;
 }

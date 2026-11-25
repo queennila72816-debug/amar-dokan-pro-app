@@ -8,6 +8,8 @@ import {
   resolveProductColors,
   resolveProductImage,
 } from '../../utils/productImageResolver';
+import { QrCodeSvg } from '../barcodes/QrCodeSvg';
+import { buildProductQrPayload } from '../../utils/barcodeGenerator';
 
 interface ProductDetailGalleryModalProps {
   product: Product | null;
@@ -312,10 +314,45 @@ export const ProductDetailGalleryModal: React.FC<ProductDetailGalleryModalProps>
                 </div>
               )}
 
-              <div className="text-xs text-[#64748B] dark:text-slate-400 flex flex-wrap gap-x-4 gap-y-1 pt-1 border-t border-slate-100 dark:border-[#1F3158]">
-                <span>Total Stock: <strong className="font-mono-num text-[#172033] dark:text-white">{product.currentStock} {product.unit}</strong></span>
-                {product.barcode && <span>Barcode: <strong className="font-mono">{product.barcode}</strong></span>}
-                {product.brand && <span>Brand: <strong>{product.brand}</strong></span>}
+              <div className="pt-2 border-t border-slate-100 dark:border-[#1F3158] flex items-center justify-between gap-3">
+                <div className="text-xs text-[#64748B] dark:text-slate-400 space-y-1 min-w-0">
+                  <div>
+                    Total Stock:{' '}
+                    <strong className="font-mono-num text-[#172033] dark:text-white">
+                      {product.currentStock} {product.unit}
+                    </strong>
+                  </div>
+                  <div className="font-mono text-[11px] truncate">
+                    SKU:{' '}
+                    <strong className="text-[#172033] dark:text-white">
+                      {selectedVariant?.sku || product.code}
+                    </strong>
+                  </div>
+                  {(selectedVariant?.barcode || product.barcode) && (
+                    <div className="font-mono text-[11px] truncate">
+                      Barcode:{' '}
+                      <strong className="text-[#172033] dark:text-white">
+                        {selectedVariant?.barcode || product.barcode}
+                      </strong>
+                    </div>
+                  )}
+                  {product.brand && (
+                    <div>
+                      Brand: <strong>{product.brand}</strong>
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-1.5 rounded-lg bg-white border border-slate-200 shrink-0" title="Product QR Tag">
+                  <QrCodeSvg
+                    value={buildProductQrPayload(
+                      product.id,
+                      selectedVariant?.id,
+                      selectedVariant?.barcode || product.barcode || product.code
+                    )}
+                    size={58}
+                  />
+                </div>
               </div>
             </div>
 

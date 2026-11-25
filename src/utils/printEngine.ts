@@ -13,7 +13,11 @@ import {
   SupplierTransaction,
 } from '../types';
 import { APP_IDENTITY, getBusinessDisplayName, resolveBusinessProfile } from '../config/appIdentity';
-import { generateBarcodeSvgMarkup } from './barcodeGenerator';
+import {
+  buildProductQrPayload,
+  generateBarcodeSvgMarkup,
+  generateQrSvgMarkup,
+} from './barcodeGenerator';
 import { formatCurrency, formatDate, formatTime } from './formatters';
 
 const PRINTER_SETTINGS_KEY = 'AMAR_DOKAN_PRO_PRINTER_SETTINGS';
@@ -41,6 +45,7 @@ export const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
 
 export interface PrintLabelItem {
   productId: string;
+  variantId?: string;
   productName: string;
   variantDetails?: string;
   sku: string;
@@ -301,7 +306,13 @@ export function buildInvoiceHtml(
       ? sale.payments.map(p => `${p.method.toUpperCase()} (${formatMoney(p.amount)})`).join(', ')
       : sale.paymentMethod.toUpperCase();
 
-  const comboDiscount = Number(sale.comboDiscount || 0);
+  const comboPackages = sale.comboPackages || [];
+  const comboInstanceSet = new Set(comboPackages.map(p => p.instanceId));
+  const regularItems = sale.items.filter(
+    it => !it.comboInstanceId || !comboInstanceSet.has(it.comboInstanceId)
+  );
+  const packageSavings = comboPackages.reduce((s, p) => s + (Number(p.discountTotal ?? p.discountAmount) || 0), 0);
+  const comboDiscount = Math.max(0, Number(sale.comboDiscount || 0) - packageSavings);
   const additionalDiscount = Math.max(0, Number(sale.discount || 0) - comboDiscount);
 
   if (paperSize === 'thermal') {
@@ -353,11 +364,29 @@ export function buildInvoiceHtml(
       .adp-doc .sig-line { margin-top: 16px; border-top: 1px dashed #475569; padding-top: 3px; width: 42mm; margin-left: auto; margin-right: auto; text-align: center; font-size: ${Math.max(8.5, baseFontPx - 2)}px; }
     `;
 
-    const itemsRows = sale.items
+    const comboThermalRows = comboPackages
+      .map(
+        (pkg, idx) => `
+      <div class="item">
+        <div class="item-name">${idx + 1}. [COMBO] ${escapeHtml(pkg.offerName)}</div>
+        <div class="item-meta">Includes: ${escapeHtml(
+          pkg.components
+            .map(c => `${c.totalQty}× ${c.productName}${c.variantDetails ? ` (${c.variantDetails})` : ''}`)
+            .join(', ')
+        )}</div>
+        <div class="row">
+          <span class="mono">${pkg.quantity} × ${formatMoney(pkg.offerUnitPrice)}${Number(pkg.discountTotal ?? pkg.discountAmount ?? 0) > 0 ? ` (Saved ${formatMoney(Number(pkg.discountTotal ?? pkg.discountAmount ?? 0))})` : ''}</span>
+          <span class="mono" style="font-weight:700;">${formatMoney(pkg.lineTotal)}</span>
+        </div>
+      </div>`
+      )
+      .join('');
+
+    const itemsRows = comboThermalRows + regularItems
       .map(
         (item, idx) => `
       <div class="item">
-        <div class="item-name">${idx + 1}. ${escapeHtml(item.productName)}${item.isFreeItem ? ' [FREE]' : ''}</div>
+        <div class="item-name">${comboPackages.length + idx + 1}. ${escapeHtml(item.productName)}${item.isFreeItem ? ' [FREE]' : ''}</div>
         <div class="item-meta">
           ${item.sku ? `SKU: ${escapeHtml(item.sku)}` : ''}
           ${item.variantDetails ? `${item.sku ? ' · ' : ''}${escapeHtml(item.variantDetails)}` : ''}
@@ -401,6 +430,7 @@ export function buildInvoiceHtml(
 
         <div class="dashed-b">
           <div class="row"><span>Subtotal:</span><span class="mono">${formatMoney(sale.subtotal)}</span></div>
+          ${packageSavings > 0 ? `<div class="row" style="font-weight:600;"><span>Combo Savings Included:</span><span class="mono">${formatMoney(packageSavings)}</span></div>` : ''}
           ${comboDiscount > 0 ? `<div class="row" style="font-weight:600;"><span>Bundle/Combo Savings:</span><span class="mono">-${formatMoney(comboDiscount)}</span></div>` : ''}
           ${
             sale.appliedOffers && sale.appliedOffers.length > 0
@@ -588,11 +618,34 @@ export function buildInvoiceHtml(
     }
   `;
 
-  const tableRows = sale.items
+  const comboTableRows = comboPackages
+    .map(
+      (pkg, idx) => `
+    <tr style="background:#f0fdf4;">
+      <td class="ctr mono">${idx + 1}</td>
+      <td>
+        <div style="font-weight:700; color:#0f172a;"><span style="font-size:9px;background:#059669;color:#ffffff;padding:1px 5px;border-radius:3px;margin-right:4px;">COMBO</span>${escapeHtml(pkg.offerName)}</div>
+        <div style="font-size:10px;color:#475569;margin-top:2px;">
+          Includes: ${escapeHtml(
+            pkg.components
+              .map(c => `${c.totalQty}× ${c.productName}${c.variantDetails ? ` (${c.variantDetails})` : ''}`)
+              .join(', ')
+          )}
+        </div>
+      </td>
+      <td class="ctr mono">${pkg.quantity}</td>
+      <td class="num mono">${formatMoney(pkg.offerUnitPrice)}</td>
+      <td class="num mono" style="color:#047857;">${Number(pkg.discountTotal ?? pkg.discountAmount ?? 0) > 0 ? `Saved ${formatMoney(Number(pkg.discountTotal ?? pkg.discountAmount ?? 0))}` : '—'}</td>
+      <td class="num mono" style="font-weight:700;">${formatMoney(pkg.lineTotal)}</td>
+    </tr>`
+    )
+    .join('');
+
+  const tableRows = comboTableRows + regularItems
     .map(
       (item, idx) => `
     <tr>
-      <td class="ctr mono">${idx + 1}</td>
+      <td class="ctr mono">${comboPackages.length + idx + 1}</td>
       <td>
         <div style="font-weight:700; color:#0f172a;">${escapeHtml(item.productName)}${item.isFreeItem ? ' <span style="font-size:9px;background:#dcfce7;color:#166534;padding:1px 4px;border-radius:3px;">FREE</span>' : ''}</div>
         <div style="font-size:10px;color:#475569;">
@@ -671,6 +724,7 @@ export function buildInvoiceHtml(
 
         <div class="totals-box">
           <div class="t-line"><span>Subtotal:</span><span class="mono">${formatMoney(sale.subtotal)}</span></div>
+          ${packageSavings > 0 ? `<div class="t-line" style="color:#047857;font-weight:600;"><span>Combo Savings Included:</span><span class="mono">${formatMoney(packageSavings)}</span></div>` : ''}
           ${comboDiscount > 0 ? `<div class="t-line" style="color:#6d28d9;font-weight:600;"><span>Bundle/Combo Savings:</span><span class="mono">-${formatMoney(comboDiscount)}</span></div>` : ''}
           ${additionalDiscount > 0 ? `<div class="t-line" style="color:#047857;"><span>Discount:</span><span class="mono">-${formatMoney(additionalDiscount)}</span></div>` : ''}
           ${sale.vatTaxAmount > 0 ? `<div class="t-line"><span>VAT/Tax (${sale.vatTaxRate}%):</span><span class="mono">+${formatMoney(sale.vatTaxAmount)}</span></div>` : ''}
@@ -783,7 +837,7 @@ function createLabelBuildContext(
   const shopFontPx = Math.max(6.5, (isCompact ? 7 : 8.5) + fontDelta);
   const nameFontPx = Math.max(7, (isCompact ? 8 : 9.5) + fontDelta);
   const metaFontPx = Math.max(6.5, (isCompact ? 7 : 8) + fontDelta);
-  const priceFontPx = Math.max(8, (isCompact ? 9 : 11) + fontDelta);
+  const priceFontPx = isCompact ? Math.max(12, 14 + fontDelta) : 19 + fontDelta;
 
   const barcodeHeight = Math.max(
     14,
@@ -799,6 +853,8 @@ function createLabelBuildContext(
     labelH,
     barcodeHeight,
     config.barcodeFormat,
+    config.showQrCode ? 1 : 0,
+    config.qrContentMode || 'product_ref',
     config.showShopName ? 1 : 0,
     config.showShopLogo ? 1 : 0,
     config.showProductName ? 1 : 0,
@@ -807,6 +863,7 @@ function createLabelBuildContext(
     config.showSku ? 1 : 0,
     config.showBarcodeNumber ? 1 : 0,
     config.customFooterText || '',
+    priceFontPx,
     shopName,
     logoUrl ? logoUrl.slice(0, 40) : '',
     currency,
@@ -871,10 +928,10 @@ function createLabelBuildContext(
       .adp-doc .label-name { font-size: ${nameFontPx}px; font-weight: 700; color: #000; line-height: 1.15; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; margin-top: 1px; }
       .adp-doc .label-variant { display: inline-block; font-size: ${metaFontPx}px; font-weight: 700; background: #f1f5f9; border: 0.2mm solid #cbd5e1; border-radius: 2px; padding: 0 3px; line-height: 1.2; margin-top: 1px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
       .adp-doc .label-barcode { width: 100%; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 1px 0; overflow: hidden; }
-      .adp-doc .label-bottom { width: 100%; }
-      .adp-doc .label-meta-row { width: 100%; display: flex; align-items: baseline; justify-content: space-between; gap: 4px; line-height: 1.1; }
-      .adp-doc .label-sku { font-size: ${metaFontPx - 0.5}px; color: #334155; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 56%; }
-      .adp-doc .label-price { font-size: ${priceFontPx}px; font-weight: 800; color: #000; white-space: nowrap; }
+      .adp-doc .label-bottom { width: 100%; flex-shrink: 0; }
+      .adp-doc .label-meta-row { width: 100%; display: flex; align-items: flex-end; justify-content: space-between; gap: 4px; line-height: 1; padding-top: 1px; }
+      .adp-doc .label-sku { flex: 1 1 auto; min-width: 0; text-align: left; font-size: ${metaFontPx - 0.5}px; color: #334155; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.15; }
+      .adp-doc .label-price { flex-shrink: 0; font-size: ${priceFontPx}px; font-weight: 900; color: #000000; white-space: nowrap; line-height: 0.95; letter-spacing: -0.02em; text-align: right; }
       .adp-doc .label-footer { font-size: 6.5px; color: #64748b; line-height: 1.05; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
     `;
 
@@ -950,10 +1007,10 @@ function createLabelBuildContext(
     .adp-doc .label-name { font-size: ${nameFontPx}px; font-weight: 700; color: #000; line-height: 1.1; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; margin-top: 0.5px; }
     .adp-doc .label-variant { display: inline-block; font-size: ${metaFontPx}px; font-weight: 700; border: 0.2mm solid #94a3b8; border-radius: 1.5px; padding: 0 2.5px; line-height: 1.15; margin-top: 0.5px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .adp-doc .label-barcode { width: 100%; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 0.5px 0; }
-    .adp-doc .label-bottom { width: 100%; }
-    .adp-doc .label-meta-row { width: 100%; display: flex; align-items: baseline; justify-content: space-between; gap: 3px; line-height: 1.05; }
-    .adp-doc .label-sku { font-size: ${metaFontPx - 0.5}px; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
-    .adp-doc .label-price { font-size: ${priceFontPx}px; font-weight: 800; color: #000; white-space: nowrap; }
+    .adp-doc .label-bottom { width: 100%; flex-shrink: 0; }
+    .adp-doc .label-meta-row { width: 100%; display: flex; align-items: flex-end; justify-content: space-between; gap: 4px; line-height: 1; padding-top: 1px; }
+    .adp-doc .label-sku { flex: 1 1 auto; min-width: 0; text-align: left; font-size: ${metaFontPx - 0.5}px; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.15; }
+    .adp-doc .label-price { flex-shrink: 0; font-size: ${priceFontPx}px; font-weight: 900; color: #000000; white-space: nowrap; line-height: 0.95; letter-spacing: -0.02em; text-align: right; }
     .adp-doc .label-footer { font-size: 6px; color: #475569; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 0.5px; }
   `;
 
@@ -980,19 +1037,45 @@ function renderSingleLabelCardHtml(
   ctx: LabelBuildContext
 ): string {
   const barcodeValue = (item.barcode || item.sku || '000000').trim();
-  const itemCacheKey = `${ctx.configSignature}|${item.productName}|${item.variantDetails || ''}|${item.sku}|${barcodeValue}|${item.price}`;
+  const qrPayload =
+    config.qrContentMode === 'barcode'
+      ? barcodeValue
+      : buildProductQrPayload(item.productId, item.variantId, barcodeValue);
+  const itemCacheKey = `${ctx.configSignature}|${item.productId}|${item.variantId || ''}|${item.productName}|${item.variantDetails || ''}|${item.sku}|${barcodeValue}|${item.price}`;
   const cachedCard = labelCardHtmlCache.get(itemCacheKey);
   if (cachedCard) {
     return cachedCard;
   }
 
-  const barcodeSvg = generateBarcodeSvgMarkup(barcodeValue, {
-    width: Math.round(ctx.labelW * 4.6),
-    height: ctx.barcodeHeight,
-    showText: config.showBarcodeNumber,
-    format: config.barcodeFormat || 'CODE128',
-    fontSize: ctx.isCompact ? 9 : 10.5,
-  });
+  let codeBlockHtml = '';
+  if (config.barcodeFormat === 'QR') {
+    const qrSvg = generateQrSvgMarkup(qrPayload, {
+      size: Math.max(44, Math.min(96, Math.round(ctx.labelH * 2.2))),
+      quietModules: 2,
+      showText: config.showBarcodeNumber,
+      caption: barcodeValue,
+      fontSize: ctx.isCompact ? 8 : 9.5,
+    });
+    codeBlockHtml = `<div style="height:100%;max-height:100%;aspect-ratio:1/1;display:flex;align-items:center;justify-content:center;margin:0 auto;">${qrSvg}</div>`;
+  } else {
+    const barcodeSvg = generateBarcodeSvgMarkup(barcodeValue, {
+      width: Math.round(ctx.labelW * (config.showQrCode ? 3.2 : 4.6)),
+      height: ctx.barcodeHeight,
+      showText: config.showBarcodeNumber,
+      format: config.barcodeFormat === 'EAN13' ? 'EAN13' : 'CODE128',
+      fontSize: ctx.isCompact ? 9 : 10.5,
+    });
+    if (config.showQrCode) {
+      const qrSvg = generateQrSvgMarkup(qrPayload, {
+        size: Math.max(36, Math.round(ctx.barcodeHeight * 1.15)),
+        quietModules: 1,
+        showText: false,
+      });
+      codeBlockHtml = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:space-between;gap:1.5mm;"><div style="flex:1;min-width:0;height:100%;display:flex;align-items:center;justify-content:center;">${barcodeSvg}</div><div style="height:92%;aspect-ratio:1/1;flex-shrink:0;display:flex;align-items:center;justify-content:center;">${qrSvg}</div></div>`;
+    } else {
+      codeBlockHtml = barcodeSvg;
+    }
+  }
 
   const formattedPrice = formatCurrency(item.price, 'en').replace('৳', ctx.currency);
 
@@ -1004,7 +1087,7 @@ function renderSingleLabelCardHtml(
     config.showVariantDetails && item.variantDetails
       ? `<div class="label-variant">${escapeHtml(item.variantDetails)}</div>`
       : ''
-  }</div><div class="label-barcode">${barcodeSvg}</div><div class="label-bottom"><div class="label-meta-row">${
+  }</div><div class="label-barcode">${codeBlockHtml}</div><div class="label-bottom"><div class="label-meta-row">${
     config.showSku ? `<span class="label-sku mono">${escapeHtml(item.sku)}</span>` : '<span></span>'
   }${config.showPrice ? `<span class="label-price mono">${escapeHtml(formattedPrice)}</span>` : ''}</div>${
     config.customFooterText ? `<div class="label-footer">${escapeHtml(config.customFooterText)}</div>` : ''

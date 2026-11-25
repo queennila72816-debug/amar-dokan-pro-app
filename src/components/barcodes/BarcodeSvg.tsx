@@ -1,5 +1,7 @@
 import React, { useMemo } from 'react';
 import { BarcodeFormat, generateBarcodeSvgElements } from '../../utils/barcodeGenerator';
+import { LabelCodeFormat } from '../../types';
+import { QrCodeSvg } from './QrCodeSvg';
 
 interface BarcodeSvgProps {
   value: string;
@@ -7,7 +9,8 @@ interface BarcodeSvgProps {
   height?: number; // barcode bar height in px
   showText?: boolean;
   textColor?: string;
-  format?: BarcodeFormat;
+  format?: LabelCodeFormat;
+  qrValue?: string;
   className?: string;
 }
 
@@ -18,13 +21,28 @@ export const BarcodeSvg: React.FC<BarcodeSvgProps> = React.memo(({
   showText = true,
   textColor = '#1e293b',
   format = 'CODE128',
+  qrValue,
   className = '',
 }) => {
   const cleanValue = value ? value.trim() : '000000';
+  const format1D: BarcodeFormat = format === 'EAN13' ? 'EAN13' : 'CODE128';
 
   const { pathData, displayText } = useMemo(() => {
-    return generateBarcodeSvgElements(cleanValue, width, height, '#000000', format);
-  }, [cleanValue, width, height, format]);
+    return generateBarcodeSvgElements(cleanValue, width, height, '#000000', format1D);
+  }, [cleanValue, width, height, format1D]);
+
+  if (format === 'QR') {
+    const qrSize = Math.max(44, Math.min(width, height + 28));
+    return (
+      <QrCodeSvg
+        value={qrValue || cleanValue}
+        size={qrSize}
+        showCaption={showText}
+        caption={cleanValue}
+        className={className}
+      />
+    );
+  }
 
   const totalSvgHeight = showText ? height + 16 : height;
 

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { resolveBusinessProfile } from '../../config/appIdentity';
 import {
@@ -80,6 +80,8 @@ export const ExchangeReturnView: React.FC = () => {
   const [repSelectedVariant, setRepSelectedVariant] = useState<ProductVariant | null>(null);
   const [repQty, setRepQty] = useState<number>(1);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [deskError, setDeskError] = useState<string | null>(null);
+  const inFlightExchangeRef = useRef(false);
 
   // Settlement details
   const [settlementMethod, setSettlementMethod] = useState<PaymentMethod>('cash');
@@ -120,9 +122,54 @@ export const ExchangeReturnView: React.FC = () => {
   // Receipt Modal State
   const [completedExchange, setCompletedExchange] = useState<ExchangeTransaction | null>(null);
 
+  const getItemRowKey = (item: SaleItem, idx: number): string =>
+    `${item.comboInstanceId || 'reg'}::${item.productId}::${item.variantId || 'std'}::${idx}`;
+
+  const getEffectiveReturnUnitPrice = (item: SaleItem): number => {
+    if (item.quantity > 0 && Number.isFinite(item.total)) {
+      return Math.round((item.total / item.quantity) * 100) / 100;
+    }
+    return item.unitPrice;
+  };
+
+  // Group combo packages present on the selected sale for 1-click "Return Entire Combo"
+  const saleComboGroups = useMemo(() => {
+    if (!selectedSale) return [];
+    const map = new Map<string, { instanceId: string; offerName: string; itemKeys: { key: string; qty: number }[] }>();
+    selectedSale.items.forEach((item, idx) => {
+      if (!item.comboInstanceId && !item.comboOfferId) return;
+      const gKey = item.comboInstanceId || `offer-${item.comboOfferId}`;
+      const rowKey = getItemRowKey(item, idx);
+      const existing = map.get(gKey);
+      if (existing) {
+        existing.itemKeys.push({ key: rowKey, qty: item.quantity });
+      } else {
+        map.set(gKey, {
+          instanceId: gKey,
+          offerName: item.comboOfferName || 'Combo Bundle',
+          itemKeys: [{ key: rowKey, qty: item.quantity }],
+        });
+      }
+    });
+    return Array.from(map.values());
+  }, [selectedSale]);
+
+  const handleSelectEntireCombo = (instanceId: string) => {
+    const group = saleComboGroups.find(g => g.instanceId === instanceId);
+    if (!group) return;
+    setReturnQuantities(prev => {
+      const next = { ...prev };
+      group.itemKeys.forEach(entry => {
+        next[entry.key] = entry.qty;
+      });
+      return next;
+    });
+  };
+
   // Search invoice
   const handleSearchInvoice = (e: React.FormEvent) => {
     e.preventDefault();
+    setDeskError(null);
     const q = searchInvoiceQuery.trim().toLowerCase();
     if (!q) return;
 
@@ -134,13 +181,17 @@ export const ExchangeReturnView: React.FC = () => {
     );
 
     if (matched) {
+      if (matched.status === 'voided' || matched.status === 'returned') {
+        setDeskError(`Invoice ${matched.invoiceNumber} is already ${matched.status} and cannot be returned again.`);
+        return;
+      }
       setSelectedSale(matched);
       // Reset return state
       const initialQty: Record<string, number> = {};
       const initialReasons: Record<string, ReturnExchangeItem['reason']> = {};
       const initialConds: Record<string, ItemCondition> = {};
-      matched.items.forEach(item => {
-        const key = item.variantId ? `${item.productId}_${item.variantId}` : item.productId;
+      matched.items.forEach((item, idx) => {
+        const key = getItemRowKey(item, idx);
         initialQty[key] = 0;
         initialReasons[key] = 'wrong_size';
         initialConds[key] = 'sellable';
@@ -150,28 +201,37 @@ export const ExchangeReturnView: React.FC = () => {
       setReturnConditions(initialConds);
       setReplacementItems([]);
     } else {
-      alert(`No invoice found matching '${searchInvoiceQuery}'`);
+      setDeskError(`No invoice found matching '${searchInvoiceQuery}'.`);
     }
   };
 
-  // Calculate return value
+  // Calculate proportional return value (combo items refund at allocated net price, never regular price)
   const returnedItemsList: ReturnExchangeItem[] = useMemo(() => {
     if (!selectedSale) return [];
 
     const list: ReturnExchangeItem[] = [];
-    selectedSale.items.forEach(item => {
-      const key = item.variantId ? `${item.productId}_${item.variantId}` : item.productId;
-      const qty = returnQuantities[key] || 0;
+    selectedSale.items.forEach((item, idx) => {
+      const key = getItemRowKey(item, idx);
+      const qty = Math.min(item.quantity, Math.max(0, returnQuantities[key] || 0));
       if (qty > 0) {
+        const effectiveUnit = getEffectiveReturnUnitPrice(item);
+        const totalRefund =
+          qty === item.quantity
+            ? Math.round(item.total * 100) / 100
+            : Math.round(effectiveUnit * qty * 100) / 100;
         list.push({
           productId: item.productId,
           productName: item.productName,
           variantId: item.variantId,
           variantDetails: item.variantDetails,
           sku: item.sku,
-          originalUnitPrice: item.unitPrice,
+          originalUnitPrice: item.regularUnitPrice || item.unitPrice,
+          effectiveUnitPrice: effectiveUnit,
+          comboOfferId: item.comboOfferId,
+          comboOfferName: item.comboOfferName,
+          comboInstanceId: item.comboInstanceId,
           quantity: qty,
-          totalRefund: qty * item.unitPrice,
+          totalRefund,
           reason: returnReasons[key] || 'wrong_size',
           condition: returnConditions[key] || 'sellable',
         });
@@ -182,25 +242,32 @@ export const ExchangeReturnView: React.FC = () => {
   }, [selectedSale, returnQuantities, returnReasons, returnConditions]);
 
   const totalReturnValue = useMemo(() => {
-    return returnedItemsList.reduce((sum, item) => sum + item.totalRefund, 0);
+    return Math.round(returnedItemsList.reduce((sum, item) => sum + item.totalRefund, 0) * 100) / 100;
   }, [returnedItemsList]);
 
   const totalReplacementValue = useMemo(() => {
-    return replacementItems.reduce((sum, item) => sum + item.total, 0);
+    return Math.round(replacementItems.reduce((sum, item) => sum + item.total, 0) * 100) / 100;
   }, [replacementItems]);
 
   // Difference: Positive = Customer pays extra, Negative = Shop refunds
-  const differenceAmount = totalReplacementValue - totalReturnValue;
+  const differenceAmount = Math.round((totalReplacementValue - totalReturnValue) * 100) / 100;
 
   // Add replacement item
   const handleAddReplacement = () => {
+    setDeskError(null);
     if (!repSelectedProduct) return;
     if (repSelectedProduct.hasVariants && repSelectedProduct.variants && repSelectedProduct.variants.length > 0 && !repSelectedVariant) {
-      alert('Please select a Size / Color variant for this replacement item.');
+      setDeskError('Please select a Size / Color variant for this replacement item.');
       return;
     }
 
     const qty = Math.max(1, Number(repQty) || 1);
+    const available = repSelectedVariant ? repSelectedVariant.stock : repSelectedProduct.currentStock;
+    if (qty > available) {
+      setDeskError(`Only ${available} pcs available in stock for replacement item "${repSelectedProduct.name}".`);
+      return;
+    }
+
     const variantLabel = repSelectedVariant
       ? [repSelectedVariant.color, repSelectedVariant.size].filter(Boolean).join(' / ')
       : undefined;
@@ -218,7 +285,7 @@ export const ExchangeReturnView: React.FC = () => {
       sku: repSelectedVariant?.sku || repSelectedProduct.code,
       unitPrice,
       quantity: qty,
-      total: unitPrice * qty,
+      total: Math.round(unitPrice * qty * 100) / 100,
     };
 
     setReplacementItems(prev => [...prev, newItem]);
@@ -230,22 +297,25 @@ export const ExchangeReturnView: React.FC = () => {
 
   // Submit Return or Exchange
   const handleProcessTransaction = async () => {
-    if (!selectedSale || isProcessing) return;
+    if (!selectedSale || isProcessing || inFlightExchangeRef.current) return;
+    setDeskError(null);
     if (returnedItemsList.length === 0) {
-      alert('Please select at least one item and quantity to return.');
+      setDeskError('Please select at least one item and quantity to return.');
       return;
     }
 
     if (actionMode === 'exchange' && replacementItems.length === 0) {
-      alert('Please select at least one replacement item for the exchange, or switch mode to Return for Refund.');
+      setDeskError('Please select at least one replacement item for the exchange, or switch mode to Return for Refund.');
       return;
     }
 
     const exchangeNo = `EXC-${Date.now().toString().slice(-6)}`;
+    const returnTxId = `ret-${selectedSale.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const now = new Date().toISOString();
 
     const transaction: ExchangeTransaction = {
-      id: `exc-${Date.now()}`,
+      id: returnTxId,
+      returnTxId,
       exchangeNumber: exchangeNo,
       invoiceNumber: selectedSale.invoiceNumber,
       saleId: selectedSale.id,
@@ -266,62 +336,123 @@ export const ExchangeReturnView: React.FC = () => {
       notes,
     };
 
+    inFlightExchangeRef.current = true;
     setIsProcessing(true);
     try {
       const restockedMoves: { productId: string; productName: string; quantity: number; previousStock: number; newStock: number }[] = [];
       const replacementMoves: { productId: string; productName: string; quantity: number; previousStock: number; newStock: number }[] = [];
 
-      // 1. Restock returned items if 'sellable'
+      // Aggregate per-product & per-variant stock deltas across all returned sellable + replacement items
+      // so two variants or combo + regular items sharing one product never overwrite each other
+      const stockChangeMap = new Map<
+        string,
+        {
+          totalDelta: number;
+          variantDeltas: Map<string, number>;
+        }
+      >();
+
+      const addDelta = (productId: string, variantId: string | undefined, delta: number) => {
+        const entry = stockChangeMap.get(productId) || {
+          totalDelta: 0,
+          variantDeltas: new Map<string, number>(),
+        };
+        entry.totalDelta += delta;
+        if (variantId) {
+          entry.variantDeltas.set(variantId, (entry.variantDeltas.get(variantId) || 0) + delta);
+        }
+        stockChangeMap.set(productId, entry);
+      };
+
+      // Validate replacement availability accounting for any sellable returns of the same product/variant
+      if (actionMode === 'exchange') {
+        const netReplacementDemand = new Map<string, number>();
+        returnedItemsList.forEach(item => {
+          if (item.condition === 'sellable') {
+            const k = `${item.productId}::${item.variantId || 'std'}`;
+            netReplacementDemand.set(k, (netReplacementDemand.get(k) || 0) - item.quantity);
+          }
+        });
+        for (const rep of replacementItems) {
+          const prod = products.find(p => p.id === rep.productId);
+          if (!prod) {
+            setDeskError(`Replacement product "${rep.productName}" not found.`);
+            inFlightExchangeRef.current = false;
+            setIsProcessing(false);
+            return;
+          }
+          const k = `${rep.productId}::${rep.variantId || 'std'}`;
+          const nextDemand = (netReplacementDemand.get(k) || 0) + rep.quantity;
+          netReplacementDemand.set(k, nextDemand);
+          const avail = rep.variantId
+            ? prod.variants?.find(v => v.id === rep.variantId)?.stock ?? 0
+            : prod.currentStock;
+          if (nextDemand > avail) {
+            setDeskError(
+              `Insufficient stock for replacement "${rep.productName}"${rep.variantDetails ? ` (${rep.variantDetails})` : ''}. Available: ${avail}`
+            );
+            inFlightExchangeRef.current = false;
+            setIsProcessing(false);
+            return;
+          }
+        }
+      }
+
       for (const item of returnedItemsList) {
         const prod = products.find(p => p.id === item.productId);
         if (!prod) continue;
-
         if (item.condition === 'sellable') {
-          const prevStock = prod.currentStock;
-          let nextTotalStock = prevStock + item.quantity;
-          if (prod.hasVariants && prod.variants && item.variantId) {
-            const nextVariants = prod.variants.map(v =>
-              v.id === item.variantId ? { ...v, stock: v.stock + item.quantity } : v
-            );
-            nextTotalStock = nextVariants.reduce((s, v) => s + v.stock, 0);
-            await updateProduct(prod.id, { variants: nextVariants, currentStock: nextTotalStock });
-          } else {
-            await updateProduct(prod.id, { currentStock: nextTotalStock });
-          }
-          restockedMoves.push({
-            productId: prod.id,
-            productName: prod.name,
-            quantity: item.quantity,
-            previousStock: prevStock,
-            newStock: nextTotalStock,
-          });
+          addDelta(item.productId, item.variantId, item.quantity);
         } else {
-          // Damaged item: log stock adjustment as damaged
           await adjustStock(prod.id, 0, 'damaged', `Returned damaged (${exchangeNo}): ${item.reason}`, item.variantId);
         }
       }
 
-      // 2. Decrement stock for replacement items
       if (actionMode === 'exchange') {
         for (const item of replacementItems) {
-          const prod = products.find(p => p.id === item.productId);
-          if (!prod) continue;
+          addDelta(item.productId, item.variantId, -item.quantity);
+        }
+      }
 
-          const prevStock = prod.currentStock;
-          let nextTotalStock = Math.max(0, prevStock - item.quantity);
-          if (prod.hasVariants && prod.variants && item.variantId) {
-            const nextVariants = prod.variants.map(v =>
-              v.id === item.variantId ? { ...v, stock: Math.max(0, v.stock - item.quantity) } : v
-            );
-            nextTotalStock = nextVariants.reduce((s, v) => s + v.stock, 0);
-            await updateProduct(prod.id, { variants: nextVariants, currentStock: nextTotalStock });
-          } else {
-            await updateProduct(prod.id, { currentStock: nextTotalStock });
-          }
+      // Apply single atomic update per affected product
+      for (const [productId, change] of stockChangeMap.entries()) {
+        const prod = products.find(p => p.id === productId);
+        if (!prod) continue;
+        const prevStock = prod.currentStock;
+        let nextTotalStock = Math.max(0, prevStock + change.totalDelta);
+
+        if (prod.hasVariants && prod.variants && prod.variants.length > 0 && change.variantDeltas.size > 0) {
+          const nextVariants = prod.variants.map(v => {
+            const vDelta = change.variantDeltas.get(v.id) || 0;
+            return vDelta !== 0 ? { ...v, stock: Math.max(0, v.stock + vDelta) } : v;
+          });
+          nextTotalStock = nextVariants.reduce((s, v) => s + v.stock, 0);
+          await updateProduct(prod.id, { variants: nextVariants, currentStock: nextTotalStock });
+        } else if (change.totalDelta !== 0) {
+          await updateProduct(prod.id, { currentStock: nextTotalStock });
+        }
+
+        const returnedQtyForProd = returnedItemsList
+          .filter(r => r.productId === productId && r.condition === 'sellable')
+          .reduce((s, r) => s + r.quantity, 0);
+        const replacedQtyForProd = actionMode === 'exchange'
+          ? replacementItems.filter(r => r.productId === productId).reduce((s, r) => s + r.quantity, 0)
+          : 0;
+
+        if (returnedQtyForProd > 0) {
+          restockedMoves.push({
+            productId: prod.id,
+            productName: prod.name,
+            quantity: returnedQtyForProd,
+            previousStock: prevStock,
+            newStock: nextTotalStock,
+          });
+        }
+        if (replacedQtyForProd > 0) {
           replacementMoves.push({
             productId: prod.id,
             productName: prod.name,
-            quantity: item.quantity,
+            quantity: replacedQtyForProd,
             previousStock: prevStock,
             newStock: nextTotalStock,
           });
@@ -372,8 +503,9 @@ export const ExchangeReturnView: React.FC = () => {
       setCompletedExchange(transaction);
       setSelectedSale(null);
     } catch (err: any) {
-      alert(err?.message || 'Failed to save return/exchange to database. Please try again.');
+      setDeskError(err?.message || 'Failed to save return/exchange to database. Please try again.');
     } finally {
+      inFlightExchangeRef.current = false;
       setIsProcessing(false);
     }
   };
@@ -418,6 +550,22 @@ export const ExchangeReturnView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {deskError && (
+        <div className="bg-rose-50 border border-rose-200 text-rose-800 px-4 py-3 rounded-xl text-xs font-semibold flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{deskError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setDeskError(null)}
+            className="text-rose-600 hover:text-rose-800 p-1 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {activeTab === 'process' ? (
         <div className="space-y-6">
@@ -496,9 +644,25 @@ export const ExchangeReturnView: React.FC = () => {
 
               {/* Items Table */}
               <div className="space-y-3">
-                <label className="text-xs font-bold text-slate-800 block">
-                  Select Item(s) Being Returned by Customer:
-                </label>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="text-xs font-bold text-slate-800 block">
+                    Select Item(s) Being Returned by Customer:
+                  </label>
+                  {saleComboGroups.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {saleComboGroups.map(group => (
+                        <button
+                          key={group.instanceId}
+                          type="button"
+                          onClick={() => handleSelectEntireCombo(group.instanceId)}
+                          className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-[11px] font-semibold cursor-pointer"
+                        >
+                          Select Entire Combo: {group.offerName}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 <div className="overflow-x-auto border border-slate-200 rounded-xl">
                   <table className="w-full text-left text-xs border-collapse">
@@ -506,7 +670,7 @@ export const ExchangeReturnView: React.FC = () => {
                       <tr>
                         <th className="py-2.5 px-3">Item / Variant</th>
                         <th className="py-2.5 px-3">Sold Qty</th>
-                        <th className="py-2.5 px-3">Unit Price</th>
+                        <th className="py-2.5 px-3">Net Unit Price</th>
                         <th className="py-2.5 px-3 w-28">Return Qty</th>
                         <th className="py-2.5 px-3">Return Reason</th>
                         <th className="py-2.5 px-3">Item Condition</th>
@@ -514,23 +678,40 @@ export const ExchangeReturnView: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {selectedSale.items.map(item => {
-                        const key = item.variantId ? `${item.productId}_${item.variantId}` : item.productId;
+                      {selectedSale.items.map((item, idx) => {
+                        const key = getItemRowKey(item, idx);
                         const returnQty = returnQuantities[key] || 0;
+                        const effectiveUnit = getEffectiveReturnUnitPrice(item);
+                        const rowRefund =
+                          returnQty === item.quantity
+                            ? Math.round(item.total * 100) / 100
+                            : Math.round(effectiveUnit * returnQty * 100) / 100;
 
                         return (
                           <tr key={key} className={returnQty > 0 ? 'bg-amber-50/40' : ''}>
                             <td className="py-2.5 px-3">
                               <div className="font-bold text-slate-900">{item.productName}</div>
-                              {item.variantDetails && (
-                                <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-mono">
-                                  {item.variantDetails}
-                                </span>
-                              )}
+                              <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                                {item.variantDetails && (
+                                  <span className="inline-block px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-mono">
+                                    {item.variantDetails}
+                                  </span>
+                                )}
+                                {item.comboOfferName && (
+                                  <span className="inline-block px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-semibold">
+                                    Combo: {item.comboOfferName}
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td className="py-2.5 px-3 font-mono">{item.quantity} pcs</td>
                             <td className="py-2.5 px-3 font-mono-num font-semibold">
-                              {formatCurrency(item.unitPrice, 'en')}
+                              <div>{formatCurrency(effectiveUnit, 'en')}</div>
+                              {item.regularUnitPrice && item.regularUnitPrice > effectiveUnit && (
+                                <span className="text-[10px] text-slate-400 line-through">
+                                  {formatCurrency(item.regularUnitPrice, 'en')}
+                                </span>
+                              )}
                             </td>
                             <td className="py-2.5 px-3">
                               <select
@@ -592,7 +773,7 @@ export const ExchangeReturnView: React.FC = () => {
                               )}
                             </td>
                             <td className="py-2.5 px-3 text-right font-bold text-slate-900 font-mono-num">
-                              {formatCurrency(returnQty * item.unitPrice, 'en')}
+                              {formatCurrency(rowRefund, 'en')}
                             </td>
                           </tr>
                         );
@@ -1098,7 +1279,7 @@ export const ExchangeReturnView: React.FC = () => {
                   const docHtml = `<!DOCTYPE html><html><head><title>Voucher ${exc.exchangeNumber}</title><style>@page{size:80mm auto;margin:4mm;}body{font-family:monospace;font-size:11px;color:#000;margin:0;padding:8px;}</style></head><body><div>${innerHtml}</div></body></html>`;
                   const res = printDocument(docHtml, `Voucher ${exc.exchangeNumber}`);
                   if (!res.opened && res.error) {
-                    alert(res.error);
+                    setDeskError(res.error);
                   }
                 }}
                 className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-lg cursor-pointer"

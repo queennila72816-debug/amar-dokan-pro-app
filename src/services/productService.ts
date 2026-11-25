@@ -74,6 +74,7 @@ const mapDbProductToProduct = (
   createdAt: p.created_at,
   updatedAt: p.updated_at,
   isActive: p.is_active !== false,
+  branchId: p.branch_id || undefined,
   };
 };
 

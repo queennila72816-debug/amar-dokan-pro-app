@@ -33,7 +33,16 @@ import {
   resolveProductImage,
 } from '../../utils/productImageResolver';
 import { BarcodeSvg } from '../barcodes/BarcodeSvg';
-import { BarcodeFormat } from '../../utils/barcodeGenerator';
+import { QrCodeSvg } from '../barcodes/QrCodeSvg';
+import {
+  BarcodeFormat,
+  buildProductQrPayload,
+  generateUniqueCode128Barcode,
+  generateUniqueEan13Barcode,
+  isValidEAN13,
+  validateBarcodeValue,
+} from '../../utils/barcodeGenerator';
+import { collectUsedBarcodes, isBarcodeDuplicate } from '../../utils/scannerLookup';
 import {
   getPrinterSettings,
   previewProductLabel,
@@ -41,7 +50,7 @@ import {
   PrintPreviewPayload,
 } from '../../utils/printEngine';
 import { PrintPreviewModal } from '../printing/PrintPreviewModal';
-import { LabelConfig, LabelTemplateId } from '../../types';
+import { LabelCodeFormat, LabelConfig, LabelTemplateId } from '../../types';
 
 interface ProductsViewProps {
   isAddModalOpen?: boolean;
@@ -54,7 +63,21 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   onCloseAddModal: propOnCloseAddModal,
   onOpenCatalogForProduct,
 }) => {
-  const { products, categories, addCategory, addProduct, updateProduct, deleteProduct, isAdmin, settings, hasPermission } = useApp();
+  const {
+    products,
+    categories,
+    addCategory,
+    addProduct,
+    updateProduct,
+    deleteProduct,
+    isAdmin,
+    settings,
+    hasPermission,
+    pendingNewProductBarcode,
+    setPendingNewProductBarcode,
+    pendingEditProductId,
+    setPendingEditProductId,
+  } = useApp();
   const canCreateProduct = hasPermission('product_management', 'create');
   const canEditProduct = hasPermission('product_management', 'edit');
   const canDeleteProduct = hasPermission('product_management', 'delete') || isAdmin;
@@ -81,13 +104,15 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const [selectedVariantId, setSelectedVariantId] = useState<string>('base');
   const [labelCopies, setLabelCopies] = useState<number>(1);
   const [labelTemplate, setLabelTemplate] = useState<LabelTemplateId>(() => getPrinterSettings(settings).labelTemplate || '40x30');
-  const [labelFormat, setLabelFormat] = useState<BarcodeFormat>('CODE128');
+  const [labelFormat, setLabelFormat] = useState<LabelCodeFormat>('CODE128');
   const [isPrintingLabel, setIsPrintingLabel] = useState(false);
   const [labelPrintError, setLabelPrintError] = useState<string | null>(null);
   const [labelPreviewPayload, setLabelPreviewPayload] = useState<PrintPreviewPayload | null>(null);
   const [showNewCatInput, setShowNewCatInput] = useState(false);
   const [newCatName, setNewCatName] = useState('');
   const [isSubmittingProduct, setIsSubmittingProduct] = useState(false);
+  const [barcodeStandard, setBarcodeStandard] = useState<BarcodeFormat>('EAN13');
+  const [formError, setFormError] = useState<string | null>(null);
 
   // Sync prop changes
   React.useEffect(() => {
@@ -98,10 +123,41 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     }
   }, [propIsAddModalOpen]);
 
+  // Consume Scanner -> Add New Product with Scanned Barcode handoff
+  React.useEffect(() => {
+    if (!pendingNewProductBarcode) return;
+    const prefill = pendingNewProductBarcode;
+    setPendingNewProductBarcode(null);
+    if (canCreateProduct) {
+      handleOpenAdd(prefill);
+    }
+  }, [pendingNewProductBarcode, canCreateProduct, setPendingNewProductBarcode]);
+
+  // Consume Scanner -> Open Product handoff
+  React.useEffect(() => {
+    if (!pendingEditProductId) return;
+    const target = products.find(p => p.id === pendingEditProductId);
+    setPendingEditProductId(null);
+    if (!target) return;
+    if (canEditProduct) {
+      handleOpenEdit(target);
+    } else if (canPrintBarcode) {
+      setBarcodeModalProduct(target);
+      setSelectedVariantId(
+        target.hasVariants && target.variants && target.variants.length > 0
+          ? target.variants[0].id
+          : 'base'
+      );
+      setLabelCopies(1);
+      setLabelPrintError(null);
+    }
+  }, [pendingEditProductId, products, canEditProduct, canPrintBarcode, setPendingEditProductId]);
+
   const closeModal = () => {
     setIsModalOpen(false);
     setEditingProduct(null);
     setShowNewCatInput(false);
+    setFormError(null);
     if (propOnCloseAddModal) propOnCloseAddModal();
   };
 
@@ -134,13 +190,22 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const [expiryDate, setExpiryDate] = useState('');
   const [batchNumber, setBatchNumber] = useState('');
 
-  // Open Add Modal
-  const handleOpenAdd = () => {
+  // Open Add Modal (optional prefilled barcode from Scanner Not Found flow)
+  const handleOpenAdd = (prefillBarcode?: string) => {
     setEditingProduct(null);
+    setFormError(null);
     setName('');
     const randomCode = `PRD-${Math.floor(100 + Math.random() * 900)}`;
     setCode(randomCode);
-    setBarcode(`894${Math.floor(100000 + Math.random() * 900000)}`);
+    const usedBarcodes = collectUsedBarcodes(products);
+    if (prefillBarcode && prefillBarcode.trim()) {
+      const cleanPrefill = prefillBarcode.trim();
+      setBarcode(cleanPrefill);
+      setBarcodeStandard(isValidEAN13(cleanPrefill) ? 'EAN13' : 'CODE128');
+    } else {
+      setBarcode(generateUniqueEan13Barcode(usedBarcodes, '894'));
+      setBarcodeStandard('EAN13');
+    }
     const defaultCat = categories.length > 0 ? categories[0].name : 'General';
     setCategory(defaultCat);
     setSubcategory('');
@@ -165,12 +230,14 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setIsModalOpen(true);
   };
 
-  // Open Edit Modal
+  // Open Edit Modal (preserves existing barcode cleanly)
   const handleOpenEdit = (p: Product) => {
     setEditingProduct(p);
+    setFormError(null);
     setName(p.name || '');
     setCode(p.code || '');
     setBarcode(p.barcode || '');
+    setBarcodeStandard(isValidEAN13(p.barcode || '') ? 'EAN13' : 'CODE128');
     setCategory(p.category || (categories.length > 0 ? categories[0].name : 'General'));
     setSubcategory(p.subcategory || '');
     setBrand(p.brand || '');
@@ -194,11 +261,25 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
     setIsModalOpen(true);
   };
 
+  const handleGenerateUniqueBarcode = (targetFormat?: BarcodeFormat) => {
+    const fmt = targetFormat || barcodeStandard;
+    const used = collectUsedBarcodes(products, { productId: editingProduct?.id });
+    variants.forEach(v => {
+      if (v.barcode) used.add(v.barcode.trim().toLowerCase());
+    });
+    if (fmt === 'EAN13') {
+      setBarcode(generateUniqueEan13Barcode(used, '894'));
+    } else {
+      setBarcode(generateUniqueCode128Barcode(code || name || 'PTV', used));
+    }
+    setFormError(null);
+  };
+
   // Quick Add Category from form
   const handleCreateCategory = async () => {
     const trimmed = newCatName.trim();
     if (!trimmed) {
-      alert('Please enter a category name.');
+      setFormError('Please enter a category name.');
       return;
     }
     try {
@@ -206,8 +287,9 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       setCategory(cat.name);
       setNewCatName('');
       setShowNewCatInput(false);
+      setFormError(null);
     } catch (err: any) {
-      alert(`Failed to create category: ${err.message || 'Database error'}`);
+      setFormError(`Failed to create category: ${err.message || 'Database error'}`);
     }
   };
 
@@ -215,16 +297,31 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSubmittingProduct) return;
+    setFormError(null);
 
     const cleanName = name.trim();
     const finalCode = code.trim() || `PRD-${Date.now().toString().slice(-4)}`;
-    const finalBarcode = barcode.trim() || `${Date.now().toString().slice(-8)}`;
+    const rawBarcodeInput = barcode.trim();
+    const usedCodesForFallback = collectUsedBarcodes(products, { productId: editingProduct?.id });
+    const rawOrGeneratedBarcode =
+      rawBarcodeInput || generateUniqueEan13Barcode(usedCodesForFallback, '894');
+
+    const validation = validateBarcodeValue(rawOrGeneratedBarcode, barcodeStandard);
+    if (!validation.valid) {
+      setFormError(validation.error || 'Invalid barcode format.');
+      return;
+    }
+    const finalBarcode = validation.normalized;
+    if (finalBarcode !== barcode) {
+      setBarcode(finalBarcode);
+    }
+
     const parsedPurchase = Number(purchasePrice);
     const parsedSale = Number(salePrice);
     const parsedMinStock = minStockAlert === '' ? 5 : Number(minStockAlert);
 
     if (!cleanName || purchasePrice === '' || salePrice === '' || Number.isNaN(parsedPurchase) || Number.isNaN(parsedSale)) {
-      alert('Name, purchase price, and sale price are required!');
+      setFormError('Name, purchase price, and sale price are required!');
       return;
     }
 
@@ -234,22 +331,22 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       (wholesalePrice !== '' && Number(wholesalePrice) < 0) ||
       (minSalePrice !== '' && Number(minSalePrice) < 0)
     ) {
-      alert('Prices cannot be negative!');
+      setFormError('Prices cannot be negative!');
       return;
     }
 
     if (!hasVariants && Number(currentStock || 0) < 0) {
-      alert('Stock quantity cannot be negative!');
+      setFormError('Stock quantity cannot be negative!');
       return;
     }
 
     if (!Number.isFinite(parsedMinStock) || parsedMinStock < 1) {
-      alert('Low stock alert threshold must be at least 1.');
+      setFormError('Low stock alert threshold must be at least 1.');
       return;
     }
 
     if (hasVariants && variants.length === 0) {
-      alert('Please add at least one Size/Color variant or disable Variants.');
+      setFormError('Please add at least one Size/Color variant or disable Variants.');
       return;
     }
 
@@ -258,38 +355,61 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       p => p.id !== editingProduct?.id && (p.code || '').trim().toLowerCase() === finalCode.toLowerCase()
     );
     if (isSkuTaken) {
-      alert(`SKU '${finalCode}' is already taken!`);
+      setFormError(`SKU '${finalCode}' is already taken!`);
       return;
     }
 
-    // Duplicate Barcode check
-    const isBarcodeTaken = products.some(
-      p => p.id !== editingProduct?.id && (p.barcode || '').trim().toLowerCase() === finalBarcode.toLowerCase()
-    );
-    if (isBarcodeTaken) {
-      alert(`Barcode '${finalBarcode}' is already used!`);
+    // Duplicate Barcode check across BOTH products and product_variants
+    const dupCheck = isBarcodeDuplicate(finalBarcode, products, { productId: editingProduct?.id });
+    if (dupCheck.duplicate) {
+      setFormError(
+        `Barcode '${finalBarcode}' is already assigned to ${dupCheck.conflictLabel || 'another item'}.`
+      );
       return;
     }
 
     let sanitizedVariants: ProductVariant[] = [];
     if (hasVariants) {
       const seenSkus = new Set<string>();
+      const seenBarcodes = new Set<string>([finalBarcode.toLowerCase()]);
       for (let idx = 0; idx < variants.length; idx++) {
         const v = variants[idx];
         const cleanSku = (v.sku || '').trim() || `${finalCode}-V${idx + 1}`;
         const lowerSku = cleanSku.toLowerCase();
         if (seenSkus.has(lowerSku)) {
-          alert(`Duplicate variant SKU '${cleanSku}'. Each variant must have a unique SKU.`);
+          setFormError(`Duplicate variant SKU '${cleanSku}'. Each variant must have a unique SKU.`);
           return;
         }
         seenSkus.add(lowerSku);
+
+        const cleanVariantBarcode = v.barcode?.trim() || undefined;
+        if (cleanVariantBarcode) {
+          const lowerVarBarcode = cleanVariantBarcode.toLowerCase();
+          if (seenBarcodes.has(lowerVarBarcode)) {
+            setFormError(
+              `Duplicate barcode '${cleanVariantBarcode}' on variant '${cleanSku}'. Each barcode must be unique.`
+            );
+            return;
+          }
+          const dbVarDup = isBarcodeDuplicate(cleanVariantBarcode, products, {
+            productId: editingProduct?.id,
+            variantId: v.id,
+          });
+          if (dbVarDup.duplicate) {
+            setFormError(
+              `Variant barcode '${cleanVariantBarcode}' is already used by ${dbVarDup.conflictLabel}.`
+            );
+            return;
+          }
+          seenBarcodes.add(lowerVarBarcode);
+        }
 
         sanitizedVariants.push({
           ...v,
           color: v.color?.trim() || undefined,
           size: v.size?.trim() || undefined,
           sku: cleanSku,
-          barcode: v.barcode?.trim() || undefined,
+          barcode: cleanVariantBarcode,
           stock: Math.max(0, Number(v.stock) || 0),
           purchasePrice:
             v.purchasePrice !== undefined && v.purchasePrice !== null && !Number.isNaN(Number(v.purchasePrice))
@@ -350,7 +470,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
       }
       closeModal();
     } catch (err: any) {
-      alert(`Product save failed: ${err.message || 'Database error'}`);
+      setFormError(`Product save failed: ${err.message || 'Database error'}`);
     } finally {
       setIsSubmittingProduct(false);
     }
@@ -453,7 +573,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
 
         {canCreateProduct && (
           <button
-            onClick={handleOpenAdd}
+            onClick={() => handleOpenAdd()}
             className="flex items-center gap-2 px-3.5 py-2 text-xs md:text-sm font-semibold text-white bg-[#6366F1] hover:brightness-110 rounded-[10px] shadow-xs transition-all self-start md:self-auto cursor-pointer"
           >
             <Plus className="w-4 h-4" />
@@ -921,17 +1041,71 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 </div>
 
                 <div>
-                  <label className="block font-medium text-slate-700 mb-1">
-                    {'Barcode *'}
-                  </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-medium text-slate-700">
+                      {'Barcode *'}
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <select
+                        aria-label="Barcode Format"
+                        value={barcodeStandard}
+                        onChange={e => setBarcodeStandard(e.target.value as BarcodeFormat)}
+                        className="text-[10px] font-bold px-1.5 py-0.5 border border-slate-200 rounded bg-slate-50 text-slate-700"
+                      >
+                        <option value="EAN13">EAN-13</option>
+                        <option value="CODE128">Code 128</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => handleGenerateUniqueBarcode()}
+                        className="inline-flex items-center gap-1 text-[10px] font-bold text-[#087F8C] hover:text-[#066974] bg-[#087F8C]/10 px-2 py-0.5 rounded cursor-pointer"
+                      >
+                        <Sparkles className="w-3 h-3" />
+                        <span>Generate</span>
+                      </button>
+                    </div>
+                  </div>
                   <input
                     type="text"
                     required
                     value={barcode}
-                    onChange={(e) => setBarcode(e.target.value)}
-                    placeholder="894101001"
+                    onChange={(e) => {
+                      setBarcode(e.target.value);
+                      setFormError(null);
+                    }}
+                    placeholder={barcodeStandard === 'EAN13' ? '13-digit EAN-13 barcode' : 'Code 128 barcode'}
                     className="w-full p-2 border border-slate-200 rounded-lg font-mono focus:ring-1 focus:ring-emerald-500 focus:outline-none"
                   />
+                  {(() => {
+                    if (!barcode.trim()) return null;
+                    const check = validateBarcodeValue(barcode, barcodeStandard);
+                    const dup = isBarcodeDuplicate(barcode, products, { productId: editingProduct?.id });
+                    if (!check.valid) {
+                      return <p className="text-[10px] text-rose-600 font-medium mt-1">{check.error}</p>;
+                    }
+                    if (dup.duplicate) {
+                      return (
+                        <p className="text-[10px] text-rose-600 font-medium mt-1">
+                          Already used by {dup.conflictLabel}
+                        </p>
+                      );
+                    }
+                    return (
+                      <div className="mt-2 p-2 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between gap-2">
+                        <BarcodeSvg
+                          value={check.normalized}
+                          width={165}
+                          height={32}
+                          showText={true}
+                          format={barcodeStandard}
+                        />
+                        <QrCodeSvg
+                          value={buildProductQrPayload(editingProduct?.id, undefined, check.normalized)}
+                          size={44}
+                        />
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div>
@@ -1148,11 +1322,19 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                         baseSalePrice={Number(salePrice) || 0}
                         variants={variants}
                         onChange={setVariants}
+                        existingBarcodes={collectUsedBarcodes(products, { productId: editingProduct?.id })}
                       />
                     </div>
                   )}
                 </div>
               </div>
+
+              {formError && (
+                <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs font-semibold flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                  <span>{formError}</span>
+                </div>
+              )}
 
               {/* Modal Action Buttons */}
               <div className="flex justify-end gap-2 pt-3 border-t">
@@ -1212,6 +1394,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
         const modalPrintItems = [
           {
             productId: barcodeModalProduct.id,
+            variantId: activeVariant?.id,
             productName: barcodeModalProduct.name,
             variantDetails: targetVariantLabel,
             sku: targetSku,
@@ -1220,6 +1403,12 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
             copies: Math.max(1, labelCopies),
           },
         ];
+
+        const targetQrPayload = buildProductQrPayload(
+          barcodeModalProduct.id,
+          activeVariant?.id,
+          targetBarcode
+        );
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
@@ -1244,7 +1433,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 </div>
               )}
 
-              {/* Live Barcode Card */}
+              {/* Live Barcode / QR Card */}
               <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex flex-col items-center justify-center space-y-1.5 text-center">
                 <div className="flex items-center gap-2.5">
                   <ProductThumbnail
@@ -1271,8 +1460,9 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 </div>
                 <BarcodeSvg
                   value={targetBarcode}
+                  qrValue={targetQrPayload}
                   width={220}
-                  height={52}
+                  height={labelFormat === 'QR' ? 66 : 52}
                   showText={true}
                   format={labelFormat}
                 />
@@ -1321,14 +1511,15 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 </div>
 
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Barcode Type</label>
+                  <label className="block font-semibold text-slate-700 mb-1">Code Format</label>
                   <select
                     value={labelFormat}
-                    onChange={e => setLabelFormat(e.target.value as BarcodeFormat)}
+                    onChange={e => setLabelFormat(e.target.value as LabelCodeFormat)}
                     className="w-full p-2 border border-slate-200 rounded-lg bg-white text-xs"
                   >
                     <option value="CODE128">Code 128</option>
                     <option value="EAN13">EAN-13</option>
+                    <option value="QR">QR Code</option>
                   </select>
                 </div>
 
@@ -1345,7 +1536,7 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 </div>
               </div>
 
-              <div className="flex gap-2 pt-2 border-t">
+              <div className="flex flex-wrap gap-2 pt-2 border-t">
                 <button
                   type="button"
                   onClick={() => setBarcodeModalProduct(null)}
@@ -1363,6 +1554,33 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                 >
                   <Eye className="w-3.5 h-3.5" />
                   <span>Preview</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isPrintingLabel}
+                  onClick={() => {
+                    if (isPrintingLabel) return;
+                    setLabelPrintError(null);
+                    setIsPrintingLabel(true);
+                    try {
+                      const res = printProductLabel(
+                        [{ ...modalPrintItems[0], copies: 1 }],
+                        modalLabelConfig,
+                        settings
+                      );
+                      if (!res.opened && !res.cancelled) {
+                        setLabelPrintError(res.error || 'Unable to open browser print dialog.');
+                      }
+                    } catch (err: any) {
+                      setLabelPrintError(err?.message || 'Unexpected error while preparing test print.');
+                    } finally {
+                      setIsPrintingLabel(false);
+                    }
+                  }}
+                  className="flex items-center justify-center gap-1 px-3 py-2 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-lg cursor-pointer"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span>Test (1)</span>
                 </button>
                 <button
                   type="button"

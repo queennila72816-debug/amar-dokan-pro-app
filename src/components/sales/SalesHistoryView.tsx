@@ -61,8 +61,10 @@ export const SalesHistoryView: React.FC = () => {
   const [returnSale, setReturnSale] = useState<Sale | null>(null);
   const [returnItemIdx, setReturnItemIdx] = useState<number>(0);
   const [returnQty, setReturnQty] = useState<number>(1);
+  const [returnCondition, setReturnCondition] = useState<'sellable' | 'damaged'>('sellable');
   const [returnReason, setReturnReason] = useState('Product Exchange / Defective');
   const [refundType, setRefundType] = useState<'cash' | 'adjust_due'>('cash');
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Audit Logs Modal
   const [showAuditLogsModal, setShowAuditLogsModal] = useState(false);
@@ -144,6 +146,7 @@ export const SalesHistoryView: React.FC = () => {
   const voidedCount = filteredSales.filter(s => s.status === 'returned' || s.status === 'voided').length;
 
   const handleOpenQuickRefund = (sale: Sale) => {
+    setActionError(null);
     setQuickRefundTarget(sale);
     setQuickRefundReason('Customer returned items and requested full refund');
   };
@@ -151,6 +154,7 @@ export const SalesHistoryView: React.FC = () => {
   const handleConfirmQuickRefund = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!quickRefundTarget || isProcessingRefund) return;
+    setActionError(null);
 
     setIsProcessingRefund(true);
     try {
@@ -158,35 +162,44 @@ export const SalesHistoryView: React.FC = () => {
       if (success) {
         setQuickRefundTarget(null);
       } else {
-        alert('Could not complete refund. Already returned or voided.');
+        setActionError('Could not complete refund. Already returned or voided.');
       }
     } catch (err: any) {
-      alert(`Refund failed: ${err.message || 'Database error'}`);
+      setActionError(`Refund failed: ${err.message || 'Database error'}`);
     } finally {
       setIsProcessingRefund(false);
     }
   };
 
   const handleOpenReturnModal = (sale: Sale) => {
+    setActionError(null);
     setReturnSale(sale);
     setReturnItemIdx(0);
     setReturnQty(1);
+    setReturnCondition('sellable');
     setRefundType(sale.due > 0 ? 'adjust_due' : 'cash');
   };
 
   const handleSubmitReturn = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!returnSale || returnQty <= 0 || isProcessingRefund) return;
+    setActionError(null);
 
     const item = returnSale.items[returnItemIdx];
     if (!item) {
-      alert('Please select a valid item to return.');
+      setActionError('Please select a valid item to return.');
       return;
     }
     if (returnQty > item.quantity || returnQty < 1) {
-      alert('Return quantity must be between 1 and purchased quantity!');
+      setActionError('Return quantity must be between 1 and purchased quantity!');
       return;
     }
+
+    const effectiveUnitPrice =
+      item.quantity > 0 && Number.isFinite(item.total)
+        ? Math.round((item.total / item.quantity) * 100) / 100
+        : item.unitPrice;
+    const returnTxId = `sh-ret-${returnSale.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
     setIsProcessingRefund(true);
     try {
@@ -197,16 +210,18 @@ export const SalesHistoryView: React.FC = () => {
             productId: item.productId,
             variantId: item.variantId,
             quantity: Number(returnQty),
-            unitPrice: item.unitPrice,
+            unitPrice: effectiveUnitPrice,
             reason: returnReason,
+            condition: returnCondition,
           },
         ],
-        refundType
+        refundType,
+        returnTxId
       );
 
       setReturnSale(null);
     } catch (err: any) {
-      alert(`Return failed: ${err.message || 'Database error'}`);
+      setActionError(`Return failed: ${err.message || 'Database error'}`);
     } finally {
       setIsProcessingRefund(false);
     }
@@ -241,15 +256,18 @@ export const SalesHistoryView: React.FC = () => {
         </div>
       </div>
 
-      {printError && (
+      {(printError || actionError) && (
         <div className="bg-rose-50 border border-rose-200 text-rose-800 px-4 py-2.5 rounded-xl text-xs flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-            <span>{printError}</span>
+            <span>{printError || actionError}</span>
           </div>
           <button
             type="button"
-            onClick={() => setPrintError(null)}
+            onClick={() => {
+              setPrintError(null);
+              setActionError(null);
+            }}
             className="text-rose-600 hover:text-rose-800 font-bold"
           >
             Dismiss
@@ -439,10 +457,15 @@ export const SalesHistoryView: React.FC = () => {
                     }`}
                   >
                     <td className="px-4 py-3 font-mono font-bold text-slate-900">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 flex-wrap">
                         <span className={isReturnedOrVoid ? 'line-through text-slate-500' : ''}>
                           {sale.invoiceNumber}
                         </span>
+                        {((sale.comboPackages && sale.comboPackages.length > 0) || (sale.appliedOffers && sale.appliedOffers.length > 0)) && (
+                          <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 font-sans font-semibold px-1.5 py-0.2 rounded">
+                            Combo
+                          </span>
+                        )}
                         {isReturnedOrVoid && (
                           <span className="text-[10px] bg-rose-100 text-rose-800 font-semibold px-1 rounded">
                             {sale.status === 'voided' ? ('Void') : ('Refund')}
@@ -761,27 +784,49 @@ export const SalesHistoryView: React.FC = () => {
                   onChange={(e) => setReturnItemIdx(Number(e.target.value))}
                   className="w-full p-2 border border-slate-200 rounded-lg bg-white"
                 >
-                  {returnSale.items.map((item, idx) => (
-                    <option key={idx} value={idx}>
-                      {item.productName} ({item.quantity} pcs @ ৳{item.unitPrice})
-                    </option>
-                  ))}
+                  {returnSale.items.map((item, idx) => {
+                    const effectivePrice =
+                      item.quantity > 0 && Number.isFinite(item.total)
+                        ? Math.round((item.total / item.quantity) * 100) / 100
+                        : item.unitPrice;
+                    return (
+                      <option key={idx} value={idx}>
+                        {item.productName}{item.variantDetails ? ` (${item.variantDetails})` : ''}{item.comboOfferName ? ` [Combo: ${item.comboOfferName}]` : ''} — {item.quantity} pcs @ ৳{effectivePrice}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">
-                  {'Return Quantity *'}
-                </label>
-                <input
-                  type="number"
-                  required
-                  min="1"
-                  max={returnSale.items[returnItemIdx]?.quantity || 1}
-                  value={returnQty}
-                  onChange={(e) => setReturnQty(Number(e.target.value) || 1)}
-                  className="w-full p-2 border border-slate-200 rounded-lg font-mono-num"
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    {'Return Quantity *'}
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    max={returnSale.items[returnItemIdx]?.quantity || 1}
+                    value={returnQty}
+                    onChange={(e) => setReturnQty(Number(e.target.value) || 1)}
+                    className="w-full p-2 border border-slate-200 rounded-lg font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    {'Item Condition *'}
+                  </label>
+                  <select
+                    aria-label={'Item Condition'}
+                    value={returnCondition}
+                    onChange={(e) => setReturnCondition(e.target.value as 'sellable' | 'damaged')}
+                    className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+                  >
+                    <option value="sellable">Sellable (Restock)</option>
+                    <option value="damaged">Damaged (Quarantine)</option>
+                  </select>
+                </div>
               </div>
 
               <div>
@@ -813,7 +858,9 @@ export const SalesHistoryView: React.FC = () => {
               </div>
 
               <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-[11px]">
-                {'Confirming return will restore product stock, update accounts, and log in audit trail.'}
+                {returnCondition === 'sellable'
+                  ? 'Confirming return will restore sellable product stock, refund net price, and log in audit trail.'
+                  : 'Damaged items will be quarantined without inflating sellable stock, and refund will be issued.'}
               </div>
             </div>
 
@@ -972,7 +1019,8 @@ export const SalesHistoryView: React.FC = () => {
                     await deleteSale(saleToDelete.id);
                     setSaleToDelete(null);
                   } catch (err: any) {
-                    alert(`Failed to delete invoice: ${err.message || 'Database error'}`);
+                    setActionError(`Failed to delete invoice: ${err.message || 'Database error'}`);
+                    setSaleToDelete(null);
                   } finally {
                     setIsDeletingSale(false);
                   }

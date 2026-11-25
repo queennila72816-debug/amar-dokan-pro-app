@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../../context/AppContext';
-import { StockAdjustment } from '../../types';
+import { StockAdjustment, Product } from '../../types';
 import { formatCurrency, formatDate, exportToCSV, toBnNumber } from '../../utils/formatters';
 import { ProductThumbnail } from '../common/ProductThumbnail';
 import { resolveProductImage } from '../../utils/productImageResolver';
+import { ScannerModal } from '../scanner/ScannerModal';
+import { ProductDetailGalleryModal } from '../catalog/ProductDetailGalleryModal';
+import { isSalesmanOrCashierRole } from '../../utils/rbacDefaults';
 import {
   Boxes,
   AlertTriangle,
@@ -13,15 +16,18 @@ import {
   GitFork,
   X,
   History,
+  ScanLine,
 } from 'lucide-react';
 
 export const InventoryView: React.FC = () => {
-  const { products, branches, stockMovements, adjustStock, transferStock, settings, activeBranchId } = useApp();
+  const { products, branches, stockMovements, adjustStock, transferStock, settings, activeBranchId, currentUserRole } = useApp();
   const isBn = false;
   const lang = settings.language;
 
   const [activeTab, setActiveTab] = useState<'stock' | 'movements'>('stock');
   const [filterType, setFilterType] = useState<'all' | 'low' | 'out'>('all');
+  const [isStockScannerOpen, setIsStockScannerOpen] = useState(false);
+  const [scannedDetailProduct, setScannedDetailProduct] = useState<Product | null>(null);
 
   // Modal States
   const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
@@ -243,8 +249,16 @@ export const InventoryView: React.FC = () => {
           )}
         </div>
 
-        {/* Buttons: Adjust, Transfer, Export */}
-        <div className="flex items-center gap-2">
+        {/* Buttons: Scan Stock Check, Adjust, Transfer, Export */}
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setIsStockScannerOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-white bg-[#087F8C] hover:bg-[#066974] rounded-lg font-bold transition-colors cursor-pointer shadow-xs"
+          >
+            <ScanLine className="w-3.5 h-3.5" />
+            <span>{'Scan to Check Stock'}</span>
+          </button>
           <button
             onClick={() => setShowAdjustmentModal(true)}
             className="flex items-center gap-1.5 px-3 py-1.5 text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-200 font-semibold transition-colors"
@@ -603,6 +617,25 @@ export const InventoryView: React.FC = () => {
           </form>
         </div>
       )}
+
+      {/* Read-Only Stock Verification Scanner Modal */}
+      <ScannerModal
+        isOpen={isStockScannerOpen}
+        mode="stock_check"
+        products={activeProducts}
+        activeBranchId={activeBranchId}
+        currencyLanguage={lang}
+        onClose={() => setIsStockScannerOpen(false)}
+        onOpenProductDetails={prod => setScannedDetailProduct(prod)}
+      />
+
+      <ProductDetailGalleryModal
+        product={scannedDetailProduct}
+        showcaseMode={isSalesmanOrCashierRole(currentUserRole)}
+        canManagePhotos={false}
+        onClose={() => setScannedDetailProduct(null)}
+        onManagePhotos={() => {}}
+      />
     </div>
   );
 };

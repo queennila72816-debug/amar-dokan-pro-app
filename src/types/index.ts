@@ -270,6 +270,7 @@ export interface Product {
   createdAt: string;
   updatedAt: string;
   isActive?: boolean;
+  branchId?: string;
 }
 
 export interface Category {
@@ -299,7 +300,36 @@ export interface SaleItem {
   approvedDiscountBy?: string; // If seller discounted with admin approval
   comboOfferId?: string;
   comboOfferName?: string;
+  comboInstanceId?: string;
+  comboQuantity?: number;
+  regularUnitPrice?: number;
   isFreeItem?: boolean;
+}
+
+export interface ComboPackageSaleRecord {
+  instanceId: string;
+  offerId: string;
+  offerName: string;
+  comboCategory?: string;
+  quantity: number;
+  regularUnitPrice: number;
+  offerUnitPrice: number;
+  lineTotal: number;
+  discountTotal: number;
+  discountAmount?: number;
+  components: {
+    productId: string;
+    productName: string;
+    variantId?: string;
+    variantDetails?: string;
+    sku: string;
+    qtyPerCombo: number;
+    totalQty: number;
+    regularUnitPrice: number;
+    allocatedUnitPrice: number;
+    allocatedTotal: number;
+    isFree?: boolean;
+  }[];
 }
 
 export interface SalePayment {
@@ -345,8 +375,12 @@ export interface Sale {
     offerName: string;
     discountAmount: number;
     offerType: string;
+    comboQuantity?: number;
+    comboInstanceId?: string;
   }[];
+  comboPackages?: ComboPackageSaleRecord[];
   comboDiscount?: number;
+  clientTxId?: string;
 }
 
 export interface SaleReturn {
@@ -674,6 +708,8 @@ export interface AccountTransaction {
 
 export type LabelTemplateId = '30x20' | '40x30' | '50x30' | '50x25' | 'a4_sheet' | 'custom';
 
+export type LabelCodeFormat = 'CODE128' | 'EAN13' | 'QR';
+
 export interface LabelConfig {
   template: LabelTemplateId;
   customWidthMm?: number;
@@ -685,9 +721,27 @@ export interface LabelConfig {
   showPrice: boolean;
   showSku: boolean;
   showBarcodeNumber: boolean;
-  barcodeFormat: 'CODE128' | 'EAN13';
+  barcodeFormat: LabelCodeFormat;
+  showQrCode?: boolean;
+  qrContentMode?: 'product_ref' | 'barcode';
   copiesPerItem: number;
   customFooterText?: string;
+}
+
+export interface RecentScanEntry {
+  id: string;
+  code: string;
+  scannedAt: string;
+  source: 'camera' | 'hid' | 'manual';
+  mode: 'lookup' | 'pos' | 'stock_check' | 'label';
+  found: boolean;
+  productId?: string;
+  variantId?: string;
+  productName?: string;
+  sku?: string;
+  variantLabel?: string;
+  stockAtScan?: number;
+  salePrice?: number;
 }
 
 export type ItemCondition = 'sellable' | 'damaged';
@@ -699,10 +753,14 @@ export interface ReturnExchangeItem {
   variantDetails?: string;
   sku: string;
   originalUnitPrice: number;
+  effectiveUnitPrice?: number;
   quantity: number;
   totalRefund: number;
   reason: 'wrong_size' | 'defective_damaged' | 'color_mismatch' | 'customer_dislike' | 'other';
   condition: ItemCondition;
+  comboOfferId?: string;
+  comboOfferName?: string;
+  comboInstanceId?: string;
   note?: string;
 }
 
@@ -719,6 +777,7 @@ export interface ReplacementItem {
 
 export interface ExchangeTransaction {
   id: string;
+  returnTxId?: string;
   exchangeNumber: string;
   invoiceNumber: string;
   saleId: string;
@@ -817,6 +876,7 @@ export interface ComboOffer {
   id: string;
   name: string;
   description?: string;
+  comboCategory?: string;
   image?: string;
   offerType: OfferType;
   items: ComboOfferItem[];
@@ -858,12 +918,29 @@ export interface ComboOffer {
   updatedAt: string;
 }
 
+export interface ComboUsageComponentLog {
+  productId: string;
+  productName: string;
+  variantId?: string;
+  variantDetails?: string;
+  sku?: string;
+  qtyPerCombo: number;
+  totalQtyDeducted: number;
+  allocatedUnitPrice: number;
+  allocatedTotal: number;
+}
+
 export interface ComboOfferUsage {
   id: string;
   offerId: string;
   offerName: string;
   saleId: string;
   invoiceNumber: string;
+  comboQuantity?: number;
+  comboInstanceId?: string;
+  sellerId?: string;
+  clientTxId?: string;
+  components?: ComboUsageComponentLog[];
   customerId?: string;
   customerName?: string;
   discountGiven: number;

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ProductVariant } from '../../types';
-import { generateClothingSku, generateRetailBarcode } from '../../utils/barcodeGenerator';
+import { generateClothingSku, generateUniqueEan13Barcode } from '../../utils/barcodeGenerator';
 import { inferColorHex } from '../../utils/productImageResolver';
 import {
   Grid,
@@ -22,6 +22,7 @@ interface VariantMatrixGeneratorProps {
   baseSalePrice: number;
   variants: ProductVariant[];
   onChange: (variants: ProductVariant[]) => void;
+  existingBarcodes?: Set<string>;
 }
 
 const PRESET_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'Free Size'];
@@ -47,6 +48,7 @@ export const VariantMatrixGenerator: React.FC<VariantMatrixGeneratorProps> = ({
   baseSalePrice,
   variants,
   onChange,
+  existingBarcodes,
 }) => {
   // Selected sizes & colors for quick matrix generation
   const [selectedSizes, setSelectedSizes] = useState<string[]>(['M', 'L', 'XL']);
@@ -54,6 +56,7 @@ export const VariantMatrixGenerator: React.FC<VariantMatrixGeneratorProps> = ({
   const [customSizeInput, setCustomSizeInput] = useState('');
   const [customColorInput, setCustomColorInput] = useState('');
   const [defaultStockQty, setDefaultStockQty] = useState<number>(5);
+  const [matrixError, setMatrixError] = useState<string | null>(null);
 
   // Toggle size selection
   const toggleSize = (size: string) => {
@@ -89,20 +92,33 @@ export const VariantMatrixGenerator: React.FC<VariantMatrixGeneratorProps> = ({
     }
   };
 
+  const buildUsedBarcodeSet = (excludeVariantId?: string): Set<string> => {
+    const used = new Set<string>(existingBarcodes ? Array.from(existingBarcodes) : []);
+    variants.forEach(v => {
+      if (v.id !== excludeVariantId && v.barcode) {
+        used.add(v.barcode.trim().toLowerCase());
+      }
+    });
+    return used;
+  };
+
   // 1-Click Generate Combinations Matrix
   const handleGenerateMatrix = () => {
     if (selectedSizes.length === 0 || selectedColors.length === 0) {
-      alert('Please select at least one Size and one Color.');
+      setMatrixError('Please select at least one Size and one Color before generating the matrix.');
       return;
     }
+    setMatrixError(null);
 
+    const usedCodes = new Set<string>(existingBarcodes ? Array.from(existingBarcodes) : []);
     const generated: ProductVariant[] = [];
     let count = 1;
 
     selectedColors.forEach(color => {
       selectedSizes.forEach(size => {
         const sku = generateClothingSku(productName || 'APPAR', category || 'CLOTH', color, size);
-        const barcode = generateRetailBarcode('890');
+        const barcode = generateUniqueEan13Barcode(usedCodes, '894');
+        usedCodes.add(barcode.toLowerCase());
 
         generated.push({
           id: `var-${Date.now()}-${count++}`,
@@ -125,14 +141,17 @@ export const VariantMatrixGenerator: React.FC<VariantMatrixGeneratorProps> = ({
 
   // Add a single blank variant row manually
   const handleAddSingleRow = () => {
+    setMatrixError(null);
     const count = variants.length + 1;
     const sku = `${productName.slice(0, 3).toUpperCase() || 'PRD'}-VAR-${count}`;
+    const usedCodes = buildUsedBarcodeSet();
+    const barcode = generateUniqueEan13Barcode(usedCodes, '894');
     const newVar: ProductVariant = {
       id: `var-${Date.now()}-${count}`,
       color: '',
       size: '',
       sku,
-      barcode: generateRetailBarcode('890'),
+      barcode,
       stock: 5,
       purchasePrice: basePurchasePrice > 0 ? basePurchasePrice : undefined,
       salePrice: baseSalePrice > 0 ? baseSalePrice : undefined,
@@ -150,6 +169,12 @@ export const VariantMatrixGenerator: React.FC<VariantMatrixGeneratorProps> = ({
   // Update a specific variant field
   const handleUpdateRow = (id: string, updates: Partial<ProductVariant>) => {
     onChange(variants.map(v => (v.id === id ? { ...v, ...updates } : v)));
+  };
+
+  const handleRegenerateVariantBarcode = (id: string) => {
+    const usedCodes = buildUsedBarcodeSet(id);
+    const nextBarcode = generateUniqueEan13Barcode(usedCodes, '894');
+    handleUpdateRow(id, { barcode: nextBarcode });
   };
 
   // Calculate total matrix stock
@@ -314,6 +339,12 @@ export const VariantMatrixGenerator: React.FC<VariantMatrixGeneratorProps> = ({
         </div>
       </div>
 
+      {matrixError && (
+        <div className="px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs font-semibold">
+          {matrixError}
+        </div>
+      )}
+
       {/* Generated Variants Table */}
       {variants.length > 0 ? (
         <div className="overflow-x-auto max-h-72 overflow-y-auto border border-slate-200 rounded-xl bg-white">
@@ -358,12 +389,22 @@ export const VariantMatrixGenerator: React.FC<VariantMatrixGeneratorProps> = ({
                     />
                   </td>
                   <td className="py-1.5 px-2.5">
-                    <input
-                      type="text"
-                      value={v.barcode || ''}
-                      onChange={e => handleUpdateRow(v.id, { barcode: e.target.value })}
-                      className="w-32 px-2 py-1 text-xs border border-slate-200 rounded font-mono text-[11px]"
-                    />
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="text"
+                        value={v.barcode || ''}
+                        onChange={e => handleUpdateRow(v.id, { barcode: e.target.value })}
+                        className="w-28 px-2 py-1 text-xs border border-slate-200 rounded font-mono text-[11px]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleRegenerateVariantBarcode(v.id)}
+                        title="Generate unique EAN-13 barcode for this variant"
+                        className="p-1 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-600 cursor-pointer shrink-0"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                      </button>
+                    </div>
                   </td>
                   <td className="py-1.5 px-2.5">
                     <input

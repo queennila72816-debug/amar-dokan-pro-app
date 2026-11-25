@@ -21,6 +21,7 @@ import { SellerDashboardView } from './components/dashboard/SellerDashboardView'
 import { BusinessSetupWizard } from './components/setup/BusinessSetupWizard';
 import { SmartPricingCalculatorView } from './components/pricing/SmartPricingCalculatorView';
 import { BarcodeLabelStudio } from './components/barcodes/BarcodeLabelStudio';
+import { ScannerView } from './components/scanner/ScannerView';
 import { ProductCatalogView } from './components/catalog/ProductCatalogView';
 import { ExchangeReturnView } from './components/returns/ExchangeReturnView';
 import { SmartReorderView } from './components/inventory/SmartReorderView';
@@ -55,6 +56,7 @@ const TAB_TO_MODULE_MAP: Record<string, LegacyAppModule> = {
   returns: 'returns',
   catalog: 'catalog',
   barcodes: 'barcodes',
+  scanner: 'scanner',
   reorder: 'reorder',
   combos: 'combos',
   billing: 'billing',
@@ -409,6 +411,9 @@ const MainLayout: React.FC = () => {
 
       case 'barcodes':
         return <BarcodeLabelStudio />;
+
+      case 'scanner':
+        return <ScannerView onNavigateTab={handleTabChange} />;
 
       case 'reorder':
         return <SmartReorderView />;

@@ -25,6 +25,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Crown,
+  ScanBarcode,
 } from 'lucide-react';
 import { LegacyAppModule } from '../../utils/rbacDefaults';
 import { getBusinessDisplayName } from '../../config/appIdentity';
@@ -57,6 +58,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
   const navItems: NavItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, moduleKey: 'dashboard', group: 'Overview' },
     { id: 'pos', label: 'POS / New Sale', icon: ShoppingCart, moduleKey: 'pos', group: 'Sales & POS' },
+    { id: 'scanner', label: 'Barcode & QR Scanner', icon: ScanBarcode, moduleKey: 'scanner', group: 'Sales & POS' },
     { id: 'sales', label: 'Sales & Invoices', icon: Receipt, moduleKey: 'sales', group: 'Sales & POS' },
     { id: 'returns', label: 'Exchange & Returns', icon: RotateCcw, moduleKey: 'returns', group: 'Sales & POS' },
     { id: 'products', label: 'Products & Variants', icon: Package, moduleKey: 'products', group: 'Catalog & Pricing' },

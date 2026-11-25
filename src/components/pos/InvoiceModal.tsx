@@ -23,6 +23,8 @@ import {
   MessageSquare,
   Eye,
   AlertTriangle,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 interface InvoiceModalProps {
@@ -40,8 +42,20 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
   const [isPrinting, setIsPrinting] = useState(false);
   const [printError, setPrintError] = useState<string | null>(null);
   const [previewPayload, setPreviewPayload] = useState<PrintPreviewPayload | null>(null);
+  const [expandedComboIds, setExpandedComboIds] = useState<Record<string, boolean>>({});
 
   if (!sale) return null;
+
+  const toggleComboExpand = (id: string) => {
+    setExpandedComboIds(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  // Build unified customer-facing display rows (combo packages as single line + regular items)
+  const comboInstanceSet = new Set((sale.comboPackages || []).map(p => p.instanceId));
+  const regularItems = sale.items.filter(
+    it => !it.comboInstanceId || !comboInstanceSet.has(it.comboInstanceId)
+  );
+  const comboPackages = sale.comboPackages || [];
 
   const lang = settings.language;
   const activeBranch = branches.find(b => b.id === activeBranchId) || branches[0];
@@ -75,12 +89,15 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
   };
 
   const generateWhatsAppMessage = () => {
-    const itemsText = sale.items
-      .map(
-        (item, idx) =>
-          `${idx + 1}. ${item.productName}${item.variantDetails ? ` (${item.variantDetails})` : ''} - ${item.quantity} x ৳${item.unitPrice} = ৳${item.total}`
-      )
-      .join('%0A');
+    const comboLines = comboPackages.map(
+      (pkg, idx) =>
+        `${idx + 1}. [Combo] ${pkg.offerName} - ${pkg.quantity} x ৳${pkg.offerUnitPrice} = ৳${pkg.lineTotal} (${pkg.components.map(c => `${c.totalQty}x ${c.productName}`).join(', ')})`
+    );
+    const regularLines = regularItems.map(
+      (item, idx) =>
+        `${comboPackages.length + idx + 1}. ${item.productName}${item.variantDetails ? ` (${item.variantDetails})` : ''} - ${item.quantity} x ৳${item.unitPrice} = ৳${item.total}`
+    );
+    const itemsText = [...comboLines, ...regularLines].join('%0A');
 
     const message =
       `*${encodeURIComponent(biz.shopName)}*%0A` +
@@ -109,7 +126,8 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
     }
   };
 
-  const comboDiscount = Number(sale.comboDiscount || 0);
+  const packageSavings = comboPackages.reduce((s, p) => s + (Number(p.discountTotal ?? p.discountAmount) || 0), 0);
+  const comboDiscount = Math.max(0, Number(sale.comboDiscount || 0) - packageSavings);
   const additionalDiscount = Math.max(0, Number(sale.discount || 0) - comboDiscount);
 
   return (
@@ -240,7 +258,49 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                     <span>Amount</span>
                   </div>
                   <div className="space-y-1.5 pt-1">
-                    {sale.items.map((item, idx) => (
+                    {comboPackages.map(pkg => {
+                      const isExpanded = Boolean(expandedComboIds[pkg.instanceId]);
+                      return (
+                        <div key={pkg.instanceId} className="text-[11px] bg-emerald-50/40 p-1.5 rounded border border-emerald-200/70">
+                          <div className="font-sans font-bold text-slate-900 leading-tight flex items-center justify-between gap-1">
+                            <span>[COMBO] {pkg.offerName}</span>
+                            <button
+                              type="button"
+                              onClick={() => toggleComboExpand(pkg.instanceId)}
+                              className="text-[9.5px] font-normal text-emerald-700 underline inline-flex items-center gap-0.5 cursor-pointer no-print"
+                            >
+                              {isExpanded ? 'Hide' : `${pkg.components.length} items`}
+                              {isExpanded ? <ChevronUp className="w-2.5 h-2.5" /> : <ChevronDown className="w-2.5 h-2.5" />}
+                            </button>
+                          </div>
+                          <div className="text-[9.5px] text-slate-500 font-sans">
+                            Includes: {pkg.components.map(c => `${c.totalQty}× ${c.productName}${c.variantDetails ? ` (${c.variantDetails})` : ''}`).join(', ')}
+                          </div>
+                          {isExpanded && (
+                            <div className="mt-1 pl-2 border-l border-emerald-300 space-y-0.5 text-[9.5px] text-slate-600">
+                              {pkg.components.map((c, ci) => (
+                                <div key={ci} className="flex justify-between">
+                                  <span>{c.totalQty}× {c.productName}{c.isFree ? ' [FREE]' : ''}</span>
+                                  <span className="font-mono-num">{formatCurrency(c.allocatedTotal, 'en')}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          <div className="flex justify-between text-slate-600 text-[10px] pt-0.5">
+                            <span>
+                              {pkg.quantity} x {formatCurrency(pkg.offerUnitPrice, 'en')}
+                              {Number(pkg.discountTotal ?? pkg.discountAmount ?? 0) > 0 &&
+                                ` (Saved ৳${Number(pkg.discountTotal ?? pkg.discountAmount ?? 0)})`}
+                            </span>
+                            <span className="font-semibold text-slate-900 font-mono-num">
+                              {formatCurrency(pkg.lineTotal, 'en')}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    {regularItems.map((item, idx) => (
                       <div key={idx} className="text-[11px]">
                         <div className="font-sans font-semibold text-slate-800 leading-tight">
                           {item.productName}
@@ -271,6 +331,12 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                     <span>Subtotal:</span>
                     <span className="font-mono-num">{formatCurrency(sale.subtotal, 'en')}</span>
                   </div>
+                  {packageSavings > 0 && (
+                    <div className="flex justify-between text-emerald-700 font-semibold">
+                      <span>Combo Savings Included:</span>
+                      <span className="font-mono-num">{formatCurrency(packageSavings, 'en')}</span>
+                    </div>
+                  )}
                   {comboDiscount > 0 && (
                     <div className="flex justify-between text-purple-700 font-semibold">
                       <span>Bundle/Combo Savings:</span>
@@ -407,7 +473,61 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
-                      {sale.items.map((item, idx) => {
+                      {comboPackages.map((pkg, pIdx) => {
+                        const isExpanded = Boolean(expandedComboIds[pkg.instanceId]);
+                        return (
+                          <React.Fragment key={pkg.instanceId}>
+                            <tr className="text-slate-900 bg-emerald-50/25">
+                              <td className="py-2 text-slate-500 font-mono">{pIdx + 1}</td>
+                              <td className="py-2">
+                                <div>
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-emerald-600 text-white">
+                                      Combo
+                                    </span>
+                                    <span className="font-bold">{pkg.offerName}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleComboExpand(pkg.instanceId)}
+                                      className="text-[10px] text-emerald-700 underline inline-flex items-center gap-0.5 cursor-pointer no-print"
+                                    >
+                                      {isExpanded ? 'Hide breakdown' : 'Details'}
+                                      {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                                    </button>
+                                  </div>
+                                  <div className="text-[10px] text-slate-500 mt-0.5">
+                                    Includes: {pkg.components.map(c => `${c.totalQty}× ${c.productName}${c.variantDetails ? ` (${c.variantDetails})` : ''}`).join(', ')}
+                                  </div>
+                                  {isExpanded && (
+                                    <div className="mt-1.5 pl-2.5 border-l-2 border-emerald-200 space-y-0.5 text-[10px] text-slate-600">
+                                      {pkg.components.map((c, ci) => (
+                                        <div key={ci} className="flex items-center justify-between gap-3">
+                                          <span>
+                                            {c.totalQty}× {c.productName}{c.variantDetails ? ` (${c.variantDetails})` : ''}{c.isFree ? ' [FREE]' : ''}
+                                          </span>
+                                          <span className="font-mono-num text-slate-500">{formatCurrency(c.allocatedTotal, lang)}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="py-2 text-center font-mono-num font-bold">{pkg.quantity}</td>
+                              <td className="py-2 text-right font-mono-num">{formatCurrency(pkg.offerUnitPrice, lang)}</td>
+                              <td className="py-2 text-right font-mono-num text-emerald-700">
+                                {Number(pkg.discountTotal ?? pkg.discountAmount ?? 0) > 0
+                                  ? `Saved ${formatCurrency(Number(pkg.discountTotal ?? pkg.discountAmount ?? 0), lang)}`
+                                  : '—'}
+                              </td>
+                              <td className="py-2 text-right font-mono-num font-bold text-emerald-800">
+                                {formatCurrency(pkg.lineTotal, lang)}
+                              </td>
+                            </tr>
+                          </React.Fragment>
+                        );
+                      })}
+
+                      {regularItems.map((item, idx) => {
                         const matchedProd = products.find(p => p.id === item.productId);
                         const thumbUrl =
                           item.imageUrl ||
@@ -418,7 +538,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                           });
                         return (
                         <tr key={idx} className="text-slate-800">
-                          <td className="py-2 text-slate-400">{idx + 1}</td>
+                          <td className="py-2 text-slate-400">{comboPackages.length + idx + 1}</td>
                           <td className="py-2">
                             <div className="flex items-center gap-2">
                               <ProductThumbnail
@@ -462,6 +582,12 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                       <span>Subtotal:</span>
                       <span className="font-mono-num">{formatCurrency(sale.subtotal, lang)}</span>
                     </div>
+                    {packageSavings > 0 && (
+                      <div className="flex justify-between text-emerald-700 font-semibold">
+                        <span>Combo Savings Included:</span>
+                        <span className="font-mono-num">{formatCurrency(packageSavings, lang)}</span>
+                      </div>
+                    )}
                     {comboDiscount > 0 && (
                       <div className="flex justify-between text-purple-700 font-semibold">
                         <span>Bundle/Combo Savings:</span>

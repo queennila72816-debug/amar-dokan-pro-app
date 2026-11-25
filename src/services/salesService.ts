@@ -5,7 +5,7 @@ export const salesService = {
   async completeSale(
     sale: Sale,
     businessId: string
-  ): Promise<{ success: boolean; saleId?: string; invoiceNumber?: string }> {
+  ): Promise<{ success: boolean; saleId?: string; invoiceNumber?: string; idempotentHit?: boolean }> {
     if (!isSupabaseConfigured) {
       throw new Error('Supabase client is not configured.');
     }
@@ -15,6 +15,7 @@ export const salesService = {
         business_id: businessId,
         branch_id: sanitizeUuid(sale.branchId),
         invoice_number: sale.invoiceNumber,
+        client_tx_id: sale.clientTxId || null,
         customer_id: sanitizeUuid(sale.customerId),
         customer_name: sale.customerName,
         customer_mobile: sale.customerMobile || null,
@@ -22,6 +23,7 @@ export const salesService = {
         discount: sale.discount,
         combo_discount: sale.comboDiscount || 0,
         applied_offers: sale.appliedOffers || [],
+        combo_packages: sale.comboPackages || [],
         vat_tax_rate: sale.vatTaxRate,
         vat_tax_amount: sale.vatTaxAmount,
         total: sale.total,
@@ -50,6 +52,8 @@ export const salesService = {
         total: i.total,
         combo_offer_id: i.comboOfferId || null,
         combo_offer_name: i.comboOfferName || null,
+        combo_instance_id: i.comboInstanceId || null,
+        combo_quantity: i.comboQuantity ?? null,
         is_free_item: Boolean(i.isFreeItem),
       })),
       p_payments: sale.payments.map(p => ({
@@ -68,6 +72,7 @@ export const salesService = {
       success: true,
       saleId: data?.sale_id || sale.id,
       invoiceNumber: data?.invoice_number || sale.invoiceNumber,
+      idempotentHit: Boolean(data?.idempotent_hit),
     };
   },
 
@@ -109,27 +114,47 @@ export const salesService = {
 
   async recordPartialReturn(
     saleId: string,
-    items: SaleReturn['items'],
+    items: (SaleReturn['items'][number] & {
+      variantId?: string;
+      condition?: 'sellable' | 'damaged';
+    })[],
     refundType: 'cash' | 'adjust_due',
-    businessId: string
+    businessId: string,
+    returnTxId?: string
   ): Promise<boolean> {
     if (!isSupabaseConfigured) {
       throw new Error('Supabase client is not configured.');
     }
 
-    const { error } = await supabase.rpc('record_partial_sale_return', {
+    const mappedItems = items.map(it => ({
+      product_id: sanitizeUuid(it.productId),
+      variant_id: sanitizeUuid(it.variantId),
+      product_name: it.productName,
+      quantity: it.quantity,
+      unit_price: it.unitPrice,
+      total_refund: it.totalRefund,
+      reason: it.reason,
+      condition: it.condition || 'sellable',
+    }));
+
+    let { error } = await supabase.rpc('record_partial_sale_return', {
       p_business_id: businessId,
       p_sale_id: saleId,
-      p_items: items.map(it => ({
-        product_id: sanitizeUuid(it.productId),
-        product_name: it.productName,
-        quantity: it.quantity,
-        unit_price: it.unitPrice,
-        total_refund: it.totalRefund,
-        reason: it.reason,
-      })),
+      p_items: mappedItems,
       p_refund_type: refundType,
+      p_return_tx_id: returnTxId || null,
     });
+
+    // Graceful fallback if older 4-param RPC exists on remote DB before migration runs
+    if (error && (String(error.code) === 'PGRST202' || String(error.message || '').includes('function'))) {
+      const retry = await supabase.rpc('record_partial_sale_return', {
+        p_business_id: businessId,
+        p_sale_id: saleId,
+        p_items: mappedItems,
+        p_refund_type: refundType,
+      });
+      error = retry.error;
+    }
 
     if (error) throw error;
     return true;
@@ -204,6 +229,7 @@ export const salesService = {
     return (data || []).map((s: any) => ({
       id: s.id,
       invoiceNumber: s.invoice_number,
+      clientTxId: s.client_tx_id || undefined,
       date: s.created_at,
       customerId: s.customer_id || undefined,
       customerName: s.customer_name,
@@ -221,12 +247,15 @@ export const salesService = {
         variantDetails: i.variant_details || undefined,
         comboOfferId: i.combo_offer_id || undefined,
         comboOfferName: i.combo_offer_name || undefined,
+        comboInstanceId: i.combo_instance_id || undefined,
+        comboQuantity: i.combo_quantity != null ? Number(i.combo_quantity) : undefined,
         isFreeItem: Boolean(i.is_free_item),
       })),
       subtotal: Number(s.subtotal),
       discount: Number(s.discount || 0),
       comboDiscount: Number(s.combo_discount || 0),
       appliedOffers: Array.isArray(s.applied_offers) ? s.applied_offers : undefined,
+      comboPackages: Array.isArray(s.combo_packages) ? s.combo_packages : undefined,
       vatTaxRate: Number(s.vat_tax_rate || 0),
       vatTaxAmount: Number(s.vat_tax_amount || 0),
       total: Number(s.total),

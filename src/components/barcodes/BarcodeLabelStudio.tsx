@@ -1,10 +1,11 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { getBusinessDisplayName } from '../../config/appIdentity';
-import { LabelConfig, LabelTemplateId, PrinterSettings } from '../../types';
+import { LabelCodeFormat, LabelConfig, LabelTemplateId, PrinterSettings } from '../../types';
 import { BarcodeSvg } from './BarcodeSvg';
+import { QrCodeSvg } from './QrCodeSvg';
 import { formatCurrency } from '../../utils/formatters';
-import { BarcodeFormat } from '../../utils/barcodeGenerator';
+import { buildProductQrPayload } from '../../utils/barcodeGenerator';
 import {
   cancelActivePrintJob,
   getPrinterSettings,
@@ -36,6 +37,7 @@ import {
 interface PrintItem {
   id: string;
   productId: string;
+  variantId?: string;
   productName: string;
   variantDetails?: string;
   size?: string;
@@ -148,7 +150,7 @@ const LabelQueueRow: React.FC<LabelQueueRowProps> = React.memo(
 LabelQueueRow.displayName = 'LabelQueueRow';
 
 export const BarcodeLabelStudio: React.FC = () => {
-  const { products, settings } = useApp();
+  const { products, settings, pendingLabelSelection, setPendingLabelSelection } = useApp();
   const savedPrinter = useMemo(() => getPrinterSettings(settings), [settings]);
   const shopLogo = getShopLogo(settings);
 
@@ -169,6 +171,8 @@ export const BarcodeLabelStudio: React.FC = () => {
     showSku: true,
     showBarcodeNumber: true,
     barcodeFormat: 'CODE128',
+    showQrCode: false,
+    qrContentMode: 'product_ref',
     copiesPerItem: 1,
     customFooterText: '',
   }));
@@ -211,6 +215,7 @@ export const BarcodeLabelStudio: React.FC = () => {
           list.push({
             id: v.id,
             productId: p.id,
+            variantId: v.id,
             productName: p.name,
             variantDetails: variantLabel,
             size: v.size,
@@ -278,6 +283,42 @@ export const BarcodeLabelStudio: React.FC = () => {
     });
   }, [allPrintItems]);
 
+  useEffect(() => {
+    if (!pendingLabelSelection) return;
+    const { productId, variantId } = pendingLabelSelection;
+    const targetProduct = products.find(p => p.id === productId);
+    setPendingLabelSelection(null);
+    if (!targetProduct) return;
+
+    setSelectedCategory('all');
+    setSearchQuery(targetProduct.code || targetProduct.name);
+
+    const matchingIds = new Set(
+      allPrintItems
+        .filter(item =>
+          variantId ? item.id === variantId : item.productId === productId
+        )
+        .map(item => item.id)
+    );
+
+    if (matchingIds.size > 0) {
+      setSelectedIds(() => {
+        const next: Record<string, boolean> = {};
+        allPrintItems.forEach(item => {
+          next[item.id] = matchingIds.has(item.id);
+        });
+        return next;
+      });
+      setItemCopies(prev => {
+        const next = { ...prev };
+        matchingIds.forEach(id => {
+          if (!next[id] || next[id] < 1) next[id] = 1;
+        });
+        return next;
+      });
+    }
+  }, [pendingLabelSelection, setPendingLabelSelection, products, allPrintItems]);
+
   const categories = useMemo(() => {
     const set = new Set<string>();
     products.forEach(p => p.category && set.add(p.category));
@@ -305,6 +346,7 @@ export const BarcodeLabelStudio: React.FC = () => {
       .filter(item => selectedIds[item.id])
       .map(item => ({
         productId: item.productId,
+        variantId: item.variantId,
         productName: item.productName,
         variantDetails: item.variantDetails,
         sku: item.sku,
@@ -378,6 +420,18 @@ export const BarcodeLabelStudio: React.FC = () => {
         };
     }
   }, [config.template, config.customWidthMm, config.customHeightMm]);
+
+  const previewPriceClass = useMemo(() => {
+    const isCompact = dimensions.heightMm <= 22 || dimensions.widthMm <= 34;
+    if (isCompact) {
+      if (savedPrinter.labelFontSize === 'small') return 'text-[13px]';
+      if (savedPrinter.labelFontSize === 'large') return 'text-[15px]';
+      return 'text-[14px]';
+    }
+    if (savedPrinter.labelFontSize === 'small') return 'text-[18px]';
+    if (savedPrinter.labelFontSize === 'large') return 'text-[20px]';
+    return 'text-[19px]';
+  }, [dimensions.heightMm, dimensions.widthMm, savedPrinter.labelFontSize]);
 
   const effectiveSettings = useMemo(() => {
     return {
@@ -477,6 +531,53 @@ export const BarcodeLabelStudio: React.FC = () => {
     [filteredItems, selectedIds]
   );
 
+  const handleTestPrint = useCallback(() => {
+    if (isPrinting) return;
+    setJobError(null);
+    setLastFailedAction(null);
+
+    const target = queuedPrintItems[0] || (previewItem
+      ? {
+          productId: previewItem.productId,
+          variantId: previewItem.variantId,
+          productName: previewItem.productName,
+          variantDetails: previewItem.variantDetails,
+          sku: previewItem.sku,
+          barcode: previewItem.barcode || previewItem.sku,
+          price: previewItem.price,
+          copies: 1,
+        }
+      : null);
+
+    if (!target) {
+      setJobError('Select at least one product to run a 1-label test print.');
+      setLastFailedAction('print');
+      return;
+    }
+
+    setIsPrinting(true);
+    try {
+      const res = printProductLabel([{ ...target, copies: 1 }], config, effectiveSettings);
+      if (!res.opened && !res.cancelled) {
+        setJobError(res.error || 'Unable to open browser print dialog.');
+        setLastFailedAction('print');
+      }
+    } catch (err: any) {
+      setJobError(err?.message || 'Unexpected error while preparing test print.');
+      setLastFailedAction('print');
+    } finally {
+      setIsPrinting(false);
+    }
+  }, [isPrinting, queuedPrintItems, previewItem, config, effectiveSettings]);
+
+  const previewQrPayload = useMemo(() => {
+    if (!previewItem) return '';
+    const code = previewItem.barcode || previewItem.sku;
+    return config.qrContentMode === 'barcode'
+      ? code
+      : buildProductQrPayload(previewItem.productId, previewItem.variantId, code);
+  }, [previewItem, config.qrContentMode]);
+
   return (
     <>
       <div className="space-y-6">
@@ -487,14 +588,14 @@ export const BarcodeLabelStudio: React.FC = () => {
               <span className="p-2 rounded-xl bg-purple-50 text-purple-700">
                 <Barcode className="w-5 h-5" />
               </span>
-              <h1 className="text-xl font-bold text-slate-900">Barcode &amp; Price Label Studio</h1>
+              <h1 className="text-xl font-bold text-slate-900">Barcode &amp; QR Label Studio</h1>
             </div>
             <p className="text-xs text-slate-500 mt-1">
-              Print crisp Code 128 or EAN-13 barcode tags on 30×20mm, 40×30mm, 50×25mm, 50×30mm thermal rolls or A4 sticker sheets.
+              Print Code 128, EAN-13, QR, or combined Barcode + QR labels on thermal rolls or A4 sheets via your browser print dialog.
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
             <div className="text-right mr-1">
               <span className="text-xs text-slate-500 block">Total Labels Queued</span>
               <span className="text-lg font-bold text-emerald-700 font-mono-num">
@@ -516,12 +617,23 @@ export const BarcodeLabelStudio: React.FC = () => {
                 type="button"
                 onClick={handlePreviewSheet}
                 disabled={totalLabelsQueued === 0}
-                className="flex items-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 border border-slate-300 disabled:opacity-50 text-slate-800 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+                className="flex items-center gap-2 px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 border border-slate-300 disabled:opacity-50 text-slate-800 text-xs font-bold rounded-xl transition-colors cursor-pointer"
               >
                 <Eye className="w-4 h-4" />
                 <span>Preview Sheet</span>
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={handleTestPrint}
+              disabled={!previewItem || isPrinting}
+              title="Open browser print dialog for 1 test label to verify thermal or A4 alignment"
+              className="flex items-center gap-1.5 px-3.5 py-2.5 bg-white hover:bg-slate-50 border border-purple-300 disabled:opacity-50 text-purple-700 text-xs font-bold rounded-xl transition-colors cursor-pointer"
+            >
+              <Printer className="w-3.5 h-3.5" />
+              <span>Test Print (1)</span>
+            </button>
 
             <button
               type="button"
@@ -609,25 +721,56 @@ export const BarcodeLabelStudio: React.FC = () => {
                 </div>
               </div>
 
-              {/* Barcode Standard Selector */}
-              <div className="space-y-1.5 pt-2 border-t">
-                <label className="text-xs font-semibold text-slate-700">Barcode Standard</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {(['CODE128', 'EAN13'] as BarcodeFormat[]).map(fmt => (
+              {/* Barcode & QR Standard Selector */}
+              <div className="space-y-2.5 pt-2 border-t">
+                <label className="text-xs font-semibold text-slate-700">Code Format</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['CODE128', 'EAN13', 'QR'] as LabelCodeFormat[]).map(fmt => (
                     <button
                       key={fmt}
                       type="button"
                       onClick={() => setConfig(prev => ({ ...prev, barcodeFormat: fmt }))}
-                      className={`py-2 px-3 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                      className={`py-2 px-2 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
                         config.barcodeFormat === fmt
                           ? 'bg-purple-600 text-white border-purple-600'
                           : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
                       }`}
                     >
-                      {fmt === 'CODE128' ? 'Code 128 (SKU/Any)' : 'EAN-13 (13-digit)'}
+                      {fmt === 'CODE128' ? 'Code 128' : fmt === 'EAN13' ? 'EAN-13' : 'QR Code'}
                     </button>
                   ))}
                 </div>
+
+                {config.barcodeFormat !== 'QR' && (
+                  <label className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-200 cursor-pointer text-xs text-slate-700">
+                    <span className="font-medium">Include QR Code beside Barcode</span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(config.showQrCode)}
+                      onChange={e => setConfig(prev => ({ ...prev, showQrCode: e.target.checked }))}
+                      className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500"
+                    />
+                  </label>
+                )}
+
+                {(config.barcodeFormat === 'QR' || config.showQrCode) && (
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-semibold text-slate-600">QR Code Payload</label>
+                    <select
+                      value={config.qrContentMode || 'product_ref'}
+                      onChange={e =>
+                        setConfig(prev => ({
+                          ...prev,
+                          qrContentMode: e.target.value as 'product_ref' | 'barcode',
+                        }))
+                      }
+                      className="w-full px-2.5 py-1.5 text-xs bg-white border border-slate-200 rounded-lg"
+                    >
+                      <option value="product_ref">PROTIVA Product/Variant Reference (Recommended)</option>
+                      <option value="barcode">Barcode Value Only</option>
+                    </select>
+                  </div>
+                )}
               </div>
 
               {/* Custom Dimensions or A4 Grid Settings */}
@@ -803,27 +946,57 @@ export const BarcodeLabelStudio: React.FC = () => {
                       </div>
                     )}
 
-                    {/* Vector Barcode */}
-                    <div className="my-1 w-full flex justify-center overflow-hidden">
-                      <BarcodeSvg
-                        value={previewItem.barcode || previewItem.sku}
-                        width={dimensions.widthPx - 24}
-                        height={dimensions.heightPx > 110 ? 34 : 24}
-                        showText={config.showBarcodeNumber}
-                        format={config.barcodeFormat}
-                      />
+                    {/* Vector Barcode / QR */}
+                    <div className="my-1 w-full flex items-center justify-center gap-1.5 overflow-hidden">
+                      {config.barcodeFormat === 'QR' ? (
+                        <BarcodeSvg
+                          value={previewItem.barcode || previewItem.sku}
+                          qrValue={previewQrPayload}
+                          width={dimensions.widthPx - 24}
+                          height={dimensions.heightPx > 110 ? 44 : 32}
+                          showText={config.showBarcodeNumber}
+                          format="QR"
+                        />
+                      ) : config.showQrCode ? (
+                        <>
+                          <div className="flex-1 min-w-0 flex justify-center overflow-hidden">
+                            <BarcodeSvg
+                              value={previewItem.barcode || previewItem.sku}
+                              width={Math.max(96, dimensions.widthPx - 68)}
+                              height={dimensions.heightPx > 110 ? 32 : 22}
+                              showText={config.showBarcodeNumber}
+                              format={config.barcodeFormat}
+                            />
+                          </div>
+                          <QrCodeSvg
+                            value={previewQrPayload}
+                            size={dimensions.heightPx > 110 ? 40 : 30}
+                            className="shrink-0"
+                          />
+                        </>
+                      ) : (
+                        <BarcodeSvg
+                          value={previewItem.barcode || previewItem.sku}
+                          width={dimensions.widthPx - 24}
+                          height={dimensions.heightPx > 110 ? 34 : 24}
+                          showText={config.showBarcodeNumber}
+                          format={config.barcodeFormat}
+                        />
+                      )}
                     </div>
 
-                    <div className="w-full flex items-center justify-between text-[10px] font-mono px-1 gap-1">
+                    <div className="w-full flex items-end justify-between font-mono px-1 gap-1.5 shrink-0 pt-0.5">
                       {config.showSku ? (
-                        <span className="text-slate-500 text-[9px] truncate max-w-[85px]">
+                        <span className="text-slate-500 text-[9px] truncate min-w-0 flex-1 text-left leading-tight">
                           {previewItem.sku}
                         </span>
                       ) : (
                         <span />
                       )}
                       {config.showPrice && (
-                        <span className="font-extrabold text-slate-950 text-xs shrink-0">
+                        <span
+                          className={`${previewPriceClass} font-black text-black leading-[0.95] tracking-[-0.02em] shrink-0 text-right whitespace-nowrap`}
+                        >
                           {formatCurrency(previewItem.price, 'en')}
                         </span>
                       )}
