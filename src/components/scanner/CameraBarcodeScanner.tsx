@@ -178,6 +178,8 @@ export const CameraBarcodeScanner: React.FC<CameraBarcodeScannerProps> = ({
           audio: false,
         });
         testStream.getTracks().forEach(t => t.stop());
+        // Allow hardware driver a short settle pause before opening decode stream (prevents NotReadableError on Edge/Android)
+        await new Promise(resolve => window.setTimeout(resolve, 80));
 
         const videoInputs = await BrowserMultiFormatReader.listVideoInputDevices();
         setDevices(videoInputs);
@@ -208,30 +210,49 @@ export const CameraBarcodeScanner: React.FC<CameraBarcodeScannerProps> = ({
           delayBetweenScanSuccess: 300,
         });
 
-        const controls = await reader.decodeFromVideoDevice(
-          targetDeviceId,
-          videoRef.current,
-          (result, _err) => {
-            if (!result) return;
-            const code = result.getText().trim();
-            if (!code) return;
+        const handleDecoded = (result: { getText: () => string } | undefined) => {
+          if (!result) return;
+          const code = result.getText().trim();
+          if (!code) return;
 
-            const now = Date.now();
-            if (
-              lastScanRef.current.code === code &&
-              now - lastScanRef.current.time < cooldownMs
-            ) {
-              return;
-            }
-            lastScanRef.current = { code, time: now };
-            setLastDetectedFlash(code);
-            window.setTimeout(() => {
-              setLastDetectedFlash(prev => (prev === code ? null : prev));
-            }, 1400);
-
-            onScanRef.current(code);
+          const now = Date.now();
+          if (
+            lastScanRef.current.code === code &&
+            now - lastScanRef.current.time < cooldownMs
+          ) {
+            return;
           }
-        );
+          lastScanRef.current = { code, time: now };
+          setLastDetectedFlash(code);
+          window.setTimeout(() => {
+            setLastDetectedFlash(prev => (prev === code ? null : prev));
+          }, 1400);
+
+          onScanRef.current(code);
+        };
+
+        let controls: IScannerControls;
+        try {
+          controls = await reader.decodeFromVideoDevice(
+            targetDeviceId,
+            videoRef.current,
+            result => handleDecoded(result)
+          );
+        } catch (deviceErr: any) {
+          const errName = String(deviceErr?.name || '');
+          if (
+            !explicitDeviceId &&
+            (errName === 'OverconstrainedError' || errName === 'NotFoundError')
+          ) {
+            controls = await reader.decodeFromConstraints(
+              { video: { facingMode: { ideal: 'environment' } }, audio: false },
+              videoRef.current,
+              result => handleDecoded(result)
+            );
+          } else {
+            throw deviceErr;
+          }
+        }
 
         controlsRef.current = controls;
         updateStatus('scanning');

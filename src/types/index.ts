@@ -647,6 +647,11 @@ export interface ShopSettings {
   isConfigured?: boolean;
   printerSettings?: PrinterSettings;
   
+  // Optional Business Web & Marketplace Links
+  websiteUrl?: string;
+  marketplaceUrl?: string;
+  socialMedia?: string;
+
   // Pricing & Costing Rules
   inventoryCostingMethod?: InventoryCostingMethod; // FIFO or Weighted Average
   expenseAllocationMethod?: ExpenseAllocationMethod;
@@ -872,12 +877,276 @@ export interface ComboOfferItem {
   salePrice?: number;
 }
 
+export type PosterTemplateId =
+  | 'style_zone_reference'
+  | 'premium_black_gold'
+  | 'modern_blue_yellow'
+  | 'eid_special'
+  | 'festival_sale'
+  | 'luxury_fashion'
+  | 'winter_collection'
+  | 'kids_collection'
+  | 'women_fashion'
+  | 'men_fashion'
+  | 'couple_combo'
+  | 'family_combo'
+  | 'accessories_combo'
+  | 'cosmetics_combo'
+  | 'mixed_product_combo'
+  | 'minimal_professional';
+
+export type PosterMode =
+  | 'ai_creative'
+  | 'custom_studio'
+  | 'auto'
+  | 'template'
+  | 'custom';
+
+export type PosterDimensionPreset =
+  | 'facebook_square'
+  | 'facebook_portrait'
+  | 'facebook_story'
+  | 'facebook_post'
+  | 'instagram_post'
+  | 'instagram_story'
+  | 'square_social'
+  | 'a4_portrait'
+  | 'a4_landscape'
+  | 'a5_portrait'
+  | 'a5_landscape'
+  | 'a3_portrait'
+  | 'a3_landscape'
+  | 'custom';
+
+export type PosterModelCategory =
+  | 'auto'
+  | 'male'
+  | 'female'
+  | 'couple'
+  | 'family'
+  | 'boys'
+  | 'girls'
+  | 'none';
+
+export type MasterImageType = 'poster' | 'product_composition' | 'custom';
+
+export type PosterFontFamily =
+  | 'Plus Jakarta Sans'
+  | 'Oswald'
+  | 'Playfair Display'
+  | 'Hind Siliguri'
+  | 'Noto Sans Bengali'
+  | 'JetBrains Mono';
+
+export interface PosterCanvasLayerBase {
+  id: string;
+  name: string;
+  type: 'text' | 'image' | 'shape' | 'badge' | 'sticker' | 'qr';
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation: number;
+  opacity: number;
+  visible: boolean;
+  locked: boolean;
+  groupId?: string;
+  zIndex: number;
+  borderWidth?: number;
+  borderColor?: string;
+  borderRadius?: number;
+  shadowColor?: string;
+  shadowBlur?: number;
+  shadowOffsetX?: number;
+  shadowOffsetY?: number;
+}
+
+export interface PosterTextLayer extends PosterCanvasLayerBase {
+  type: 'text';
+  text: string;
+  fontFamily: PosterFontFamily | string;
+  fontSize: number;
+  fontWeight: '400' | '600' | '700' | '800' | '900';
+  fontStyle: 'normal' | 'italic';
+  textAlign: 'left' | 'center' | 'right';
+  color: string;
+  backgroundColor?: string;
+  backgroundPadding?: number;
+  strokeColor?: string;
+  strokeWidth?: number;
+  strikethrough?: boolean;
+  uppercase?: boolean;
+  letterSpacing?: number;
+  lineHeight?: number;
+}
+
+export interface PosterImageLayer extends PosterCanvasLayerBase {
+  type: 'image';
+  src: string;
+  fit: 'contain' | 'cover';
+  /** Normalized 0..1 crop window */
+  cropX?: number;
+  cropY?: number;
+  cropW?: number;
+  cropH?: number;
+  brightness?: number; // 50..150, default 100
+  contrast?: number; // 50..150, default 100
+  removeLightBg?: boolean;
+  bgRemovalTolerance?: number; // 10..80, default 36
+  backgroundColor?: string;
+  tagRole?: 'model' | 'product' | 'logo' | 'background' | 'uploaded';
+  linkedProductId?: string;
+}
+
+export interface PosterShapeLayer extends PosterCanvasLayerBase {
+  type: 'shape';
+  shapeKind: 'rectangle' | 'rounded_rect' | 'circle' | 'line' | 'divider';
+  fillColor: string;
+  gradientEndColor?: string;
+}
+
+export interface PosterBadgeLayer extends PosterCanvasLayerBase {
+  type: 'badge';
+  badgeStyle: 'pill' | 'starburst' | 'ribbon' | 'price_tag' | 'savings_box';
+  primaryText: string;
+  secondaryText?: string;
+  fillColor: string;
+  textColor: string;
+  fontFamily?: string;
+}
+
+export interface PosterStickerLayer extends PosterCanvasLayerBase {
+  type: 'sticker';
+  stickerKind: 'plus_sign' | 'arrow_right' | 'arrow_down' | 'quality_seal' | 'star_icon' | 'flash_tag';
+  fillColor: string;
+  accentColor?: string;
+  textColor?: string;
+  label?: string;
+}
+
+export interface PosterQrLayer extends PosterCanvasLayerBase {
+  type: 'qr';
+  qrValue: string;
+  foregroundColor?: string;
+  backgroundColor?: string;
+  caption?: string;
+}
+
+export type PosterCanvasLayer =
+  | PosterTextLayer
+  | PosterImageLayer
+  | PosterShapeLayer
+  | PosterBadgeLayer
+  | PosterStickerLayer
+  | PosterQrLayer;
+
+export interface PosterCustomProject {
+  version: 2;
+  canvasWidth: number;
+  canvasHeight: number;
+  backgroundColor: string;
+  backgroundGradientEnabled?: boolean;
+  backgroundGradientEnd?: string;
+  backgroundImageUrl?: string;
+  layers: PosterCanvasLayer[];
+  updatedAt?: string;
+}
+
+export interface PosterUserTemplate {
+  id: string;
+  name: string;
+  category: string;
+  thumbnailDataUrl?: string;
+  project: PosterCustomProject;
+  createdAt: string;
+}
+
+export interface ComboPosterConfig {
+  mode: PosterMode;
+  templateId: PosterTemplateId;
+  dimensionPreset: PosterDimensionPreset;
+  customWidthPx?: number;
+  customHeightPx?: number;
+  backgroundColor: string;
+  secondaryColor: string;
+  accentColor: string;
+  textColor: string;
+  headline: string;
+  promoText: string;
+  footerText: string;
+  fashionSlogan?: string;
+  ctaText?: string;
+  trustLine?: string;
+  modelCategory?: PosterModelCategory;
+  customModelImageUrl?: string;
+  removeModelBg?: boolean;
+  aiGeneratedModelUrl?: string;
+  productImageSize: 'compact' | 'standard' | 'large';
+  productImagePosition: 'grid' | 'spotlight' | 'showcase';
+  productFontSize: 'sm' | 'md' | 'lg';
+  showPrices: boolean;
+  showDiscountBadge: boolean;
+  showShopDetails: boolean;
+  showBranchInfo: boolean;
+  shopPhoneOverride?: string;
+  shopAddressOverride?: string;
+  logoPosition: 'top_left' | 'top_center' | 'top_right';
+  qrPosition: 'bottom_right' | 'bottom_left' | 'hidden';
+  includeQrCode: boolean;
+  customQrUrl?: string;
+  /** Keyed by `${productId}__${variantId || 'base'}`; never mutates original product images */
+  posterProductImages?: Record<string, string>;
+  /** Editable full layer project for Custom Design Studio (Mode 2) */
+  customDesign?: PosterCustomProject;
+  updatedAt?: string;
+}
+
+export type MarketplaceComboOrderStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'processing'
+  | 'shipped'
+  | 'delivered'
+  | 'cancelled';
+
+export interface MarketplaceComboOrder {
+  id: string;
+  orderNumber: string;
+  businessId: string;
+  branchId: string;
+  comboOfferId: string;
+  comboOfferName: string;
+  comboQuantity: number;
+  unitComboPrice: number;
+  regularUnitTotal: number;
+  discountAmount: number;
+  totalAmount: number;
+  customerName: string;
+  customerPhone: string;
+  customerAddress: string;
+  paymentMethod: 'cash_on_delivery' | 'bkash' | 'nagad' | 'card' | 'bank';
+  paymentStatus: 'unpaid' | 'paid';
+  status: MarketplaceComboOrderStatus;
+  stockDeducted: boolean;
+  linkedSaleId?: string;
+  linkedInvoiceNumber?: string;
+  notes?: string;
+  orderSource: 'online_storefront' | 'qr_link' | 'admin_test';
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ComboOffer {
   id: string;
   name: string;
   description?: string;
   comboCategory?: string;
   image?: string;
+  posterImageUrl?: string;
+  masterImageType?: MasterImageType;
+  posterConfig?: ComboPosterConfig;
+  isPublishedOnline?: boolean;
+  marketplaceSlug?: string;
   offerType: OfferType;
   items: ComboOfferItem[];
 
@@ -1125,3 +1394,110 @@ export interface BusinessMembershipSummary {
   currentPeriodEnd?: string;
 }
 
+// ==================== SMART INTERACTION & PRODUCTIVITY TYPES ====================
+
+export type ThemePreference = 'light' | 'dark' | 'system';
+
+export type SoundEventType =
+  | 'scan_success'
+  | 'product_not_found'
+  | 'product_added'
+  | 'sale_completed'
+  | 'payment_received'
+  | 'low_stock_warning'
+  | 'new_order'
+  | 'invoice_print';
+
+export interface SoundPreferences {
+  enabled: boolean;
+  muted: boolean;
+  silentMode: boolean;
+  volume: number; // 0.0 to 1.0
+  events: Record<SoundEventType, boolean>;
+}
+
+export type ShortcutActionId =
+  | 'open_command_palette'
+  | 'open_shortcuts_help'
+  | 'save_active'
+  | 'print_active'
+  | 'go_dashboard'
+  | 'go_pos'
+  | 'open_scanner'
+  | 'new_product'
+  | 'new_customer'
+  | 'new_purchase'
+  | 'new_expense'
+  | 'toggle_focus_mode'
+  | 'toggle_fullscreen'
+  | 'toggle_theme'
+  | 'open_system_status'
+  | 'pos_focus_barcode'
+  | 'pos_focus_search'
+  | 'pos_clear_cart'
+  | 'pos_complete_sale';
+
+export type ShortcutCategory = 'Global' | 'Navigation' | 'Quick Create' | 'Display' | 'POS';
+
+export type DashboardWidgetId =
+  | 'quick_actions'
+  | 'kpis'
+  | 'alerts'
+  | 'charts'
+  | 'recent_sales_purchases'
+  | 'bottom_insights'
+  | 'recent_activities';
+
+export interface DashboardCustomization {
+  hiddenWidgets: DashboardWidgetId[];
+  widgetOrder: DashboardWidgetId[];
+  compactDensity: boolean;
+}
+
+export interface UserProductivityPreferences {
+  themeMode: ThemePreference;
+  sound: SoundPreferences;
+  vibrationEnabled: boolean;
+  shortcutsEnabled: boolean;
+  customShortcuts: Partial<Record<ShortcutActionId, string>>;
+  focusMode: boolean;
+  dashboard: DashboardCustomization;
+  dismissedNotificationIds: string[];
+  updatedAt?: string;
+}
+
+export type ToastTone = 'success' | 'info' | 'warning' | 'error';
+
+export interface ToastMessage {
+  id: string;
+  tone: ToastTone;
+  title: string;
+  message?: string;
+  durationMs?: number;
+}
+
+export interface ConfirmDialogOptions {
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  tone?: 'default' | 'danger' | 'warning';
+}
+
+export type SmartNotificationCategory =
+  | 'low_stock'
+  | 'new_order'
+  | 'pending_payment'
+  | 'daily_summary'
+  | 'system_alert';
+
+export interface SmartNotificationItem {
+  id: string;
+  category: SmartNotificationCategory;
+  title: string;
+  detail: string;
+  tone: 'coral' | 'amber' | 'teal' | 'emerald' | 'indigo';
+  targetTab?: string;
+  timestamp?: string;
+  actionLabel?: string;
+}

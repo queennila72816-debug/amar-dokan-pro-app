@@ -6,6 +6,7 @@ import {
   OfferType,
   OfferStatus,
   OfferDiscountType,
+  MarketplaceComboOrderStatus,
   Product,
   ProductVariant,
 } from '../../types';
@@ -23,6 +24,19 @@ import {
 } from '../../utils/scannerLookup';
 import { inferColorHex, resolveProductImage } from '../../utils/productImageResolver';
 import { validateImageFile } from '../../services/catalogImageService';
+import {
+  ComboPdfFormat,
+  ComboPrintFormat,
+  downloadComboOfferPdf,
+  printComboOffer,
+} from '../../utils/comboExport';
+import {
+  buildAppPreviewComboLink,
+  buildMarketplaceSlug,
+  resolveComboMarketplaceQrUrl,
+} from '../../utils/comboPosterEngine';
+import { ComboPosterStudioModal } from './ComboPosterStudioModal';
+import { ComboMarketplacePreviewModal } from './ComboMarketplacePreviewModal';
 import {
   Tag,
   Plus,
@@ -54,6 +68,13 @@ import {
   Minus,
   Package,
   Calendar,
+  Printer,
+  FileDown,
+  Loader2,
+  Globe,
+  Link2,
+  Wand2,
+  Truck,
 } from 'lucide-react';
 
 const COMBO_CATEGORY_PRESETS = [
@@ -99,7 +120,17 @@ const compressCoverImage = (file: File): Promise<string> =>
     reader.readAsDataURL(file);
   });
 
-export const ComboOffersView: React.FC = () => {
+export interface ComboOffersViewProps {
+  onOpenSettings?: () => void;
+  initialMarketplaceComboId?: string | null;
+  onConsumeMarketplaceComboId?: () => void;
+}
+
+export const ComboOffersView: React.FC<ComboOffersViewProps> = ({
+  onOpenSettings,
+  initialMarketplaceComboId,
+  onConsumeMarketplaceComboId,
+}) => {
   const {
     comboOffers,
     comboUsageLogs,
@@ -108,6 +139,9 @@ export const ComboOffersView: React.FC = () => {
     toggleOfferStatus,
     archiveComboOffer,
     deleteComboOffer,
+    marketplaceOrders,
+    createMarketplaceOrder,
+    updateMarketplaceOrderStatus,
     products,
     categories,
     branches,
@@ -127,11 +161,16 @@ export const ComboOffersView: React.FC = () => {
     hasPermission('product_management', 'create') ||
     hasPermission('product_management', 'edit');
   const canDeleteCombos = isAdmin || hasPermission('product_management', 'delete');
+  const canProcessOnlineOrders =
+    isAdmin ||
+    roleKey === 'manager' ||
+    hasPermission('pos_new_sale', 'create') ||
+    hasPermission('product_management', 'edit');
   const canViewCosts = isAdmin || roleKey === 'manager' || roleKey === 'accountant';
   const lang = settings.language || 'en';
   const currency = settings.currency || '৳';
 
-  const [activeTab, setActiveTab] = useState<'offers' | 'create' | 'analytics'>('offers');
+  const [activeTab, setActiveTab] = useState<'offers' | 'create' | 'analytics' | 'orders'>('offers');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedBranchFilter, setSelectedBranchFilter] = useState<string>('all');
@@ -179,9 +218,46 @@ export const ComboOffersView: React.FC = () => {
 
   // Modals: Preview, Details + Sales History, Delete Confirmation
   const [previewOffer, setPreviewOffer] = useState<ComboOffer | null>(null);
+  const [comboPrintFormat, setComboPrintFormat] = useState<ComboPrintFormat>('a4');
+  const [comboPdfFormat, setComboPdfFormat] = useState<ComboPdfFormat>('a4');
+  const [isPrintingCombo, setIsPrintingCombo] = useState(false);
+  const [isDownloadingComboPdf, setIsDownloadingComboPdf] = useState(false);
+  const [previewActionError, setPreviewActionError] = useState<string | null>(null);
   const [detailsOffer, setDetailsOffer] = useState<ComboOffer | null>(null);
   const [deleteTargetOffer, setDeleteTargetOffer] = useState<ComboOffer | null>(null);
   const [isDeletingOffer, setIsDeletingOffer] = useState(false);
+
+  // Poster Studio & Marketplace States
+  const [posterStudioOfferId, setPosterStudioOfferId] = useState<string | null>(null);
+  const [marketplacePreviewOfferId, setMarketplacePreviewOfferId] = useState<string | null>(null);
+  const [orderStatusFilter, setOrderStatusFilter] = useState<string>('all');
+  const [processingOrderId, setProcessingOrderId] = useState<string | null>(null);
+  const [copiedOfferId, setCopiedOfferId] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (initialMarketplaceComboId) {
+      const exists = comboOffers.some(o => o.id === initialMarketplaceComboId);
+      if (exists) {
+        setMarketplacePreviewOfferId(initialMarketplaceComboId);
+        onConsumeMarketplaceComboId?.();
+      }
+    }
+  }, [initialMarketplaceComboId, comboOffers, onConsumeMarketplaceComboId]);
+
+  const activePosterOffer = useMemo(
+    () => comboOffers.find(o => o.id === posterStudioOfferId) || null,
+    [comboOffers, posterStudioOfferId]
+  );
+
+  const activeMarketplaceOffer = useMemo(
+    () => comboOffers.find(o => o.id === marketplacePreviewOfferId) || null,
+    [comboOffers, marketplacePreviewOfferId]
+  );
+
+  const pendingOnlineOrdersCount = useMemo(
+    () => marketplaceOrders.filter(o => o.status === 'pending').length,
+    [marketplaceOrders]
+  );
 
   // Analytics Date Filters
   const [analyticsRange, setAnalyticsRange] = useState<
@@ -1066,6 +1142,22 @@ export const ComboOffersView: React.FC = () => {
 
           <button
             type="button"
+            onClick={() => setActiveTab('orders')}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+              activeTab === 'orders'
+                ? 'bg-slate-900 text-white'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+            }`}
+          >
+            <Globe className="w-3.5 h-3.5" />
+            <span>
+              Online Orders ({marketplaceOrders.length})
+              {pendingOnlineOrdersCount > 0 ? ` · ${pendingOnlineOrdersCount} Pending` : ''}
+            </span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab('analytics')}
             className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
               activeTab === 'analytics'
@@ -1447,12 +1539,94 @@ export const ComboOffersView: React.FC = () => {
                       )}
                     </div>
 
+                    {/* Primary Poster & Marketplace Action Strip */}
+                    <div className="pt-2.5 border-t border-slate-100 flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setPosterStudioOfferId(offer.id)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#101B3F] hover:bg-[#19295c] text-white text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        <Wand2 className="w-3.5 h-3.5 text-[#D6AD60]" />
+                        <span>CREATE POSTER</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setMarketplacePreviewOfferId(offer.id)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-[11px] font-semibold cursor-pointer whitespace-nowrap"
+                      >
+                        <Globe className="w-3.5 h-3.5 text-teal-600" />
+                        <span>Online Preview</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const qrRes = resolveComboMarketplaceQrUrl(
+                            offer,
+                            settings,
+                            offer.posterConfig?.customQrUrl
+                          );
+                          const link = qrRes.url || buildAppPreviewComboLink(offer);
+                          try {
+                            await navigator.clipboard.writeText(link);
+                            setCopiedOfferId(offer.id);
+                            setTimeout(() => setCopiedOfferId(prev => (prev === offer.id ? null : prev)), 2000);
+                          } catch {
+                            setBannerMessage({ tone: 'warning', text: `Combo Link: ${link}` });
+                          }
+                        }}
+                        title="Copy Marketplace Offer Link"
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-semibold cursor-pointer whitespace-nowrap"
+                      >
+                        {copiedOfferId === offer.id ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-600" />
+                        ) : (
+                          <Link2 className="w-3.5 h-3.5" />
+                        )}
+                        <span>{copiedOfferId === offer.id ? 'Copied' : 'Copy Link'}</span>
+                      </button>
+
+                      {canManageCombos && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const nextPub = !offer.isPublishedOnline;
+                            await updateComboOffer(offer.id, {
+                              isPublishedOnline: nextPub,
+                              marketplaceSlug: offer.marketplaceSlug || buildMarketplaceSlug(offer),
+                            });
+                            setBannerMessage({
+                              tone: 'success',
+                              text: nextPub
+                                ? `"${offer.name}" published for Online Marketplace orders.`
+                                : `"${offer.name}" unpublished from Online Marketplace.`,
+                            });
+                          }}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold cursor-pointer whitespace-nowrap ${
+                            offer.isPublishedOnline
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100'
+                              : 'bg-teal-50 text-teal-700 border border-teal-200 hover:bg-teal-100'
+                          }`}
+                        >
+                          <span>{offer.isPublishedOnline ? 'Unpublish' : 'Publish Online'}</span>
+                        </button>
+                      )}
+                    </div>
+
                     {/* Footer Actions */}
-                    <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
-                      <span className="text-[11px] font-mono-num text-slate-500">
-                        Sold: <strong className="text-slate-800">{offer.usageCount}</strong>
-                        {offer.maxUsageLimit ? ` / ${offer.maxUsageLimit}` : ''}
-                      </span>
+                    <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-[11px] font-mono-num text-slate-500">
+                        <span>
+                          Sold: <strong className="text-slate-800">{offer.usageCount}</strong>
+                          {offer.maxUsageLimit ? ` / ${offer.maxUsageLimit}` : ''}
+                        </span>
+                        {offer.posterImageUrl && (
+                          <span className="text-[10px] font-sans font-semibold text-teal-700">
+                            · Poster Ready
+                          </span>
+                        )}
+                      </div>
 
                       <div className="flex items-center gap-1">
                         <button
@@ -2502,30 +2676,260 @@ export const ComboOffersView: React.FC = () => {
         </div>
       )}
 
+      {/* ==================== TAB 4: ONLINE MARKETPLACE ORDERS ==================== */}
+      {activeTab === 'orders' && (
+        <div className="space-y-4">
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <Truck className="w-4 h-4 text-teal-600" />
+                <span>Online Marketplace Combo Orders</span>
+              </h2>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Confirming a pending order atomically verifies live branch stock and creates a POS invoice once (zero double deduction across later shipping/delivery updates).
+              </p>
+            </div>
+
+            <select
+              aria-label="Filter Online Orders Status"
+              value={orderStatusFilter}
+              onChange={e => setOrderStatusFilter(e.target.value)}
+              className="px-3 py-2 rounded-lg border border-slate-200 bg-slate-50 text-xs font-semibold text-slate-700"
+            >
+              <option value="all">All Order Statuses</option>
+              <option value="pending">Pending</option>
+              <option value="confirmed">Confirmed</option>
+              <option value="processing">Processing</option>
+              <option value="shipped">Shipped</option>
+              <option value="delivered">Delivered</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
+
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                  <tr>
+                    <th className="py-2.5 px-3 font-semibold">Order #</th>
+                    <th className="py-2.5 px-3 font-semibold">Combo Package</th>
+                    <th className="py-2.5 px-3 font-semibold">Customer &amp; Delivery</th>
+                    <th className="py-2.5 px-3 font-semibold text-right">Total</th>
+                    <th className="py-2.5 px-3 font-semibold">Inventory Sync</th>
+                    <th className="py-2.5 px-3 font-semibold">Status</th>
+                    <th className="py-2.5 px-3 font-semibold text-right">Workflow Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {marketplaceOrders
+                    .filter(o => orderStatusFilter === 'all' || o.status === orderStatusFilter)
+                    .map(order => {
+                      const branchName =
+                        branches.find(b => b.id === order.branchId)?.name || 'Main Branch';
+                      const isProcessingThis = processingOrderId === order.id;
+
+                      const handleOrderMove = async (next: MarketplaceComboOrderStatus) => {
+                        setProcessingOrderId(order.id);
+                        try {
+                          const updated = await updateMarketplaceOrderStatus(order.id, next);
+                          setBannerMessage({
+                            tone: 'success',
+                            text: updated.linkedInvoiceNumber
+                              ? `Order ${updated.orderNumber} updated to "${next}" · Invoice ${updated.linkedInvoiceNumber}.`
+                              : `Order ${updated.orderNumber} updated to "${next}".`,
+                          });
+                        } catch (err: any) {
+                          setBannerMessage({
+                            tone: 'error',
+                            text: err?.message || 'Failed to update online order status.',
+                          });
+                        } finally {
+                          setProcessingOrderId(null);
+                        }
+                      };
+
+                      return (
+                        <tr key={order.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-3 align-top">
+                            <div className="font-mono font-bold text-slate-900">
+                              {order.orderNumber}
+                            </div>
+                            <div className="text-[10px] text-slate-500">
+                              {formatDate(order.createdAt, lang)}
+                            </div>
+                            <div className="text-[10px] text-teal-700 font-semibold">
+                              {branchName}
+                            </div>
+                          </td>
+                          <td className="py-3 px-3 align-top">
+                            <div className="font-bold text-slate-900">
+                              {order.comboQuantity}× {order.comboOfferName}
+                            </div>
+                            <div className="text-[10px] text-slate-500 uppercase">
+                              {order.paymentMethod.replace(/_/g, ' ')} · {order.paymentStatus}
+                            </div>
+                          </td>
+                          <td className="py-3 px-3 align-top">
+                            <div className="font-semibold text-slate-900">{order.customerName}</div>
+                            <div className="font-mono text-[11px] text-slate-600">
+                              {order.customerPhone}
+                            </div>
+                            <div className="text-[10px] text-slate-500 max-w-xs truncate">
+                              {order.customerAddress}
+                            </div>
+                          </td>
+                          <td className="py-3 px-3 align-top text-right font-mono-num">
+                            <div className="font-extrabold text-slate-900">
+                              {formatCurrency(order.totalAmount, lang)}
+                            </div>
+                            {order.discountAmount > 0 && (
+                              <div className="text-[10px] text-emerald-700">
+                                Saved {formatCurrency(order.discountAmount, lang)}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 align-top">
+                            {order.stockDeducted ? (
+                              <div>
+                                <span className="text-[11px] font-bold text-emerald-700 block">
+                                  Stock Deducted
+                                </span>
+                                {order.linkedInvoiceNumber && (
+                                  <span className="text-[10px] font-mono text-slate-500">
+                                    {order.linkedInvoiceNumber}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-[11px] font-semibold text-amber-700">
+                                Not Deducted Yet
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 align-top">
+                            <span
+                              className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                order.status === 'delivered'
+                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                  : order.status === 'cancelled'
+                                  ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                  : order.status === 'pending'
+                                  ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                  : 'bg-sky-50 text-sky-700 border border-sky-200'
+                              }`}
+                            >
+                              {order.status}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 align-top text-right">
+                            {canProcessOnlineOrders ? (
+                              <div className="inline-flex flex-wrap justify-end gap-1.5">
+                                {order.status === 'pending' && (
+                                  <button
+                                    type="button"
+                                    disabled={isProcessingThis}
+                                    onClick={() => handleOrderMove('confirmed')}
+                                    className="px-2.5 py-1 rounded-lg bg-[#101B3F] hover:bg-[#19295c] text-white text-[11px] font-bold cursor-pointer disabled:opacity-50"
+                                  >
+                                    {isProcessingThis ? 'Confirming...' : 'Confirm & Deduct Stock'}
+                                  </button>
+                                )}
+                                {order.status === 'confirmed' && (
+                                  <button
+                                    type="button"
+                                    disabled={isProcessingThis}
+                                    onClick={() => handleOrderMove('processing')}
+                                    className="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 text-white text-[11px] font-bold cursor-pointer"
+                                  >
+                                    Mark Processing
+                                  </button>
+                                )}
+                                {order.status === 'processing' && (
+                                  <button
+                                    type="button"
+                                    disabled={isProcessingThis}
+                                    onClick={() => handleOrderMove('shipped')}
+                                    className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold cursor-pointer"
+                                  >
+                                    Mark Shipped
+                                  </button>
+                                )}
+                                {(order.status === 'confirmed' ||
+                                  order.status === 'processing' ||
+                                  order.status === 'shipped') && (
+                                  <button
+                                    type="button"
+                                    disabled={isProcessingThis}
+                                    onClick={() => handleOrderMove('delivered')}
+                                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold cursor-pointer"
+                                  >
+                                    Mark Delivered
+                                  </button>
+                                )}
+                                {order.status === 'pending' && (
+                                  <button
+                                    type="button"
+                                    disabled={isProcessingThis}
+                                    onClick={() => handleOrderMove('cancelled')}
+                                    className="px-2 py-1 rounded-lg border border-rose-200 text-rose-700 hover:bg-rose-50 text-[11px] font-semibold cursor-pointer"
+                                  >
+                                    Cancel
+                                  </button>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-[11px] text-slate-400">View Only</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  {marketplaceOrders.filter(
+                    o => orderStatusFilter === 'all' || o.status === orderStatusFilter
+                  ).length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="py-12 text-center text-slate-400 text-xs">
+                        No online combo orders yet. Open <strong>Online Preview</strong> on any published combo to test and submit customer orders.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ==================== MODAL: CUSTOMER PREVIEW ==================== */}
       {previewOffer && (
         <div
-          onClick={() => setPreviewOffer(null)}
+          onClick={() => {
+            setPreviewActionError(null);
+            setPreviewOffer(null);
+          }}
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs"
         >
           <div
             onClick={e => e.stopPropagation()}
-            className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden"
+            className="bg-white rounded-2xl border border-slate-200 shadow-2xl w-full max-w-md max-h-[92vh] flex flex-col overflow-hidden"
           >
-            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between shrink-0">
               <span className="text-xs font-bold uppercase tracking-wider text-teal-700">
                 Customer Combo Preview
               </span>
               <button
                 type="button"
-                onClick={() => setPreviewOffer(null)}
+                onClick={() => {
+                  setPreviewActionError(null);
+                  setPreviewOffer(null);
+                }}
                 className="p-1 text-slate-400 hover:text-slate-700 rounded cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <div className="p-5 space-y-4">
+            <div className="p-5 space-y-4 overflow-y-auto">
               <div className="flex items-start gap-3.5">
                 <ProductThumbnail src={previewOffer.image} alt={previewOffer.name} size="lg" />
                 <div className="min-w-0 flex-1">
@@ -2589,6 +2993,151 @@ export const ComboOffersView: React.FC = () => {
                 </div>
               </div>
             </div>
+
+            {/* Bottom Print Combo & Download PDF Actions */}
+            <div className="px-5 py-3.5 border-t border-slate-200 bg-slate-50/90 space-y-2.5 shrink-0">
+              {previewActionError && (
+                <div className="px-3 py-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-semibold flex items-center gap-1.5">
+                  <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                  <span className="flex-1">{previewActionError}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                    Print Format
+                  </label>
+                  <select
+                    aria-label="Combo Print Format"
+                    value={comboPrintFormat}
+                    onChange={e => setComboPrintFormat(e.target.value as ComboPrintFormat)}
+                    className="w-full px-2.5 py-1.5 text-xs font-semibold bg-white border border-slate-200 rounded-lg text-slate-800"
+                  >
+                    <option value="a4">A4 Sheet</option>
+                    <option value="a5">A5 Half-Sheet</option>
+                    <option value="80mm">80mm Thermal</option>
+                    <option value="58mm">58mm Thermal</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+                    PDF Page Size
+                  </label>
+                  <select
+                    aria-label="Combo PDF Page Size"
+                    value={comboPdfFormat}
+                    onChange={e => setComboPdfFormat(e.target.value as ComboPdfFormat)}
+                    className="w-full px-2.5 py-1.5 text-xs font-semibold bg-white border border-slate-200 rounded-lg text-slate-800"
+                  >
+                    <option value="a4">A4 PDF</option>
+                    <option value="a5">A5 PDF</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  disabled={isPrintingCombo}
+                  onClick={() => {
+                    if (isPrintingCombo || !previewOffer) return;
+                    setPreviewActionError(null);
+                    setIsPrintingCombo(true);
+                    try {
+                      const activeBranch =
+                        branches.find(
+                          b =>
+                            b.id ===
+                            (previewOffer.branchId && previewOffer.branchId !== 'all'
+                              ? previewOffer.branchId
+                              : activeBranchId)
+                        ) || branches[0];
+                      const res = printComboOffer(
+                        previewOffer,
+                        products,
+                        settings,
+                        comboPrintFormat,
+                        activeBranch
+                      );
+                      if (!res.opened && !res.cancelled) {
+                        setPreviewActionError(
+                          res.error || 'Could not open browser print dialog.'
+                        );
+                      }
+                    } catch (err: any) {
+                      setPreviewActionError(err?.message || 'Failed to print combo.');
+                    } finally {
+                      setIsPrintingCombo(false);
+                    }
+                  }}
+                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-[#101B3F] hover:bg-[#1b2d66] disabled:opacity-60 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                >
+                  {isPrintingCombo ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Printer className="w-4 h-4" />
+                  )}
+                  <span>{isPrintingCombo ? 'Opening Print...' : 'Print Combo'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={isDownloadingComboPdf}
+                  onClick={async () => {
+                    if (isDownloadingComboPdf || !previewOffer) return;
+                    setPreviewActionError(null);
+                    setIsDownloadingComboPdf(true);
+                    try {
+                      const activeBranch =
+                        branches.find(
+                          b =>
+                            b.id ===
+                            (previewOffer.branchId && previewOffer.branchId !== 'all'
+                              ? previewOffer.branchId
+                              : activeBranchId)
+                        ) || branches[0];
+                      const res = await downloadComboOfferPdf(
+                        previewOffer,
+                        products,
+                        settings,
+                        comboPdfFormat,
+                        activeBranch
+                      );
+                      if (!res.ok) {
+                        setPreviewActionError(res.error || 'Failed to download PDF.');
+                      }
+                    } catch (err: any) {
+                      setPreviewActionError(err?.message || 'Failed to generate combo PDF.');
+                    } finally {
+                      setIsDownloadingComboPdf(false);
+                    }
+                  }}
+                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-700 disabled:opacity-60 text-white text-xs font-bold shadow-xs transition-colors cursor-pointer"
+                >
+                  {isDownloadingComboPdf ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <FileDown className="w-4 h-4" />
+                  )}
+                  <span>{isDownloadingComboPdf ? 'Generating PDF...' : 'Download PDF'}</span>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const targetId = previewOffer.id;
+                  setPreviewOffer(null);
+                  setPosterStudioOfferId(targetId);
+                }}
+                className="w-full inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl border border-[#D6AD60] bg-[#101B3F]/5 hover:bg-[#101B3F]/10 text-[#101B3F] text-xs font-bold transition-colors cursor-pointer"
+              >
+                <Wand2 className="w-3.5 h-3.5 text-[#D6AD60]" />
+                <span>Open in Combo Poster Studio (PNG / JPG / PDF)</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2612,13 +3161,27 @@ export const ComboOffersView: React.FC = () => {
                   {detailsOffer.endDate ? ` to ${detailsOffer.endDate}` : ''}
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setDetailsOffer(null)}
-                className="p-1 text-slate-400 hover:text-slate-700 rounded cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const targetId = detailsOffer.id;
+                    setDetailsOffer(null);
+                    setPosterStudioOfferId(targetId);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#101B3F] hover:bg-[#19295c] text-white text-xs font-bold cursor-pointer"
+                >
+                  <Wand2 className="w-3.5 h-3.5 text-[#D6AD60]" />
+                  <span>Create Poster</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDetailsOffer(null)}
+                  className="p-1 text-slate-400 hover:text-slate-700 rounded cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             <div className="p-5 overflow-y-auto space-y-4 text-xs">
@@ -2800,6 +3363,49 @@ export const ComboOffersView: React.FC = () => {
         onClose={() => setIsScannerOpen(false)}
         onResultForPos={handleBuilderScannedMatch}
       />
+
+      {/* ==================== MODAL: COMBO POSTER STUDIO ==================== */}
+      {activePosterOffer && (
+        <ComboPosterStudioModal
+          offer={activePosterOffer}
+          products={products}
+          settings={settings}
+          activeBranch={
+            branches.find(
+              b =>
+                b.id ===
+                (activePosterOffer.branchId && activePosterOffer.branchId !== 'all'
+                  ? activePosterOffer.branchId
+                  : activeBranchId)
+            ) || branches[0]
+          }
+          onClose={() => setPosterStudioOfferId(null)}
+          onOpenSettings={onOpenSettings}
+          onSaveOfferPosterData={async updates => {
+            await updateComboOffer(activePosterOffer.id, updates);
+          }}
+        />
+      )}
+
+      {/* ==================== MODAL: ONLINE MARKETPLACE PREVIEW ==================== */}
+      {activeMarketplaceOffer && (
+        <ComboMarketplacePreviewModal
+          offer={activeMarketplaceOffer}
+          products={products}
+          settings={settings}
+          activeBranch={
+            branches.find(
+              b =>
+                b.id ===
+                (activeMarketplaceOffer.branchId && activeMarketplaceOffer.branchId !== 'all'
+                  ? activeMarketplaceOffer.branchId
+                  : activeBranchId)
+            ) || branches[0]
+          }
+          onClose={() => setMarketplacePreviewOfferId(null)}
+          onSubmitOrder={createMarketplaceOrder}
+        />
+      )}
     </div>
   );
 };

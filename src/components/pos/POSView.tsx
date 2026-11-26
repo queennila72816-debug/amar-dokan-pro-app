@@ -73,6 +73,8 @@ export const POSView: React.FC = () => {
 
   // Cart & Combo Package Cart
   const [cart, setCart] = useState<SaleItem[]>([]);
+  const cartRef = useRef<SaleItem[]>(cart);
+  cartRef.current = cart;
   const [comboCart, setComboCart] = useState<{
     instanceId: string;
     offer: ComboOffer;
@@ -348,30 +350,65 @@ export const POSView: React.FC = () => {
       return { ok: false, message: msg };
     }
 
-    const currentInCart = cart.find(
+    const currentCart = cartRef.current;
+    const existingIndex = currentCart.findIndex(
       item => item.productId === product.id && (variant ? item.variantId === variant.id : !item.variantId)
     );
-    const candidateRegular = currentInCart
-      ? cart.map(item =>
-          item.productId === product.id && (variant ? item.variantId === variant.id : !item.variantId)
-            ? { ...item, quantity: item.quantity + 1 }
-            : item
-        )
-      : [
-          ...cart,
-          {
-            productId: product.id,
-            productName: product.name,
-            sku: variant ? variant.sku : product.code,
-            unitPrice: 0,
-            purchasePrice: 0,
-            quantity: 1,
-            discount: 0,
-            total: 0,
-            variantId: variant?.id,
-            variantDetails: variant ? [variant.color, variant.size].filter(Boolean).join(' / ') : undefined,
-          } as SaleItem,
-        ];
+
+    const unitPrice =
+      variant?.salePrice !== undefined
+        ? variant.salePrice
+        : variant?.additionalPrice
+        ? product.salePrice + variant.additionalPrice
+        : product.salePrice;
+
+    const purchasePrice =
+      variant?.purchasePrice !== undefined
+        ? variant.purchasePrice
+        : product.purchasePrice;
+
+    const variantDetails = variant
+      ? [variant.color, variant.size].filter(Boolean).join(' / ')
+      : undefined;
+    const resolvedColorId = variant
+      ? resolveColorIdForVariant(product, variant)
+      : resolveProductColors(product)[0]?.id;
+    const resolvedImageUrl = resolveProductImage(product, {
+      colorId: resolvedColorId,
+      variantId: variant?.id,
+      colorName: variant?.color,
+    });
+
+    const candidateRegular: SaleItem[] =
+      existingIndex > -1
+        ? currentCart.map((item, idx) => {
+            if (idx !== existingIndex) return item;
+            const newQty = item.quantity + 1;
+            return {
+              ...item,
+              quantity: newQty,
+              total: newQty * item.unitPrice - item.discount,
+            };
+          })
+        : [
+            ...currentCart,
+            {
+              productId: product.id,
+              productName: product.name,
+              sku: variant ? variant.sku : product.code,
+              unitPrice,
+              purchasePrice,
+              quantity: 1,
+              discount: 0,
+              total: unitPrice,
+              variantId: variant?.id,
+              variantDetails,
+              colorId: resolvedColorId,
+              colorName: variant?.color,
+              imageUrl: resolvedImageUrl,
+              category: product.category,
+            },
+          ];
 
     const aggregateCheck = comboOfferService.validateAggregateCartStock(
       [...candidateRegular, ...buildAllocatedComboSaleItems(comboCart)],
@@ -385,71 +422,10 @@ export const POSView: React.FC = () => {
     }
 
     pendingClientTxIdRef.current = null;
-    const nextQty = currentInCart ? currentInCart.quantity + 1 : 1;
+    const nextQty = existingIndex > -1 ? currentCart[existingIndex].quantity + 1 : 1;
 
-    setCart(prev => {
-      const existingIndex = prev.findIndex(item =>
-        item.productId === product.id && (variant ? item.variantId === variant.id : !item.variantId)
-      );
-
-      if (existingIndex > -1) {
-        const item = prev[existingIndex];
-        if (item.quantity >= availableStock) {
-          return prev;
-        }
-        const updated = [...prev];
-        const newQty = item.quantity + 1;
-        updated[existingIndex] = {
-          ...item,
-          quantity: newQty,
-          total: (newQty * item.unitPrice) - item.discount,
-        };
-        return updated;
-      }
-
-      const unitPrice =
-        variant?.salePrice !== undefined
-          ? variant.salePrice
-          : variant?.additionalPrice
-          ? product.salePrice + variant.additionalPrice
-          : product.salePrice;
-
-      const purchasePrice =
-        variant?.purchasePrice !== undefined
-          ? variant.purchasePrice
-          : product.purchasePrice;
-
-      const variantDetails = variant
-        ? [variant.color, variant.size].filter(Boolean).join(' / ')
-        : undefined;
-      const resolvedColorId = variant
-        ? resolveColorIdForVariant(product, variant)
-        : resolveProductColors(product)[0]?.id;
-      const resolvedImageUrl = resolveProductImage(product, {
-        colorId: resolvedColorId,
-        variantId: variant?.id,
-        colorName: variant?.color,
-      });
-
-      const newItem: SaleItem = {
-        productId: product.id,
-        productName: product.name,
-        sku: variant ? variant.sku : product.code,
-        unitPrice,
-        purchasePrice,
-        quantity: 1,
-        discount: 0,
-        total: unitPrice,
-        variantId: variant?.id,
-        variantDetails,
-        colorId: resolvedColorId,
-        colorName: variant?.color,
-        imageUrl: resolvedImageUrl,
-        category: product.category,
-      };
-
-      return [...prev, newItem];
-    });
+    cartRef.current = candidateRegular;
+    setCart(candidateRegular);
 
     setVariantProduct(null);
     const msg = `Added ${label} (Qty: ${nextQty})`;
@@ -459,7 +435,7 @@ export const POSView: React.FC = () => {
 
   const applyScannedMatchToPos = (match: ScannedProductMatch): { ok: boolean; message: string } => {
     if (!match.found || !match.product) {
-      const msg = `No active product found for code '${match.rawCode}'.`;
+      const msg = `Product Not Found: No active product matched "${match.rawCode}".`;
       showPosNotice('error', msg);
       return { ok: false, message: msg };
     }
@@ -476,19 +452,32 @@ export const POSView: React.FC = () => {
     return addToCart(match.product, match.variant);
   };
 
+  const isAnyPosModalOpen = Boolean(
+    isScannerModalOpen ||
+      variantProduct ||
+      isAdminAuthModalOpen ||
+      isClearCartConfirmOpen ||
+      isAdminLossConfirmOpen ||
+      showAddCustomerModal ||
+      completedSale
+  );
+
   const hidPrefs = getScannerHidPreferences();
   const { emitScan: emitHidScan, isTerminatorKey } = useHardwareScanner({
-    enabled: !isScannerModalOpen,
+    enabled: !isAnyPosModalOpen,
     terminator: hidPrefs.terminator,
-    duplicateCooldownMs: hidPrefs.duplicateCooldownMs,
+    duplicateCooldownMs: Math.min(250, hidPrefs.duplicateCooldownMs),
     onScan: code => {
       const match = lookupProductByScannedCode(code, activeProducts, activeBranchId);
       const result = applyScannedMatchToPos(match);
       if (hidPrefs.beepOnScan) {
         playScanBeep(result.ok ? 'success' : 'error');
       }
+      window.requestAnimationFrame(() => {
+        barcodeInputRef.current?.focus();
+      });
     },
-    captureUnfocusedWedge: false,
+    captureUnfocusedWedge: true,
   });
 
   // Handle Barcode Scan & SKU direct search
@@ -502,6 +491,9 @@ export const POSView: React.FC = () => {
       playScanBeep(result.ok ? 'success' : 'error');
     }
     setBarcodeInput('');
+    window.requestAnimationFrame(() => {
+      barcodeInputRef.current?.focus();
+    });
   };
 
   // Handle item handoff from Apparel Photo Catalog
@@ -534,10 +526,13 @@ export const POSView: React.FC = () => {
       return;
     }
 
-    const item = cart[index];
+    const currentCart = cartRef.current;
+    const item = currentCart[index];
     if (!item) return;
 
-    const candidateRegular = cart.map((c, i) => (i === index ? { ...c, quantity: newQty } : c));
+    const candidateRegular = currentCart.map((c, i) =>
+      i === index ? { ...c, quantity: newQty, total: newQty * c.unitPrice - c.discount } : c
+    );
     const aggregateCheck = comboOfferService.validateAggregateCartStock(
       [...candidateRegular, ...buildAllocatedComboSaleItems(comboCart)],
       activeProducts,
@@ -549,28 +544,22 @@ export const POSView: React.FC = () => {
     }
 
     pendingClientTxIdRef.current = null;
-    setCart(prev => {
-      const updated = [...prev];
-      const current = updated[index];
-      if (!current) return prev;
-      updated[index] = {
-        ...current,
-        quantity: newQty,
-        total: (newQty * current.unitPrice) - current.discount,
-      };
-      return updated;
-    });
+    cartRef.current = candidateRegular;
+    setCart(candidateRegular);
   };
 
   // Remove Item
   const removeFromCart = (index: number) => {
     pendingClientTxIdRef.current = null;
-    setCart(prev => prev.filter((_, i) => i !== index));
+    const next = cartRef.current.filter((_, i) => i !== index);
+    cartRef.current = next;
+    setCart(next);
   };
 
   // Clear Cart
   const executeClearCart = () => {
     pendingClientTxIdRef.current = null;
+    cartRef.current = [];
     setCart([]);
     setComboCart([]);
     setOrderDiscount(0);
@@ -932,6 +921,7 @@ export const POSView: React.FC = () => {
 
       // Reset Form
       pendingClientTxIdRef.current = null;
+      cartRef.current = [];
       setCart([]);
       setComboCart([]);
       setOrderDiscount(0);
@@ -1040,6 +1030,7 @@ export const POSView: React.FC = () => {
                 title="Open Camera & USB Scanner Modal"
               >
                 <Camera className="w-3.5 h-3.5" />
+                <span className="sm:hidden">Scanner</span>
                 <span className="hidden sm:inline">Scan Product</span>
               </button>
             </div>

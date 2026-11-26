@@ -704,53 +704,73 @@ export const comboOfferService = {
 
       if (error) throw error;
 
-      const mapped: ComboOffer[] = (data || []).map((o: any) => ({
-        id: o.id,
-        name: o.name,
-        description: o.description || undefined,
-        comboCategory: o.combo_category || undefined,
-        image: o.image || undefined,
-        offerType: o.offer_type,
-        items: (o.combo_offer_items || []).map((i: any) => ({
-          id: i.id,
-          productId: i.product_id,
-          productName: i.product_name,
-          variantId: i.variant_id || undefined,
-          variantDetails: i.variant_details || undefined,
-          sku: i.sku || undefined,
-          quantity: Number(i.quantity || 1),
-          isFree: Boolean(i.is_free),
-          purchasePrice: i.purchase_price != null ? Number(i.purchase_price) : undefined,
-          salePrice: i.sale_price != null ? Number(i.sale_price) : undefined,
-        })),
-        minSpendAmount: o.min_spend_amount != null ? Number(o.min_spend_amount) : undefined,
-        minPurchaseQuantity:
-          o.min_purchase_quantity != null ? Number(o.min_purchase_quantity) : undefined,
-        regularTotalPrice: Number(o.regular_total_price || 0),
-        discountType: o.discount_type,
-        discountValue: Number(o.discount_value || 0),
-        finalComboPrice: Number(o.final_combo_price || 0),
-        totalCostOfGoods: Number(o.total_cost_of_goods || 0),
-        allocatedOpEx: Number(o.allocated_opex || 0),
-        grossProfit: Number(o.gross_profit || 0),
-        estimatedNetProfit: Number(o.estimated_net_profit || 0),
-        profitMarginPercent: Number(o.profit_margin_percent || 0),
-        isLossMaking: Boolean(o.is_loss_making),
-        minSafeSellingPrice: Number(o.min_safe_selling_price || 0),
-        lossOverrideReason: o.loss_override_reason || undefined,
-        lossApprovedBy: o.loss_approved_by || undefined,
-        startDate: o.start_date,
-        endDate: o.end_date || undefined,
-        status: o.status,
-        maxUsageLimit: o.max_usage_limit != null ? Number(o.max_usage_limit) : undefined,
-        usageCount: Number(o.usage_count || 0),
-        perCustomerLimit: o.per_customer_limit != null ? Number(o.per_customer_limit) : undefined,
-        branchId: o.branch_id || 'all',
-        priorityRank: Number(o.priority_rank || 1),
-        businessId: o.business_id,
-        createdAt: o.created_at,
-        updatedAt: o.updated_at,
-      }));
+      let cachedById = new Map<string, Partial<ComboOffer>>();
+      try {
+        const rawCached = localStorage.getItem(`${STORAGE_KEY_OFFERS}_${businessId}`);
+        if (rawCached) {
+          const parsed: ComboOffer[] = JSON.parse(rawCached);
+          parsed.forEach(item => cachedById.set(item.id, item));
+        }
+      } catch {}
+
+      const mapped: ComboOffer[] = (data || []).map((o: any) => {
+        const cached = cachedById.get(o.id);
+        return {
+          id: o.id,
+          name: o.name,
+          description: o.description || undefined,
+          comboCategory: o.combo_category || cached?.comboCategory || undefined,
+          image: o.image || undefined,
+          posterImageUrl: o.poster_image_url || cached?.posterImageUrl || undefined,
+          masterImageType: (o.master_image_type as any) || cached?.masterImageType || undefined,
+          posterConfig: o.poster_config || cached?.posterConfig || undefined,
+          isPublishedOnline:
+            o.is_published_online !== undefined
+              ? Boolean(o.is_published_online)
+              : Boolean(cached?.isPublishedOnline),
+          marketplaceSlug: o.marketplace_slug || cached?.marketplaceSlug || undefined,
+          offerType: o.offer_type,
+          items: (o.combo_offer_items || []).map((i: any) => ({
+            id: i.id,
+            productId: i.product_id,
+            productName: i.product_name,
+            variantId: i.variant_id || undefined,
+            variantDetails: i.variant_details || undefined,
+            sku: i.sku || undefined,
+            quantity: Number(i.quantity || 1),
+            isFree: Boolean(i.is_free),
+            purchasePrice: i.purchase_price != null ? Number(i.purchase_price) : undefined,
+            salePrice: i.sale_price != null ? Number(i.sale_price) : undefined,
+          })),
+          minSpendAmount: o.min_spend_amount != null ? Number(o.min_spend_amount) : undefined,
+          minPurchaseQuantity:
+            o.min_purchase_quantity != null ? Number(o.min_purchase_quantity) : undefined,
+          regularTotalPrice: Number(o.regular_total_price || 0),
+          discountType: o.discount_type,
+          discountValue: Number(o.discount_value || 0),
+          finalComboPrice: Number(o.final_combo_price || 0),
+          totalCostOfGoods: Number(o.total_cost_of_goods || 0),
+          allocatedOpEx: Number(o.allocated_opex || 0),
+          grossProfit: Number(o.gross_profit || 0),
+          estimatedNetProfit: Number(o.estimated_net_profit || 0),
+          profitMarginPercent: Number(o.profit_margin_percent || 0),
+          isLossMaking: Boolean(o.is_loss_making),
+          minSafeSellingPrice: Number(o.min_safe_selling_price || 0),
+          lossOverrideReason: o.loss_override_reason || undefined,
+          lossApprovedBy: o.loss_approved_by || undefined,
+          startDate: o.start_date,
+          endDate: o.end_date || undefined,
+          status: o.status,
+          maxUsageLimit: o.max_usage_limit != null ? Number(o.max_usage_limit) : undefined,
+          usageCount: Number(o.usage_count || 0),
+          perCustomerLimit: o.per_customer_limit != null ? Number(o.per_customer_limit) : undefined,
+          branchId: o.branch_id || 'all',
+          priorityRank: Number(o.priority_rank || 1),
+          businessId: o.business_id,
+          createdAt: o.created_at,
+          updatedAt: o.updated_at,
+        };
+      });
 
       try {
         localStorage.setItem(`${STORAGE_KEY_OFFERS}_${businessId}`, JSON.stringify(mapped));
@@ -814,12 +834,26 @@ export const comboOfferService = {
       const extendedPayload = {
         ...basePayload,
         combo_category: updatedOffer.comboCategory || null,
+        poster_image_url: updatedOffer.posterImageUrl || null,
+        master_image_type: updatedOffer.masterImageType || null,
+        poster_config: updatedOffer.posterConfig || null,
+        is_published_online: Boolean(updatedOffer.isPublishedOnline),
+        marketplace_slug: updatedOffer.marketplaceSlug || null,
+      };
+
+      const categoryOnlyPayload = {
+        ...basePayload,
+        combo_category: updatedOffer.comboCategory || null,
       };
 
       let { error: upsertErr } = await supabase.from('combo_offers').upsert(extendedPayload);
       if (upsertErr && isColumnSchemaError(upsertErr)) {
-        const retry = await supabase.from('combo_offers').upsert(basePayload);
-        upsertErr = retry.error;
+        const retryCategory = await supabase.from('combo_offers').upsert(categoryOnlyPayload);
+        upsertErr = retryCategory.error;
+        if (upsertErr && isColumnSchemaError(upsertErr)) {
+          const retry = await supabase.from('combo_offers').upsert(basePayload);
+          upsertErr = retry.error;
+        }
       }
       if (upsertErr) throw upsertErr;
 
@@ -847,6 +881,18 @@ export const comboOfferService = {
         const { error: itemErr } = await supabase.from('combo_offer_items').insert(itemsPayload);
         if (itemErr) throw itemErr;
       }
+
+      // Sync cache cleanly so extended poster/marketplace configs persist reliably even before schema cache refresh
+      try {
+        const rawCached = localStorage.getItem(`${STORAGE_KEY_OFFERS}_${businessId}`);
+        const parsed: ComboOffer[] = rawCached ? JSON.parse(rawCached) : [];
+        const idx = parsed.findIndex(o => o.id === updatedOffer.id);
+        const nextCached =
+          idx > -1
+            ? parsed.map(o => (o.id === updatedOffer.id ? updatedOffer : o))
+            : [updatedOffer, ...parsed];
+        localStorage.setItem(`${STORAGE_KEY_OFFERS}_${businessId}`, JSON.stringify(nextCached));
+      } catch {}
 
       return updatedOffer;
     }

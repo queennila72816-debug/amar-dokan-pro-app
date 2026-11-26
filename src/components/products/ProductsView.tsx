@@ -45,6 +45,7 @@ import {
 import { collectUsedBarcodes, isBarcodeDuplicate } from '../../utils/scannerLookup';
 import {
   getPrinterSettings,
+  getShopLogo,
   previewProductLabel,
   printProductLabel,
   PrintPreviewPayload,
@@ -1094,15 +1095,61 @@ export const ProductsView: React.FC<ProductsViewProps> = ({
                       <div className="mt-2 p-2 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between gap-2">
                         <BarcodeSvg
                           value={check.normalized}
-                          width={165}
+                          width={150}
                           height={32}
                           showText={true}
                           format={barcodeStandard}
                         />
-                        <QrCodeSvg
-                          value={buildProductQrPayload(editingProduct?.id, undefined, check.normalized)}
-                          size={44}
-                        />
+                        <div className="flex items-center gap-2 shrink-0">
+                          <QrCodeSvg
+                            value={buildProductQrPayload(editingProduct?.id, undefined, check.normalized)}
+                            size={44}
+                          />
+                          {canPrintBarcode && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const printerCfg = getPrinterSettings(settings);
+                                const res = printProductLabel(
+                                  [
+                                    {
+                                      productId: editingProduct?.id || 'draft-product',
+                                      productName: name.trim() || 'Product',
+                                      sku: code.trim() || check.normalized,
+                                      barcode: check.normalized,
+                                      price: Number(salePrice) || 0,
+                                      copies: 1,
+                                    },
+                                  ],
+                                  {
+                                    template: printerCfg.labelTemplate || '40x30',
+                                    customWidthMm: printerCfg.labelWidthMm || 40,
+                                    customHeightMm: printerCfg.labelHeightMm || 30,
+                                    showShopName: true,
+                                    showShopLogo: Boolean(getShopLogo(settings)),
+                                    showProductName: true,
+                                    showVariantDetails: false,
+                                    showPrice: true,
+                                    showSku: true,
+                                    showBarcodeNumber: true,
+                                    barcodeFormat: barcodeStandard,
+                                    showQrCode: false,
+                                    copiesPerItem: 1,
+                                  },
+                                  settings
+                                );
+                                if (!res.opened && !res.cancelled) {
+                                  setFormError(res.error || 'Could not open barcode print dialog.');
+                                }
+                              }}
+                              title="Print 1 Barcode Label"
+                              className="inline-flex items-center gap-1 px-2 py-1.5 rounded-md bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 text-[10px] font-bold cursor-pointer"
+                            >
+                              <Printer className="w-3 h-3 text-purple-600" />
+                              <span>Print</span>
+                            </button>
+                          )}
+                        </div>
                       </div>
                     );
                   })()}

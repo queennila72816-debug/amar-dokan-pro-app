@@ -171,7 +171,7 @@ export function saveShopLogo(logoUrl: string, businessId?: string): void {
   }
 }
 
-function escapeHtml(val: string | number | undefined | null): string {
+export function escapeHtml(val: string | number | undefined | null): string {
   if (val === undefined || val === null) return '';
   return String(val)
     .replace(/&/g, '&amp;')
@@ -186,7 +186,7 @@ const STYLE_END_MARKER = '/*ADP_STYLE_END*/';
 const BODY_START_MARKER = '<!--ADP_BODY_START-->';
 const BODY_END_MARKER = '<!--ADP_BODY_END-->';
 
-function buildStandaloneDocument(
+export function buildStandaloneDocument(
   title: string,
   bodyHtml: string,
   pageCss: string,

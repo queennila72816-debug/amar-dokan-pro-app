@@ -25,7 +25,10 @@ import {
   BusinessSetupData,
   ComboOffer,
   ComboOfferUsage,
+  ComboPackageSaleRecord,
   OfferStatus,
+  MarketplaceComboOrder,
+  MarketplaceComboOrderStatus,
   AccountStatus,
   PermissionAction,
   PermissionModuleKey,
@@ -59,6 +62,11 @@ import { catalogImageService, validateImageFile } from '../services/catalogImage
 import { inferColorHex, normalizeColorKey, sortColorImages } from '../utils/productImageResolver';
 import { salesService } from '../services/salesService';
 import { sellerService } from '../services/sellerService';
+import {
+  marketplaceOrderService,
+  generateMarketplaceOrderNumber,
+  shouldDeductStockForTransition,
+} from '../services/marketplaceOrderService';
 import { staffRbacService, CreateEmployeePayload, UpdateEmployeePayload } from '../services/staffRbacService';
 import { platformAdminService } from '../services/platformAdminService';
 import { subscriptionService } from '../services/subscriptionService';
@@ -403,6 +411,25 @@ interface AppContextType {
   deleteComboOffer: (id: string) => Promise<boolean>;
   reloadComboOffers: () => Promise<void>;
 
+  marketplaceOrders: MarketplaceComboOrder[];
+  createMarketplaceOrder: (params: {
+    offer: ComboOffer;
+    comboQuantity: number;
+    customerName: string;
+    customerPhone: string;
+    customerAddress: string;
+    paymentMethod?: MarketplaceComboOrder['paymentMethod'];
+    notes?: string;
+    orderSource?: MarketplaceComboOrder['orderSource'];
+    branchId?: string;
+  }) => Promise<MarketplaceComboOrder>;
+  updateMarketplaceOrderStatus: (
+    orderId: string,
+    nextStatus: MarketplaceComboOrderStatus,
+    notes?: string
+  ) => Promise<MarketplaceComboOrder>;
+  reloadMarketplaceOrders: () => Promise<void>;
+
   canAccess: (module: LegacyAppModule) => boolean;
 
   // Multi-Tenant SaaS, Platform Super Admin & Subscription Context
@@ -505,6 +532,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [sellers, setSellers] = useState<Seller[]>([]);
   const [comboOffers, setComboOffers] = useState<ComboOffer[]>([]);
   const [comboUsageLogs, setComboUsageLogs] = useState<ComboOfferUsage[]>([]);
+  const [marketplaceOrders, setMarketplaceOrders] = useState<MarketplaceComboOrder[]>([]);
   const processedClientTxIdsRef = useRef<Map<string, Sale>>(new Map());
   const inFlightClientTxIdsRef = useRef<Set<string>>(new Set());
   const processedReturnTxIdsRef = useRef<Set<string>>(new Set());
@@ -833,6 +861,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           address: bizData.address || '',
           mobile: bizData.phone || '',
           email: bizData.email || '',
+          websiteUrl: bizData.website_url ?? cachedBizSettings.websiteUrl ?? '',
+          marketplaceUrl: bizData.marketplace_url ?? cachedBizSettings.marketplaceUrl ?? '',
+          socialMedia: bizData.social_media ?? cachedBizSettings.socialMedia ?? '',
           currency: bizData.currency || '৳',
           financialYear:
             bizData.financial_year || `${new Date().getFullYear()}-${new Date().getFullYear() + 1}`,
@@ -904,6 +935,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         logsRes,
         offersRes,
         offerUsageRes,
+        mktOrdersRes,
         rolesRes,
         employeesRes,
         activityRes,
@@ -923,6 +955,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         auditService.fetchLogs(businessId),
         comboOfferService.fetchOffers(businessId),
         comboOfferService.fetchUsageLogs(businessId),
+        marketplaceOrderService.fetchOrders(businessId),
         staffRbacService.fetchRolesAndPermissions(businessId),
         staffRbacService.fetchEmployees(businessId),
         staffRbacService.fetchActivityLogs(businessId),
@@ -945,6 +978,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (logsRes.status === 'fulfilled') setAuditLogs(logsRes.value);
       if (offersRes.status === 'fulfilled') setComboOffers(offersRes.value);
       if (offerUsageRes.status === 'fulfilled') setComboUsageLogs(offerUsageRes.value);
+      if (mktOrdersRes.status === 'fulfilled') setMarketplaceOrders(mktOrdersRes.value);
       if (rolesRes.status === 'fulfilled') setRoles(rolesRes.value);
       if (employeesRes.status === 'fulfilled') setEmployees(employeesRes.value);
       if (activityRes.status === 'fulfilled') setActivityLogs(activityRes.value);
@@ -1004,6 +1038,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setAuditLogs([]);
       setComboOffers([]);
       setComboUsageLogs([]);
+      setMarketplaceOrders([]);
       setEmployees([]);
       setSellers([]);
       setRoles(createDefaultRolesForBusiness('local'));
@@ -1019,6 +1054,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     staffRbacService.fetchActivityLogs(storedBizId || 'local').then(setActivityLogs);
     comboOfferService.fetchOffers(storedBizId || 'default-business').then(setComboOffers);
     comboOfferService.fetchUsageLogs(storedBizId || 'default-business').then(setComboUsageLogs);
+    marketplaceOrderService.fetchOrders(storedBizId || 'default-business').then(setMarketplaceOrders);
 
       const bizPrefix = storedBizId ? `${STORAGE_KEY}_${storedBizId}` : STORAGE_KEY;
 
@@ -2131,8 +2167,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (newSettings.language !== undefined) payload.language = newSettings.language;
       if (newSettings.logoUrl !== undefined) payload.logo_url = newSettings.logoUrl || null;
 
-      if (Object.keys(payload).length > 1) {
-        const { error } = await supabase.from('businesses').update(payload).eq('id', activeBusinessId);
+      const extendedPayload: Record<string, any> = { ...payload };
+      if (newSettings.websiteUrl !== undefined) extendedPayload.website_url = newSettings.websiteUrl || null;
+      if (newSettings.marketplaceUrl !== undefined) extendedPayload.marketplace_url = newSettings.marketplaceUrl || null;
+      if (newSettings.socialMedia !== undefined) extendedPayload.social_media = newSettings.socialMedia || null;
+
+      if (Object.keys(extendedPayload).length > 1) {
+        let { error } = await supabase.from('businesses').update(extendedPayload).eq('id', activeBusinessId);
+        if (error && (String(error.code) === 'PGRST204' || String(error.code) === '42703' || String(error.message || '').toLowerCase().includes('column'))) {
+          if (Object.keys(payload).length > 1) {
+            const fallback = await supabase.from('businesses').update(payload).eq('id', activeBusinessId);
+            error = fallback.error;
+          } else {
+            error = null;
+          }
+        }
         if (error) {
           throw raiseDbError(error, 'Failed to save shop settings to Supabase.');
         }
@@ -6355,6 +6404,274 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setComboUsageLogs(logs);
   };
 
+  const reloadMarketplaceOrders = async () => {
+    const businessId = activeBusinessId || 'default-business';
+    const orders = await marketplaceOrderService.fetchOrders(businessId);
+    setMarketplaceOrders(orders);
+  };
+
+  const createMarketplaceOrder = async (params: {
+    offer: ComboOffer;
+    comboQuantity: number;
+    customerName: string;
+    customerPhone: string;
+    customerAddress: string;
+    paymentMethod?: MarketplaceComboOrder['paymentMethod'];
+    notes?: string;
+    orderSource?: MarketplaceComboOrder['orderSource'];
+    branchId?: string;
+  }): Promise<MarketplaceComboOrder> => {
+    const businessId = activeBusinessId || params.offer.businessId || 'default-business';
+    const cleanQty = Math.max(1, Math.floor(params.comboQuantity || 1));
+    const targetBranchId =
+      params.branchId ||
+      (params.offer.branchId && params.offer.branchId !== 'all' ? params.offer.branchId : activeBranchId) ||
+      branches[0]?.id ||
+      'all';
+
+    const capacity = marketplaceOrderService.validateOrderCapacity(
+      params.offer,
+      products,
+      cleanQty,
+      targetBranchId
+    );
+    if (!capacity.valid) {
+      throw new Error(capacity.error || 'Selected combo quantity exceeds available branch stock.');
+    }
+
+    const now = new Date().toISOString();
+    const regularUnit = Number(params.offer.regularTotalPrice || 0);
+    const comboUnit = Number(params.offer.finalComboPrice || 0);
+    const totalAmount = Math.round(comboUnit * cleanQty * 100) / 100;
+    const discountAmount = Math.max(0, Math.round((regularUnit - comboUnit) * cleanQty * 100) / 100);
+
+    const newOrder: MarketplaceComboOrder = {
+      id: `mkt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      orderNumber: generateMarketplaceOrderNumber(),
+      businessId,
+      branchId: targetBranchId,
+      comboOfferId: params.offer.id,
+      comboOfferName: params.offer.name,
+      comboQuantity: cleanQty,
+      unitComboPrice: comboUnit,
+      regularUnitTotal: regularUnit,
+      discountAmount,
+      totalAmount,
+      customerName: params.customerName.trim(),
+      customerPhone: params.customerPhone.trim(),
+      customerAddress: params.customerAddress.trim(),
+      paymentMethod: params.paymentMethod || 'cash_on_delivery',
+      paymentStatus: 'unpaid',
+      status: 'pending',
+      stockDeducted: false,
+      notes: params.notes?.trim() || undefined,
+      orderSource: params.orderSource || 'online_storefront',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const saved = await marketplaceOrderService.saveOrder(newOrder, businessId);
+    setMarketplaceOrders(prev => [saved, ...prev]);
+    addAuditLog(
+      'MARKETPLACE_ORDER_CREATED',
+      'marketplace_order',
+      saved.id,
+      `Online combo order ${saved.orderNumber}: ${saved.comboQuantity}x ${saved.comboOfferName}`
+    );
+    return saved;
+  };
+
+  const updateMarketplaceOrderStatus = async (
+    orderId: string,
+    nextStatus: MarketplaceComboOrderStatus,
+    notes?: string
+  ): Promise<MarketplaceComboOrder> => {
+    if (!isAdmin && !hasPermission('product_management', 'edit') && !hasPermission('pos_new_sale', 'create')) {
+      throw new Error('Unauthorized: You do not have permission to process online combo orders.');
+    }
+    const businessId = activeBusinessId || 'default-business';
+    const existing = marketplaceOrders.find(o => o.id === orderId);
+    if (!existing) {
+      throw new Error('Online order not found.');
+    }
+
+    let updated: MarketplaceComboOrder = {
+      ...existing,
+      status: nextStatus,
+      notes: notes !== undefined ? notes : existing.notes,
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Perform atomic, duplicate-safe stock deduction exactly once when transitioning from pending -> confirmed/processing/shipped/delivered
+    if (shouldDeductStockForTransition(existing, nextStatus)) {
+      const offer = comboOffers.find(o => o.id === existing.comboOfferId);
+      if (!offer) {
+        throw new Error('Combo offer definition no longer exists. Cannot confirm stock deduction.');
+      }
+
+      const targetBranchId =
+        existing.branchId && existing.branchId !== 'all'
+          ? existing.branchId
+          : offer.branchId && offer.branchId !== 'all'
+          ? offer.branchId
+          : activeBranchId || branches[0]?.id || 'main';
+
+      if (
+        !isAdmin &&
+        activeBranchId &&
+        targetBranchId !== 'all' &&
+        targetBranchId !== activeBranchId
+      ) {
+        throw new Error('Branch mismatch: switch to the order branch before confirming stock deduction.');
+      }
+
+      const capacity = marketplaceOrderService.validateOrderCapacity(
+        offer,
+        products,
+        existing.comboQuantity,
+        targetBranchId
+      );
+      if (!capacity.valid) {
+        throw new Error(capacity.error || 'Insufficient live stock to confirm this online combo order.');
+      }
+
+      const instanceId = `mkt-pkg-${existing.id}`;
+      const allocated = comboOfferService.allocateComboComponentRevenues(
+        offer.items,
+        products,
+        offer.finalComboPrice,
+        existing.comboQuantity
+      );
+
+      const saleItems = allocated.map(c => {
+        const prod = products.find(p => p.id === c.productId);
+        const variant = c.variantId ? prod?.variants?.find(v => v.id === c.variantId) : undefined;
+        return {
+          productId: c.productId,
+          productName: c.productName,
+          sku: variant?.sku || prod?.barcode || c.sku || '',
+          barcode: variant?.barcode || prod?.barcode || '',
+          category: prod?.category || c.category || 'Combo',
+          variantId: c.variantId,
+          variantDetails: c.variantDetails,
+          quantity: c.totalQty,
+          unitPrice: c.allocatedUnitPrice,
+          purchasePrice: c.purchasePrice,
+          discount: c.discountTotal,
+          total: c.allocatedTotal,
+          comboOfferId: offer.id,
+          comboOfferName: offer.name,
+          comboInstanceId: instanceId,
+          comboQuantity: existing.comboQuantity,
+          isComboFreeItem: c.isFree,
+        };
+      });
+
+      const subtotal = saleItems.reduce((s, it) => s + it.total, 0);
+      const comboPackage: ComboPackageSaleRecord = {
+        instanceId,
+        offerId: offer.id,
+        offerName: offer.name,
+        comboCategory: offer.comboCategory,
+        quantity: existing.comboQuantity,
+        regularUnitPrice: offer.regularTotalPrice,
+        offerUnitPrice: offer.finalComboPrice,
+        discountTotal: existing.discountAmount,
+        lineTotal: existing.totalAmount,
+        components: allocated.map(c => ({
+          productId: c.productId,
+          productName: c.productName,
+          variantId: c.variantId,
+          variantDetails: c.variantDetails,
+          sku: c.sku,
+          qtyPerCombo: c.qtyPerCombo,
+          totalQty: c.totalQty,
+          regularUnitPrice: c.regularUnitPrice,
+          allocatedUnitPrice: c.allocatedUnitPrice,
+          allocatedTotal: c.allocatedTotal,
+          isFree: c.isFree,
+        })),
+      };
+
+      const matchedAcc =
+        accounts.find(a => a.accountType === 'cash') || accounts[0];
+      const paymentMethodMapped: PaymentMethod =
+        existing.paymentMethod === 'bkash'
+          ? 'bkash'
+          : existing.paymentMethod === 'nagad'
+          ? 'nagad'
+          : existing.paymentMethod === 'card'
+          ? 'card'
+          : existing.paymentMethod === 'bank'
+          ? 'bank'
+          : 'cash';
+
+      const paidAmount =
+        nextStatus === 'delivered' || existing.paymentStatus === 'paid' ? existing.totalAmount : 0;
+
+      const recordedSale = await recordSale({
+        clientTxId: `mkt-order-${existing.id}`,
+        customerName: `${existing.customerName} (Online)`,
+        customerMobile: existing.customerPhone,
+        items: saleItems,
+        comboPackages: [comboPackage],
+        subtotal,
+        discount: 0,
+        comboDiscount: existing.discountAmount,
+        appliedOffers: [
+          {
+            offerId: offer.id,
+            offerName: offer.name,
+            discountAmount: existing.discountAmount,
+            offerType: offer.offerType,
+            comboQuantity: existing.comboQuantity,
+            comboInstanceId: instanceId,
+          },
+        ],
+        vatTaxRate: 0,
+        vatTaxAmount: 0,
+        total: existing.totalAmount,
+        paid: paidAmount,
+        due: Math.max(0, existing.totalAmount - paidAmount),
+        paymentMethod: paymentMethodMapped,
+        payments:
+          matchedAcc && paidAmount > 0
+            ? [
+                {
+                  accountId: matchedAcc.id,
+                  accountName: matchedAcc.name,
+                  amount: paidAmount,
+                  method: paymentMethodMapped,
+                },
+              ]
+            : [],
+        servedBy: 'Online Marketplace',
+        branchId: targetBranchId,
+        notes: `Online Combo Order ${existing.orderNumber} (${existing.customerAddress})`,
+      });
+
+      updated = {
+        ...updated,
+        stockDeducted: true,
+        linkedSaleId: recordedSale.id,
+        linkedInvoiceNumber: recordedSale.invoiceNumber,
+        paymentStatus: paidAmount >= existing.totalAmount ? 'paid' : updated.paymentStatus,
+      };
+    } else if (nextStatus === 'delivered' && existing.paymentStatus !== 'paid') {
+      updated.paymentStatus = 'paid';
+    }
+
+    const saved = await marketplaceOrderService.saveOrder(updated, businessId);
+    setMarketplaceOrders(prev => prev.map(o => (o.id === orderId ? saved : o)));
+    addAuditLog(
+      'MARKETPLACE_ORDER_STATUS_UPDATED',
+      'marketplace_order',
+      orderId,
+      `Order ${saved.orderNumber} updated to ${nextStatus}${saved.linkedInvoiceNumber ? ` (Invoice ${saved.linkedInvoiceNumber})` : ''}`
+    );
+    return saved;
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -6495,6 +6812,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         archiveComboOffer,
         deleteComboOffer,
         reloadComboOffers,
+        marketplaceOrders,
+        createMarketplaceOrder,
+        updateMarketplaceOrderStatus,
+        reloadMarketplaceOrders,
         platformAdmin,
         isPlatformAdmin,
         platformViewActive,

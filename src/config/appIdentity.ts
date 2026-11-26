@@ -20,6 +20,9 @@ export interface ResolvedBusinessProfile {
   mobile: string;
   email: string;
   logoUrl: string;
+  websiteUrl: string;
+  marketplaceUrl: string;
+  socialMedia: string;
   vatTaxRate: number;
   vatRegistrationNo: string;
   branchName: string;
@@ -62,6 +65,9 @@ export function resolveBusinessProfile(
     mobile,
     email: settings?.email?.trim() || '',
     logoUrl: settings?.logoUrl?.trim() || '',
+    websiteUrl: settings?.websiteUrl?.trim() || '',
+    marketplaceUrl: settings?.marketplaceUrl?.trim() || '',
+    socialMedia: settings?.socialMedia?.trim() || '',
     vatTaxRate: Number(settings?.vatTaxRate || 0),
     vatRegistrationNo: settings?.vatRegistrationNo?.trim() || '',
     branchName: activeBranch?.name?.trim() || '',

@@ -84,7 +84,20 @@ const MainLayout: React.FC = () => {
     setCreateNewBusinessModalOpen,
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<string>('dashboard');
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const q = new URLSearchParams(window.location.search);
+      if (q.get('marketplace_combo')) return 'combos';
+    }
+    return 'dashboard';
+  });
+  const [marketplaceComboParamId, setMarketplaceComboParamId] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      const q = new URLSearchParams(window.location.search);
+      return q.get('marketplace_combo');
+    }
+    return null;
+  });
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
   const [compatReport] = useState(() => evaluateBrowserCompatibility());
   const [compatBannerDismissed, setCompatBannerDismissed] = useState<boolean>(false);
@@ -419,7 +432,13 @@ const MainLayout: React.FC = () => {
         return <SmartReorderView />;
 
       case 'combos':
-        return <ComboOffersView />;
+        return (
+          <ComboOffersView
+            onOpenSettings={() => handleTabChange('settings')}
+            initialMarketplaceComboId={marketplaceComboParamId}
+            onConsumeMarketplaceComboId={() => setMarketplaceComboParamId(null)}
+          />
+        );
 
       case 'billing':
         return <BillingSubscriptionView />;

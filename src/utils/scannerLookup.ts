@@ -1,4 +1,5 @@
 import { Product, ProductVariant, RecentScanEntry } from '../types';
+import { playAppSound } from './soundEngine';
 
 export interface ParsedScanPayload {
   raw: string;
@@ -76,30 +77,15 @@ export function saveScannerHidPreferences(prefs: ScannerHidPreferences): void {
 }
 
 /**
- * Play a short subtle non-blocking WebAudio confirmation beep when scanning succeeds.
+ * Play a short subtle non-blocking WebAudio confirmation beep when scanning succeeds,
+ * honoring global sound preferences, silent mode, volume, haptics, and duplicate suppression.
  */
-export function playScanBeep(tone: 'success' | 'error' = 'success'): void {
+export function playScanBeep(tone: 'success' | 'error' = 'success', dedupeKey?: string): void {
   if (typeof window === 'undefined') return;
-  try {
-    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = tone === 'success' ? 'sine' : 'triangle';
-    osc.frequency.setValueAtTime(tone === 'success' ? 1180 : 320, ctx.currentTime);
-    gain.gain.setValueAtTime(0.06, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + (tone === 'success' ? 0.09 : 0.16));
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + (tone === 'success' ? 0.095 : 0.17));
-    window.setTimeout(() => {
-      ctx.close().catch(() => {});
-    }, 250);
-  } catch {
-    // ignore audio restrictions
-  }
+  playAppSound(tone === 'success' ? 'scan_success' : 'product_not_found', {
+    dedupeKey,
+    haptic: tone === 'success' ? 'scan' : 'error',
+  });
 }
 
 /**

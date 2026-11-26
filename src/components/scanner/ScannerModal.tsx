@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Product, ProductVariant } from '../../types';
 import { CameraBarcodeScanner } from './CameraBarcodeScanner';
 import { HardwareScannerInput } from './HardwareScannerInput';
@@ -47,6 +47,13 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   const [lastMatch, setLastMatch] = useState<ScannedProductMatch | null>(null);
   const [feedback, setFeedback] = useState<{ tone: 'success' | 'warning' | 'error'; text: string } | null>(null);
 
+  useEffect(() => {
+    if (!isOpen) {
+      setLastMatch(null);
+      setFeedback(null);
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   const handleDetectedCode = (rawCode: string) => {
@@ -58,7 +65,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       if (prefs.beepOnScan) playScanBeep('error');
       setFeedback({
         tone: 'error',
-        text: `No active product found for code "${rawCode}".`,
+        text: `Product Not Found: No active product matched "${rawCode}".`,
       });
       return;
     }

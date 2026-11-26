@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { GoogleGenAI } from '@google/genai';
 
 const PORT = Number(process.env.PORT) || 3000;
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -603,7 +604,11 @@ async function findSafeExistingAuthUserForEmployee(
 
 export function createApp() {
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
+  const defaultJsonParser = express.json({ limit: '1mb' });
+  app.use((req, res, next) => {
+    if (req.path === '/api/posters/ai-generate') return next();
+    return defaultJsonParser(req, res, next);
+  });
 
   // Clean CORS & preflight handling for /api/* routes (including cross-origin previews)
   app.use('/api', (req, res, next) => {
@@ -3031,6 +3036,150 @@ export function createApp() {
 
     if (error || !data) return res.status(400).json({ error: error?.message || 'Failed to create support ticket.' });
     return res.status(201).json({ ticket: data });
+  });
+
+  app.get('/api/posters/ai-status', (_req, res) => {
+    const key = (process.env.GEMINI_API_KEY || '').trim();
+    const configured = Boolean(
+      key &&
+        !key.includes('your-') &&
+        !key.includes('MY_GEMINI_API_KEY') &&
+        key.length > 10
+    );
+    return res.status(200).json({ configured });
+  });
+
+  app.post('/api/posters/ai-generate', express.json({ limit: '12mb' }), async (req, res) => {
+    const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
+    const isGeminiConfigured = Boolean(
+      geminiKey &&
+        !geminiKey.includes('your-') &&
+        !geminiKey.includes('MY_GEMINI_API_KEY') &&
+        geminiKey.length > 10
+    );
+
+    if (!isGeminiConfigured) {
+      return res.status(501).json({
+        configured: false,
+        code: 'GEMINI_API_KEY_NOT_CONFIGURED',
+        error:
+          'AI Outfit Rendering requires GEMINI_API_KEY in server environment secrets. Style Zone AI Creative layouts, all 6 Fashion Models, Custom Model Uploads, and the Custom Design Studio work immediately without any API key.',
+      });
+    }
+
+    const supabaseAdmin = getSupabaseAdminClient();
+    let rlKey = req.ip || 'anon';
+    if (supabaseAdmin) {
+      const authResult = await authenticateCaller(req, supabaseAdmin);
+      if ('error' in authResult) {
+        return res.status(authResult.status).json({ error: authResult.error, code: authResult.code });
+      }
+      rlKey = authResult.user.id;
+      const businessId = sanitizeUuid(req.body?.businessId);
+      if (businessId) {
+        const authorized = await authorizeCatalogPermission(
+          supabaseAdmin,
+          authResult.user.id,
+          businessId,
+          'can_edit'
+        );
+        if (!authorized) {
+          return res.status(403).json({ error: 'Permission denied for AI poster generation in this business.' });
+        }
+      }
+    }
+
+    const rl = checkRateLimit('ai_poster_generate', rlKey, 12, 10 * 60_000);
+    if (!rl.allowed) {
+      return res.status(429).json({
+        error: `AI image rate limit reached. Please retry in ${rl.retryAfterSec}s.`,
+      });
+    }
+
+    const comboName = String(req.body?.comboName || 'Fashion Combo').trim().slice(0, 120);
+    const modelCategory = String(req.body?.modelCategory || 'fashion model').trim().slice(0, 40);
+    const productNames: string[] = Array.isArray(req.body?.productNames)
+      ? req.body.productNames.slice(0, 8).map((n: unknown) => String(n).trim().slice(0, 80))
+      : [];
+    const referenceImages: Array<{ mimeType: string; data: string }> = Array.isArray(
+      req.body?.referenceImages
+    )
+      ? req.body.referenceImages
+          .slice(0, 4)
+          .filter(
+            (img: any) =>
+              img &&
+              typeof img.data === 'string' &&
+              ['image/jpeg', 'image/png', 'image/webp'].includes(String(img.mimeType))
+          )
+      : [];
+
+    const personaDescription =
+      modelCategory === 'female'
+        ? 'stylish South Asian female fashion model'
+        : modelCategory === 'couple'
+        ? 'stylish South Asian fashion couple posing together'
+        : modelCategory === 'family'
+        ? 'happy South Asian family fashion group posing together'
+        : modelCategory === 'boys'
+        ? 'cheerful young boy fashion model'
+        : modelCategory === 'girls'
+        ? 'cheerful young girl fashion model'
+        : 'confident stylish South Asian male fashion model';
+
+    const promptText = [
+      `Create a crisp commercial studio fashion portrait of a ${personaDescription}`,
+      `wearing and showcasing these exact outfit items from "${comboName}": ${productNames.join(', ') || 'coordinating apparel items'}.`,
+      `Full/three-quarter studio catalog pose, clean pure solid #FFFFFF white studio background for easy graphic poster cutout, sharp commercial lighting, natural fabric textures matching the provided product reference photos.`,
+      `No text, no watermarks, no price tags in the image.`,
+    ].join(' ');
+
+    try {
+      const ai = new GoogleGenAI({
+        apiKey: geminiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+      });
+
+      const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [
+        { text: promptText },
+        ...referenceImages.map(ref => ({
+          inlineData: { mimeType: ref.mimeType, data: ref.data },
+        })),
+      ];
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.1-flash-lite-image',
+        contents: { parts },
+        config: {
+          imageConfig: { aspectRatio: '3:4' },
+        },
+      });
+
+      let outputDataUrl: string | null = null;
+      for (const part of response.candidates?.[0]?.content?.parts ?? []) {
+        if (part.inlineData?.data) {
+          const mime = part.inlineData.mimeType || 'image/png';
+          outputDataUrl = `data:${mime};base64,${part.inlineData.data}`;
+          break;
+        }
+      }
+
+      if (!outputDataUrl) {
+        return res.status(502).json({
+          configured: true,
+          error: 'Gemini returned no image part for this outfit request. Please retry.',
+        });
+      }
+
+      return res.status(200).json({
+        configured: true,
+        imageDataUrl: outputDataUrl,
+        modelUsed: 'gemini-3.1-flash-lite-image',
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Gemini AI outfit generation failed.';
+      return res.status(500).json({ configured: true, error: msg });
+    }
   });
 
   app.get('/api/public-config', (_req, res) => {

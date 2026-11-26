@@ -123,6 +123,9 @@ export const SettingsView: React.FC = () => {
   const [address, setAddress] = useState(settings.address);
   const [mobile, setMobile] = useState(settings.mobile);
   const [email, setEmail] = useState(settings.email);
+  const [websiteUrl, setWebsiteUrl] = useState(settings.websiteUrl || '');
+  const [marketplaceUrl, setMarketplaceUrl] = useState(settings.marketplaceUrl || '');
+  const [socialMedia, setSocialMedia] = useState(settings.socialMedia || '');
   const [logoUrl, setLogoUrl] = useState<string>(() => getShopLogo(settings, activeBusinessId));
   const [vatTaxRate, setVatTaxRate] = useState<number>(settings.vatTaxRate);
   const [vatRegistrationNo, setVatRegistrationNo] = useState<string>(settings.vatRegistrationNo || '');
@@ -183,6 +186,9 @@ export const SettingsView: React.FC = () => {
     setAddress(settings.address);
     setMobile(settings.mobile);
     setEmail(settings.email);
+    setWebsiteUrl(settings.websiteUrl || '');
+    setMarketplaceUrl(settings.marketplaceUrl || '');
+    setSocialMedia(settings.socialMedia || '');
     setLogoUrl(getShopLogo(settings, activeBusinessId));
     setVatTaxRate(settings.vatTaxRate);
     setVatRegistrationNo(settings.vatRegistrationNo || '');
@@ -248,6 +254,9 @@ export const SettingsView: React.FC = () => {
         address: address.trim(),
         mobile: mobile.trim(),
         email: email.trim(),
+        websiteUrl: websiteUrl.trim(),
+        marketplaceUrl: marketplaceUrl.trim(),
+        socialMedia: socialMedia.trim(),
         logoUrl,
         vatTaxRate: cleanVat,
         vatRegistrationNo: vatRegistrationNo.trim(),
@@ -829,6 +838,45 @@ export const SettingsView: React.FC = () => {
                     required
                     value={address}
                     onChange={(e) => setAddress(e.target.value)}
+                    className="w-full p-2.5 border border-slate-200 dark:border-[#1F3158] bg-white dark:bg-[#0B1428] text-slate-900 dark:text-white rounded-lg"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Website URL (Optional · Posters)
+                  </label>
+                  <input
+                    type="url"
+                    value={websiteUrl}
+                    onChange={(e) => setWebsiteUrl(e.target.value)}
+                    placeholder="https://yourshop.com"
+                    className="w-full p-2.5 border border-slate-200 dark:border-[#1F3158] bg-white dark:bg-[#0B1428] text-slate-900 dark:text-white rounded-lg"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Marketplace URL (Optional · Combo QR Codes &amp; Links)
+                  </label>
+                  <input
+                    type="url"
+                    value={marketplaceUrl}
+                    onChange={(e) => setMarketplaceUrl(e.target.value)}
+                    placeholder="https://shop.yourbrand.com"
+                    className="w-full p-2.5 border border-slate-200 dark:border-[#1F3158] bg-white dark:bg-[#0B1428] text-slate-900 dark:text-white rounded-lg"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
+                    Social Media Page / Handle (Optional · Posters)
+                  </label>
+                  <input
+                    type="text"
+                    value={socialMedia}
+                    onChange={(e) => setSocialMedia(e.target.value)}
+                    placeholder="e.g. fb.com/yourshop or @yourshop"
                     className="w-full p-2.5 border border-slate-200 dark:border-[#1F3158] bg-white dark:bg-[#0B1428] text-slate-900 dark:text-white rounded-lg"
                   />
                 </div>
