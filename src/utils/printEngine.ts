@@ -24,12 +24,17 @@ const PRINTER_SETTINGS_KEY = 'AMAR_DOKAN_PRO_PRINTER_SETTINGS';
 const SHOP_LOGO_KEY = 'AMAR_DOKAN_PRO_SHOP_LOGO';
 const PRINT_STYLE_ID = 'amar-dokan-print-style';
 const PRINT_ROOT_ID = 'amar-dokan-print-root';
+const PRINT_IFRAME_ID = 'amar-dokan-print-iframe';
 
 export const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
   invoicePaperSize: 'thermal',
   invoiceOrientation: 'portrait',
   invoiceMarginMm: 4,
   invoiceFontSize: 'medium',
+  invoiceShowHeaderLogo: true,
+  invoiceShowWatermark: true,
+  invoiceWatermarkSize: 70,
+  invoiceWatermarkOpacity: 8,
   labelTemplate: '40x30',
   labelWidthMm: 40,
   labelHeightMm: 30,
@@ -42,6 +47,18 @@ export const DEFAULT_PRINTER_SETTINGS: PrinterSettings = {
   labelFontSize: 'medium',
   showScaleGuidance: true,
 };
+
+export function clampWatermarkSize(value: unknown): number {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 70;
+  return Math.max(20, Math.min(100, Math.round(num)));
+}
+
+export function clampWatermarkOpacity(value: unknown): number {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return 8;
+  return Math.max(2, Math.min(30, Math.round(num)));
+}
 
 export interface PrintLabelItem {
   productId: string;
@@ -70,6 +87,9 @@ export interface PrintResult {
 
 let isPrintingInProgress = false;
 let cleanupTimerId: number | null = null;
+let activePrintToken = 0;
+let activeCleanupDisposers: Array<() => void> = [];
+let savedHostDocumentTitle: string | null = null;
 
 const MAX_LABEL_CARD_CACHE = 800;
 const labelCardHtmlCache = new Map<string, string>();
@@ -88,11 +108,40 @@ export function isPrintJobPreparing(): boolean {
   return isPrintingInProgress;
 }
 
-export function cleanupPrintPortal(): void {
+function restoreHostDocumentTitle(): void {
   if (typeof document === 'undefined') return;
-  if (cleanupTimerId !== null) {
+  if (savedHostDocumentTitle !== null) {
+    document.title = savedHostDocumentTitle;
+    savedHostDocumentTitle = null;
+  }
+}
+
+function detachActivePrintListeners(): void {
+  if (cleanupTimerId !== null && typeof window !== 'undefined') {
     window.clearTimeout(cleanupTimerId);
     cleanupTimerId = null;
+  }
+  if (activeCleanupDisposers.length > 0) {
+    const disposers = activeCleanupDisposers;
+    activeCleanupDisposers = [];
+    for (const dispose of disposers) {
+      try {
+        dispose();
+      } catch {
+        // ignore listener disposal edge cases
+      }
+    }
+  }
+}
+
+export function cleanupPrintPortal(): void {
+  detachActivePrintListeners();
+  restoreHostDocumentTitle();
+  if (typeof document === 'undefined') return;
+
+  const existingIframe = document.getElementById(PRINT_IFRAME_ID);
+  if (existingIframe && existingIframe.parentNode) {
+    existingIframe.parentNode.removeChild(existingIframe);
   }
   const existingRoot = document.getElementById(PRINT_ROOT_ID);
   if (existingRoot && existingRoot.parentNode) {
@@ -105,6 +154,7 @@ export function cleanupPrintPortal(): void {
 }
 
 export function cancelActivePrintJob(): void {
+  activePrintToken += 1;
   isPrintingInProgress = false;
   cleanupPrintPortal();
 }
@@ -120,11 +170,25 @@ export function getPrinterSettings(shopSettings?: Partial<ShopSettings>): Printe
     stored = {};
   }
 
-  return {
+  const merged: PrinterSettings = {
     ...DEFAULT_PRINTER_SETTINGS,
     ...(shopSettings?.invoiceFormat ? { invoicePaperSize: shopSettings.invoiceFormat } : {}),
     ...stored,
     ...(shopSettings?.printerSettings || {}),
+  };
+
+  return {
+    ...merged,
+    invoiceShowHeaderLogo:
+      typeof merged.invoiceShowHeaderLogo === 'boolean'
+        ? merged.invoiceShowHeaderLogo
+        : DEFAULT_PRINTER_SETTINGS.invoiceShowHeaderLogo,
+    invoiceShowWatermark:
+      typeof merged.invoiceShowWatermark === 'boolean'
+        ? merged.invoiceShowWatermark
+        : DEFAULT_PRINTER_SETTINGS.invoiceShowWatermark,
+    invoiceWatermarkSize: clampWatermarkSize(merged.invoiceWatermarkSize),
+    invoiceWatermarkOpacity: clampWatermarkOpacity(merged.invoiceWatermarkOpacity),
   };
 }
 
@@ -267,6 +331,12 @@ export function buildInvoiceHtml(
   const lang = settings.language || 'en';
   const currency = settings.currency || '৳';
   const logoUrl = getShopLogo(settings);
+  const effectiveLogoUrl = logoUrl || APP_IDENTITY.symbolPath;
+  const showHeaderLogo = printer.invoiceShowHeaderLogo !== false;
+  const showWatermark = printer.invoiceShowWatermark !== false;
+  const watermarkSize = clampWatermarkSize(printer.invoiceWatermarkSize);
+  const watermarkOpacityPct = clampWatermarkOpacity(printer.invoiceWatermarkOpacity);
+  const watermarkOpacityDecimal = (watermarkOpacityPct / 100).toFixed(2);
   const biz = resolveBusinessProfile(settings, activeBranch);
 
   const fontScaleMap = {
@@ -333,6 +403,8 @@ export function buildInvoiceHtml(
     `;
     const extraStyles = `
       .adp-doc .receipt {
+        position: relative;
+        overflow: hidden;
         width: ${printableWidthMm}mm;
         max-width: 100%;
         background: #ffffff;
@@ -340,6 +412,31 @@ export function buildInvoiceHtml(
         font-size: ${baseFontPx}px;
         line-height: 1.38;
         padding: 2mm;
+      }
+      .adp-doc .receipt > *:not(.invoice-watermark) {
+        position: relative;
+        z-index: 1;
+      }
+      .adp-doc .invoice-watermark {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+        user-select: none;
+        z-index: 0;
+        overflow: hidden;
+      }
+      .adp-doc .invoice-watermark img {
+        width: ${watermarkSize}%;
+        max-width: ${watermarkSize}%;
+        max-height: ${watermarkSize}%;
+        height: auto;
+        object-fit: contain;
+        opacity: ${watermarkOpacityDecimal};
+        -webkit-filter: grayscale(100%) contrast(105%);
+        filter: grayscale(100%) contrast(105%);
       }
       @media screen {
         .adp-doc .receipt {
@@ -359,7 +456,7 @@ export function buildInvoiceHtml(
       .adp-doc .item-name { font-weight: 700; color: #000; }
       .adp-doc .item-meta { font-size: ${Math.max(8.5, baseFontPx - 2)}px; color: #334155; }
       .adp-doc .grand { font-size: ${baseFontPx + 2}px; font-weight: 800; border-top: 1px solid #0f172a; padding-top: 4px; margin-top: 4px; }
-      .adp-doc .offer-box { background: #f8fafc; border: 1px solid #cbd5e1; padding: 3px 5px; font-size: ${Math.max(8.5, baseFontPx - 2)}px; margin: 3px 0; }
+      .adp-doc .offer-box { background: rgba(248, 250, 252, 0.8); border: 1px solid #cbd5e1; padding: 3px 5px; font-size: ${Math.max(8.5, baseFontPx - 2)}px; margin: 3px 0; }
       .adp-doc .barcode-wrap { width: 52mm; max-width: 100%; margin: 6px auto 4px; }
       .adp-doc .sig-line { margin-top: 16px; border-top: 1px dashed #475569; padding-top: 3px; width: 42mm; margin-left: auto; margin-right: auto; text-align: center; font-size: ${Math.max(8.5, baseFontPx - 2)}px; }
     `;
@@ -401,8 +498,9 @@ export function buildInvoiceHtml(
 
     const bodyHtml = `
       <div class="receipt">
+        ${showWatermark ? `<div class="invoice-watermark" aria-hidden="true"><img src="${escapeHtml(effectiveLogoUrl)}" alt="" /></div>` : ''}
         <div class="center dashed-b">
-          <img src="${escapeHtml(logoUrl || APP_IDENTITY.symbolPath)}" alt="${escapeHtml(logoUrl ? biz.shopName : APP_IDENTITY.name)}" class="logo" />
+          ${showHeaderLogo ? `<img src="${escapeHtml(effectiveLogoUrl)}" alt="${escapeHtml(logoUrl ? biz.shopName : APP_IDENTITY.name)}" class="logo" />` : ''}
           <h1 class="shop-name">${escapeHtml(biz.shopName)}</h1>
           ${biz.tagline ? `<p class="muted">${escapeHtml(biz.tagline)}</p>` : ''}
           ${biz.branchName ? `<p class="muted" style="font-weight:600;">Branch: ${escapeHtml(biz.branchName)}</p>` : ''}
@@ -493,6 +591,8 @@ export function buildInvoiceHtml(
 
   const extraStyles = `
     .adp-doc .invoice-sheet {
+      position: relative;
+      overflow: hidden;
       width: 100%;
       max-width: ${containerWidth};
       background: #ffffff;
@@ -500,6 +600,31 @@ export function buildInvoiceHtml(
       font-size: ${isA5 ? Math.max(9.5, baseFontPx - 1) : baseFontPx}px;
       line-height: 1.45;
       padding: ${isA5 ? '5mm' : '8mm'};
+    }
+    .adp-doc .invoice-sheet > *:not(.invoice-watermark) {
+      position: relative;
+      z-index: 1;
+    }
+    .adp-doc .invoice-watermark {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;
+      user-select: none;
+      z-index: 0;
+      overflow: hidden;
+    }
+    .adp-doc .invoice-watermark img {
+      width: ${watermarkSize}%;
+      max-width: ${watermarkSize}%;
+      max-height: ${watermarkSize}%;
+      height: auto;
+      object-fit: contain;
+      opacity: ${watermarkOpacityDecimal};
+      -webkit-filter: grayscale(100%) contrast(105%);
+      filter: grayscale(100%) contrast(105%);
     }
     @media screen {
       .adp-doc .invoice-sheet {
@@ -552,7 +677,7 @@ export function buildInvoiceHtml(
       margin-top: 12px;
     }
     .adp-doc th {
-      background: #f8fafc;
+      background: rgba(248, 250, 252, 0.85);
       color: #334155;
       font-weight: 700;
       font-size: ${isA5 ? 10 : 11}px;
@@ -584,7 +709,7 @@ export function buildInvoiceHtml(
       border: 1px solid #cbd5e1;
       border-radius: 6px;
       padding: 10px 12px;
-      background: #f8fafc;
+      background: rgba(248, 250, 252, 0.82);
     }
     .adp-doc .t-line { display: flex; justify-content: space-between; margin: 4px 0; }
     .adp-doc .t-grand {
@@ -621,7 +746,7 @@ export function buildInvoiceHtml(
   const comboTableRows = comboPackages
     .map(
       (pkg, idx) => `
-    <tr style="background:#f0fdf4;">
+    <tr style="background:rgba(240, 253, 244, 0.78);">
       <td class="ctr mono">${idx + 1}</td>
       <td>
         <div style="font-weight:700; color:#0f172a;"><span style="font-size:9px;background:#059669;color:#ffffff;padding:1px 5px;border-radius:3px;margin-right:4px;">COMBO</span>${escapeHtml(pkg.offerName)}</div>
@@ -663,9 +788,10 @@ export function buildInvoiceHtml(
 
   const bodyHtml = `
     <div class="invoice-sheet">
+      ${showWatermark ? `<div class="invoice-watermark" aria-hidden="true"><img src="${escapeHtml(effectiveLogoUrl)}" alt="" /></div>` : ''}
       <div class="header">
         <div class="brand">
-          <img src="${escapeHtml(logoUrl || APP_IDENTITY.symbolPath)}" alt="${escapeHtml(logoUrl ? biz.shopName : APP_IDENTITY.name)}" class="logo" />
+          ${showHeaderLogo ? `<img src="${escapeHtml(effectiveLogoUrl)}" alt="${escapeHtml(logoUrl ? biz.shopName : APP_IDENTITY.name)}" class="logo" />` : ''}
           <div>
             <h1 class="shop-title">${escapeHtml(biz.shopName)}</h1>
             ${biz.tagline ? `<p class="sub">${escapeHtml(biz.tagline)}</p>` : ''}
@@ -1207,9 +1333,250 @@ export async function buildLabelsHtmlAsync(
   };
 }
 
+function scopeCssSelectorList(selectorText: string, rootSelector: string): string {
+  return selectorText
+    .split(',')
+    .map(part => {
+      const s = part.trim();
+      if (!s) return '';
+      if (s === '*' || s === ':root') {
+        return `${rootSelector}, ${rootSelector} *`;
+      }
+      if (/^(html|body)(\.[a-zA-Z0-9_-]+)?(\s*,\s*(html|body)(\.[a-zA-Z0-9_-]+)?)*$/i.test(s)) {
+        return rootSelector;
+      }
+      if (/^(html|body)(\.[a-zA-Z0-9_-]+)?\s+/i.test(s)) {
+        return s.replace(/^(html|body)(\.[a-zA-Z0-9_-]+)?\s+(?:(html|body)(\.[a-zA-Z0-9_-]+)?\s+)*/i, `${rootSelector} `);
+      }
+      if (s.startsWith(rootSelector)) return s;
+      return `${rootSelector} ${s}`;
+    })
+    .filter(Boolean)
+    .join(', ');
+}
+
+function scopeCssRuleBlock(cssBody: string, rootSelector: string): string {
+  const output: string[] = [];
+  let i = 0;
+  const len = cssBody.length;
+
+  while (i < len) {
+    while (i < len && /\s/.test(cssBody[i])) i++;
+    if (i >= len) break;
+
+    if (cssBody[i] === '/' && cssBody[i + 1] === '*') {
+      const commentEnd = cssBody.indexOf('*/', i + 2);
+      if (commentEnd === -1) break;
+      i = commentEnd + 2;
+      continue;
+    }
+
+    const braceStart = cssBody.indexOf('{', i);
+    const semiIdx = cssBody.indexOf(';', i);
+    if (semiIdx !== -1 && (braceStart === -1 || semiIdx < braceStart)) {
+      const stmt = cssBody.slice(i, semiIdx + 1).trim();
+      if (stmt.startsWith('@import') || stmt.startsWith('@charset')) {
+        output.push(stmt);
+      }
+      i = semiIdx + 1;
+      continue;
+    }
+    if (braceStart === -1) break;
+
+    const prelude = cssBody.slice(i, braceStart).trim();
+    let depth = 1;
+    let j = braceStart + 1;
+    while (j < len && depth > 0) {
+      if (cssBody[j] === '{') depth++;
+      else if (cssBody[j] === '}') depth--;
+      j++;
+    }
+    const inner = cssBody.slice(braceStart + 1, j - 1);
+    i = j;
+
+    if (prelude.startsWith('@')) {
+      const lower = prelude.toLowerCase();
+      if (lower.startsWith('@page') || lower.startsWith('@font-face') || lower.includes('keyframes')) {
+        output.push(`${prelude} {${inner}}`);
+      } else if (lower.startsWith('@media')) {
+        if (!lower.includes('screen') || lower.includes('print')) {
+          const scopedInner = scopeCssRuleBlock(inner, rootSelector);
+          if (scopedInner.trim()) {
+            output.push(`${prelude} {\n${scopedInner}\n}`);
+          }
+        }
+      }
+    } else {
+      const scopedSelector = scopeCssSelectorList(prelude, rootSelector);
+      if (scopedSelector) {
+        output.push(`${scopedSelector} {${inner}}`);
+      }
+    }
+  }
+
+  return output.join('\n');
+}
+
 /**
- * Synchronously mounts an isolated top-level print portal and invokes window.print()
- * directly from the user's button click gesture so browsers (and Save as PDF) always open.
+ * Converts arbitrary standalone document CSS into strictly @media print + #root-scoped CSS
+ * so host screen layout (html, body, #root) can never be altered even if fallback mode runs.
+ */
+export function scopeFallbackPrintCss(rawCss: string, rootId: string = PRINT_ROOT_ID): string {
+  const rootSelector = `#${rootId}`;
+  const topLevelMediaOrPage: string[] = [];
+  const printScopedRules: string[] = [];
+
+  let i = 0;
+  const len = rawCss.length;
+  while (i < len) {
+    while (i < len && /\s/.test(rawCss[i])) i++;
+    if (i >= len) break;
+
+    if (rawCss[i] === '/' && rawCss[i + 1] === '*') {
+      const commentEnd = rawCss.indexOf('*/', i + 2);
+      if (commentEnd === -1) break;
+      i = commentEnd + 2;
+      continue;
+    }
+
+    const braceStart = rawCss.indexOf('{', i);
+    const semiIdx = rawCss.indexOf(';', i);
+    if (semiIdx !== -1 && (braceStart === -1 || semiIdx < braceStart)) {
+      const stmt = rawCss.slice(i, semiIdx + 1).trim();
+      if (stmt.startsWith('@import') || stmt.startsWith('@charset')) {
+        topLevelMediaOrPage.push(stmt);
+      }
+      i = semiIdx + 1;
+      continue;
+    }
+    if (braceStart === -1) break;
+
+    const prelude = rawCss.slice(i, braceStart).trim();
+    let depth = 1;
+    let j = braceStart + 1;
+    while (j < len && depth > 0) {
+      if (rawCss[j] === '{') depth++;
+      else if (rawCss[j] === '}') depth--;
+      j++;
+    }
+    const inner = rawCss.slice(braceStart + 1, j - 1);
+    i = j;
+
+    if (prelude.startsWith('@')) {
+      const lower = prelude.toLowerCase();
+      if (lower.startsWith('@page') || lower.startsWith('@font-face') || lower.includes('keyframes')) {
+        topLevelMediaOrPage.push(`${prelude} {${inner}}`);
+      } else if (lower.startsWith('@media')) {
+        if (!lower.includes('screen') || lower.includes('print')) {
+          const scopedInner = scopeCssRuleBlock(inner, rootSelector);
+          if (scopedInner.trim()) {
+            topLevelMediaOrPage.push(`@media print {\n${scopedInner}\n}`);
+          }
+        }
+      }
+    } else {
+      const scopedSelector = scopeCssSelectorList(prelude, rootSelector);
+      if (scopedSelector) {
+        printScopedRules.push(`${scopedSelector} {${inner}}`);
+      }
+    }
+  }
+
+  return [
+    ...topLevelMediaOrPage,
+    printScopedRules.length > 0 ? `@media print {\n${printScopedRules.join('\n')}\n}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function registerPrintLifecycleCleanup(
+  jobToken: number,
+  iframeWin?: Window | null
+): void {
+  if (typeof window === 'undefined') return;
+
+  const finishIfCurrent = () => {
+    if (jobToken !== activePrintToken) return;
+    cleanupPrintPortal();
+  };
+
+  let focusCheckTimer: number | null = null;
+  const clearFocusTimer = () => {
+    if (focusCheckTimer !== null) {
+      window.clearTimeout(focusCheckTimer);
+      focusCheckTimer = null;
+    }
+  };
+
+  const onAfterPrint = () => {
+    finishIfCurrent();
+  };
+
+  const onWindowFocus = () => {
+    clearFocusTimer();
+    focusCheckTimer = window.setTimeout(() => {
+      if (jobToken !== activePrintToken) return;
+      try {
+        if (typeof window.matchMedia === 'function' && window.matchMedia('print').matches) {
+          return;
+        }
+      } catch {
+        // ignore matchMedia errors
+      }
+      finishIfCurrent();
+    }, 350);
+  };
+
+  window.addEventListener('afterprint', onAfterPrint);
+  window.addEventListener('focus', onWindowFocus);
+  activeCleanupDisposers.push(() => {
+    clearFocusTimer();
+    window.removeEventListener('afterprint', onAfterPrint);
+    window.removeEventListener('focus', onWindowFocus);
+  });
+
+  if (iframeWin && iframeWin !== window) {
+    try {
+      iframeWin.addEventListener('afterprint', onAfterPrint);
+      activeCleanupDisposers.push(() => {
+        try {
+          iframeWin.removeEventListener('afterprint', onAfterPrint);
+        } catch {
+          // ignore detached iframe errors
+        }
+      });
+    } catch {
+      // ignore cross-realm listener restrictions
+    }
+  }
+
+  if (typeof window.matchMedia === 'function') {
+    try {
+      const mql = window.matchMedia('print');
+      const onPrintMediaChange = (e: MediaQueryListEvent) => {
+        if (!e.matches) {
+          finishIfCurrent();
+        }
+      };
+      if (typeof mql.addEventListener === 'function') {
+        mql.addEventListener('change', onPrintMediaChange);
+        activeCleanupDisposers.push(() => mql.removeEventListener('change', onPrintMediaChange));
+      } else if (typeof (mql as any).addListener === 'function') {
+        (mql as any).addListener(onPrintMediaChange);
+        activeCleanupDisposers.push(() => (mql as any).removeListener(onPrintMediaChange));
+      }
+    } catch {
+      // ignore matchMedia errors
+    }
+  }
+
+  cleanupTimerId = window.setTimeout(finishIfCurrent, 15000);
+}
+
+/**
+ * Synchronously mounts an isolated hidden print iframe (never mutating host app CSS/layout)
+ * and invokes print() directly from the user's click gesture so browsers and Save as PDF work reliably.
  */
 export function printDocument(html: string, title: string = 'Print Document'): PrintResult {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -1228,13 +1595,52 @@ export function printDocument(html: string, title: string = 'Print Document'): P
     return { opened: false, error: 'A print dialog is currently active. Please close it and retry.' };
   }
 
+  activePrintToken += 1;
+  const jobToken = activePrintToken;
   isPrintingInProgress = true;
-  const previousTitle = document.title || APP_IDENTITY.fullTitle;
 
   try {
     cleanupPrintPortal();
+    savedHostDocumentTitle = document.title || APP_IDENTITY.fullTitle;
+    document.title = title;
 
+    // 1. Primary path: completely isolated hidden iframe (zero CSS leakage to host document)
+    if (document.body && typeof document.createElement === 'function') {
+      const iframe = document.createElement('iframe');
+      iframe.id = PRINT_IFRAME_ID;
+      iframe.setAttribute('aria-hidden', 'true');
+      iframe.tabIndex = -1;
+      iframe.style.cssText =
+        'position:fixed;left:-10000px;top:0;width:210mm;height:297mm;border:0;margin:0;padding:0;opacity:0;pointer-events:none;z-index:-1;';
+      document.body.appendChild(iframe);
+
+      const iframeWin = iframe.contentWindow;
+      const iframeDoc = iframe.contentDocument || iframeWin?.document;
+      if (iframeDoc && iframeWin && typeof iframeWin.print === 'function') {
+        iframeDoc.open();
+        iframeDoc.write(html);
+        iframeDoc.close();
+        if (title) {
+          iframeDoc.title = title;
+        }
+        // Force synchronous layout inside isolated iframe document
+        void iframeDoc.body?.offsetHeight;
+
+        registerPrintLifecycleCleanup(jobToken, iframeWin);
+        iframeWin.focus();
+        iframeWin.print();
+        return { opened: true };
+      }
+
+      // Remove unusable iframe before falling back to scoped print portal
+      if (iframe.parentNode) {
+        iframe.parentNode.removeChild(iframe);
+      }
+    }
+
+    // 2. Fallback path (environments without iframe.contentWindow.print): strictly @media print + #root scoped
     const { css, bodyHtml } = extractPrintParts(html);
+    const scopedCss = scopeFallbackPrintCss(css, PRINT_ROOT_ID);
 
     const styleEl = document.createElement('style');
     styleEl.id = PRINT_STYLE_ID;
@@ -1245,16 +1651,6 @@ export function printDocument(html: string, title: string = 'Print Document'): P
         }
       }
       @media print {
-        html, body {
-          margin: 0 !important;
-          padding: 0 !important;
-          background: #ffffff !important;
-          color: #000000 !important;
-          width: auto !important;
-          height: auto !important;
-          min-height: 0 !important;
-          overflow: visible !important;
-        }
         body > *:not(#${PRINT_ROOT_ID}) {
           display: none !important;
         }
@@ -1268,7 +1664,7 @@ export function printDocument(html: string, title: string = 'Print Document'): P
           color: #000000 !important;
         }
       }
-      ${css}
+      ${scopedCss}
     `;
 
     const printRoot = document.createElement('div');
@@ -1278,31 +1674,20 @@ export function printDocument(html: string, title: string = 'Print Document'): P
     document.head.appendChild(styleEl);
     document.body.appendChild(printRoot);
 
-    // Force synchronous layout calculation before opening print dialog
     void printRoot.offsetHeight;
 
-    document.title = title;
-
-    const handleAfterPrint = () => {
-      document.title = previousTitle;
-      cleanupPrintPortal();
-    };
-    window.addEventListener('afterprint', handleAfterPrint, { once: true });
-    cleanupTimerId = window.setTimeout(handleAfterPrint, 60000);
-
-    // Execute synchronously within user's click event gesture
+    registerPrintLifecycleCleanup(jobToken, window);
     window.print();
 
     return { opened: true };
   } catch (err: any) {
-    document.title = previousTitle;
     cleanupPrintPortal();
     return {
       opened: false,
       error: err?.message || 'Unable to open browser print dialog. Please try again.',
     };
   } finally {
-    document.title = previousTitle;
+    restoreHostDocumentTitle();
     isPrintingInProgress = false;
   }
 }

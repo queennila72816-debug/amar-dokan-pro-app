@@ -29,6 +29,7 @@ import { ComboOffersView } from './components/combos/ComboOffersView';
 import { UserStaffManagementView } from './components/users/UserStaffManagementView';
 import { SuperAdminDashboardView } from './components/platform/SuperAdminDashboardView';
 import { BillingSubscriptionView } from './components/billing/BillingSubscriptionView';
+import { InstallmentsView } from './components/installments/InstallmentsView';
 import { AuthModal } from './components/auth/AuthModal';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import { APP_IDENTITY } from './config/appIdentity';
@@ -59,6 +60,7 @@ const TAB_TO_MODULE_MAP: Record<string, LegacyAppModule> = {
   scanner: 'scanner',
   reorder: 'reorder',
   combos: 'combos',
+  installments: 'installments',
   billing: 'billing',
 };
 
@@ -341,6 +343,9 @@ const MainLayout: React.FC = () => {
 
       case 'sales':
         return <SalesHistoryView />;
+
+      case 'installments':
+        return <InstallmentsView />;
 
       case 'products':
         return (

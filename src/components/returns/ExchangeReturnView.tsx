@@ -1276,7 +1276,7 @@ export const ExchangeReturnView: React.FC = () => {
                   const exc = completedExchange;
                   const slipEl = document.getElementById('exchange-slip-print');
                   const innerHtml = slipEl ? slipEl.innerHTML : '';
-                  const docHtml = `<!DOCTYPE html><html><head><title>Voucher ${exc.exchangeNumber}</title><style>@page{size:80mm auto;margin:4mm;}body{font-family:monospace;font-size:11px;color:#000;margin:0;padding:8px;}</style></head><body><div>${innerHtml}</div></body></html>`;
+                  const docHtml = `<!DOCTYPE html><html class="exchange-voucher-doc"><head><title>Voucher ${exc.exchangeNumber}</title><style>@page{size:80mm auto;margin:4mm;}html.exchange-voucher-doc,html.exchange-voucher-doc body{margin:0;padding:0;background:#fff;}.exchange-voucher-doc-body{font-family:monospace;font-size:11px;color:#000;margin:0;padding:8px;}</style></head><body><div class="exchange-voucher-doc-body">${innerHtml}</div></body></html>`;
                   const res = printDocument(docHtml, `Voucher ${exc.exchangeNumber}`);
                   if (!res.opened && res.error) {
                     setDeskError(res.error);

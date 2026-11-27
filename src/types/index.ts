@@ -443,6 +443,7 @@ export interface Purchase {
 
 export interface Customer {
   id: string;
+  customerCode?: string;
   name: string;
   mobile: string;
   address?: string;
@@ -455,6 +456,13 @@ export interface Customer {
   totalPaid: number;
   createdAt: string;
   notes?: string;
+  // Optional private KYC / Installment verification fields (restricted to authorized business profile)
+  photoUrl?: string;
+  nidNumber?: string;
+  nidFrontUrl?: string;
+  nidBackUrl?: string;
+  kycConsent?: boolean;
+  kycConsentAt?: string;
 }
 
 export interface CustomerTransaction {
@@ -615,6 +623,10 @@ export interface PrinterSettings {
   invoiceOrientation: 'portrait' | 'landscape';
   invoiceMarginMm: number;
   invoiceFontSize: 'small' | 'medium' | 'large';
+  invoiceShowHeaderLogo?: boolean;
+  invoiceShowWatermark?: boolean;
+  invoiceWatermarkSize?: number;
+  invoiceWatermarkOpacity?: number;
   labelTemplate: LabelTemplateId;
   labelWidthMm: number;
   labelHeightMm: number;
@@ -1500,4 +1512,96 @@ export interface SmartNotificationItem {
   targetTab?: string;
   timestamp?: string;
   actionLabel?: string;
+}
+
+// ==================== INSTALLMENT SALES & SLIP TYPES ====================
+
+export type InstallmentDurationMonths = 1 | 2 | 3 | 4 | 5 | 6;
+
+export type InstallmentSlipLanguage = 'bn' | 'en' | 'both';
+
+export type InstallmentAgreementStatus = 'unpaid' | 'partial' | 'paid';
+
+export type InstallmentScheduleStatus = 'due' | 'partial' | 'paid' | 'overdue';
+
+export interface InstallmentProductItem {
+  productId?: string;
+  productName: string;
+  size?: string;
+  color?: string;
+  quantity: number;
+  unitPrice: number;
+  totalPrice: number;
+}
+
+export interface InstallmentScheduleItem {
+  installmentNumber: number; // 1..6
+  labelEn: string;
+  labelBn: string;
+  dueDate: string; // YYYY-MM-DD
+  amount: number;
+  paidAmount: number;
+  status: InstallmentScheduleStatus;
+  paidDate?: string;
+  signatureText?: string;
+}
+
+export interface InstallmentAgreement {
+  id: string;
+  businessId: string;
+  branchId: string;
+  agreementCode: string; // e.g., INS-0001
+  customerId: string;
+  customerCode?: string;
+  customerName: string;
+  customerMobile: string;
+  customerAddress?: string;
+  customerPhotoUrl?: string;
+  customerNidNumber?: string; // stored privately; masked on customer slip
+  hasIdentityDocuments?: boolean;
+  saleId?: string;
+  invoiceNumber?: string;
+  items: InstallmentProductItem[];
+  totalPurchaseAmount: number;
+  downPayment: number;
+  installmentBalance: number;
+  durationMonths: InstallmentDurationMonths;
+  monthlyInstallment: number;
+  firstDueDate: string; // YYYY-MM-DD
+  agreementDate: string; // ISO or YYYY-MM-DD
+  totalPaidAmount: number; // downPayment + installmentsPaid
+  installmentsPaid: number; // sum of posted installment collections
+  remainingDue: number;
+  lastPaymentDate?: string;
+  nextDueDate?: string;
+  overdueAmount: number;
+  status: InstallmentAgreementStatus;
+  schedule: InstallmentScheduleItem[];
+  notes?: string;
+  createdBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InstallmentPaymentRecord {
+  id: string;
+  businessId: string;
+  agreementId: string;
+  agreementCode: string;
+  customerId: string;
+  customerName: string;
+  paymentDate: string; // YYYY-MM-DD
+  amount: number;
+  paymentMethod: PaymentMethod;
+  accountId: string;
+  accountName?: string;
+  receiptNumber: string;
+  collectedBy: string;
+  remarks?: string;
+  clientTxId?: string;
+  status: 'posted' | 'reversed';
+  reversedAt?: string;
+  reversedBy?: string;
+  reversalReason?: string;
+  createdAt: string;
 }

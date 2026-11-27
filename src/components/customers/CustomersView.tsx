@@ -1,25 +1,35 @@
-import React, { useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { resolveBusinessProfile } from '../../config/appIdentity';
-import { Customer, PaymentMethod } from '../../types';
+import { Customer, InstallmentAgreement, InstallmentPaymentRecord, PaymentMethod } from '../../types';
 import { formatCurrency, formatDate, toBnNumber } from '../../utils/formatters';
 import { getShopLogo, printCustomerStatement } from '../../utils/printEngine';
+import {
+  compressKycImageFile,
+  generateInstallmentReceiptNumber,
+  getTodayIsoDate,
+  roundMoney,
+} from '../../utils/installmentUtils';
+import { printInstallmentPaymentReceipt } from '../../utils/installmentSlipExport';
+import { InstallmentSlipPreviewModal } from '../installments/InstallmentSlipPreviewModal';
 import {
   Users,
   Plus,
   Search,
-  Wallet,
   MessageSquare,
   FileText,
   X,
   CreditCard,
   History,
-  Phone,
-  MapPin,
   Edit,
   Trash2,
   AlertTriangle,
   Printer,
+  CalendarClock,
+  ImagePlus,
+  ShieldCheck,
+  RotateCcw,
+  CheckCircle2,
 } from 'lucide-react';
 
 interface CustomersViewProps {
@@ -28,13 +38,41 @@ interface CustomersViewProps {
 }
 
 export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: propIsAddModalOpen, onCloseAddModal: propOnCloseAddModal }) => {
-  const { customers, customerTransactions, addCustomer, updateCustomer, deleteCustomer, isAdmin, collectCustomerDue, accounts, settings, branches, activeBranchId, hasPermission } = useApp();
+  const {
+    customers,
+    customerTransactions,
+    addCustomer,
+    updateCustomer,
+    deleteCustomer,
+    isAdmin,
+    collectCustomerDue,
+    accounts,
+    settings,
+    branches,
+    activeBranchId,
+    hasPermission,
+    installmentAgreements,
+    installmentPayments,
+    collectInstallmentPayment,
+    reverseInstallmentPayment,
+    user,
+    currentEmployee,
+    currentUserRole,
+  } = useApp();
   const canEditCustomer = isAdmin || hasPermission('customer_management', 'edit');
   const canDeleteCustomer = isAdmin || hasPermission('customer_management', 'delete');
+  const canCollectInstallment = isAdmin || hasPermission('due_collection', 'create') || hasPermission('due_collection', 'edit');
+  const canReverseInstallment = isAdmin || hasPermission('due_collection', 'delete') || hasPermission('sales_history', 'edit');
   const lang = settings.language;
   const activeBranch = branches.find(b => b.id === activeBranchId) || branches[0];
   const biz = resolveBusinessProfile(settings, activeBranch);
   const shopLogo = getShopLogo(settings);
+
+  const staffNameDefault =
+    currentEmployee?.name ||
+    user?.user_metadata?.full_name ||
+    user?.email?.split('@')[0] ||
+    (currentUserRole === 'seller' || currentUserRole === 'salesman' ? 'Seller' : 'Admin');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'due'>('all');
@@ -57,6 +95,28 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
   // Customer Ledger Modal
   const [ledgerCustomer, setLedgerCustomer] = useState<Customer | null>(null);
 
+  // Customer Installment Profile Modal & Slip Preview
+  const [installmentProfileCustomerId, setInstallmentProfileCustomerId] = useState<string | null>(null);
+  const [slipAgreement, setSlipAgreement] = useState<InstallmentAgreement | null>(null);
+  const [collectingAgreement, setCollectingAgreement] = useState<InstallmentAgreement | null>(null);
+  const [instPayDate, setInstPayDate] = useState(getTodayIsoDate());
+  const [instPayAmount, setInstPayAmount] = useState<number | ''>('');
+  const [instPayMethod, setInstPayMethod] = useState<PaymentMethod>('cash');
+  const [instPayAccountId, setInstPayAccountId] = useState(accounts[0]?.id || '');
+  const [instPayReceiptNo, setInstPayReceiptNo] = useState('');
+  const [instPayRemarks, setInstPayRemarks] = useState('');
+  const [instPayClientTxId, setInstPayClientTxId] = useState('');
+  const [isSubmittingInstPay, setIsSubmittingInstPay] = useState(false);
+  const [instPayError, setInstPayError] = useState<string | null>(null);
+  const [completedInstPayment, setCompletedInstPayment] = useState<{
+    payment: InstallmentPaymentRecord;
+    agreement: InstallmentAgreement;
+  } | null>(null);
+  const instPayLockRef = useRef(false);
+  const [reversingInstPaymentId, setReversingInstPaymentId] = useState<string | null>(null);
+  const [reversalReasonInput, setReversalReasonInput] = useState('');
+  const [isReversingInst, setIsReversingInst] = useState(false);
+
   // Form Fields
   const [name, setName] = useState('');
   const [mobile, setMobile] = useState('');
@@ -65,6 +125,13 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
   const [customerType, setCustomerType] = useState<'retail' | 'wholesale'>('retail');
   const [openingDue, setOpeningDue] = useState<number | ''>('');
   const [creditLimit, setCreditLimit] = useState<number>(10000);
+
+  // Optional Private KYC Fields
+  const [photoUrl, setPhotoUrl] = useState('');
+  const [nidNumber, setNidNumber] = useState('');
+  const [nidFrontUrl, setNidFrontUrl] = useState('');
+  const [nidBackUrl, setNidBackUrl] = useState('');
+  const [kycConsent, setKycConsent] = useState(false);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -80,7 +147,25 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
     if (accounts.length > 0 && (!collectAccountId || !accounts.some(a => a.id === collectAccountId))) {
       setCollectAccountId(accounts[0].id);
     }
-  }, [accounts, collectAccountId]);
+    if (accounts.length > 0 && (!instPayAccountId || !accounts.some(a => a.id === instPayAccountId))) {
+      setInstPayAccountId(accounts[0].id);
+    }
+  }, [accounts, collectAccountId, instPayAccountId]);
+
+  const installmentSummaryByCustomer = useMemo(() => {
+    const map: Record<string, { total: number; active: number; overdue: number }> = {};
+    installmentAgreements.forEach(ag => {
+      if (!map[ag.customerId]) {
+        map[ag.customerId] = { total: 0, active: 0, overdue: 0 };
+      }
+      map[ag.customerId].total += 1;
+      if (ag.status !== 'paid') {
+        map[ag.customerId].active += 1;
+        if (ag.overdueAmount > 0) map[ag.customerId].overdue += 1;
+      }
+    });
+    return map;
+  }, [installmentAgreements]);
 
   const closeModal = () => {
     setIsModalOpen(false);
@@ -97,6 +182,11 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
     setCustomerType('retail');
     setOpeningDue('');
     setCreditLimit(10000);
+    setPhotoUrl('');
+    setNidNumber('');
+    setNidFrontUrl('');
+    setNidBackUrl('');
+    setKycConsent(false);
     setIsModalOpen(true);
   };
 
@@ -109,7 +199,25 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
     setCustomerType(c.customerType);
     setOpeningDue('');
     setCreditLimit(c.creditLimit);
+    setPhotoUrl(c.photoUrl || '');
+    setNidNumber(c.nidNumber || '');
+    setNidFrontUrl(c.nidFrontUrl || '');
+    setNidBackUrl(c.nidBackUrl || '');
+    setKycConsent(Boolean(c.kycConsent));
     setIsModalOpen(true);
+  };
+
+  const handlePickKycFile = async (
+    file: File | undefined,
+    setter: React.Dispatch<React.SetStateAction<string>>
+  ) => {
+    if (!file) return;
+    try {
+      const compressed = await compressKycImageFile(file);
+      setter(compressed);
+    } catch (err: any) {
+      alert(err?.message || 'Could not process image file.');
+    }
   };
 
   const handleSubmitCustomer = async (e: React.FormEvent) => {
@@ -138,6 +246,12 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
           email: email.trim() || undefined,
           customerType,
           creditLimit: parsedCreditLimit,
+          photoUrl: photoUrl || undefined,
+          nidNumber: nidNumber.trim() || undefined,
+          nidFrontUrl: nidFrontUrl || undefined,
+          nidBackUrl: nidBackUrl || undefined,
+          kycConsent,
+          kycConsentAt: kycConsent ? editingCustomer.kycConsentAt || new Date().toISOString() : undefined,
         });
       } else {
         await addCustomer({
@@ -148,6 +262,12 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
           customerType,
           openingDue: parsedOpeningDue,
           creditLimit: parsedCreditLimit,
+          photoUrl: photoUrl || undefined,
+          nidNumber: nidNumber.trim() || undefined,
+          nidFrontUrl: nidFrontUrl || undefined,
+          nidBackUrl: nidBackUrl || undefined,
+          kycConsent,
+          kycConsentAt: kycConsent ? new Date().toISOString() : undefined,
         });
       }
 
@@ -319,11 +439,24 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredCustomers.map(customer => (
+              {filteredCustomers.map(customer => {
+                const instInfo = installmentSummaryByCustomer[customer.id];
+                return (
                 <tr key={customer.id} className="hover:bg-slate-50/80 transition-colors">
                   <td className="px-4 py-3">
-                    <div className="font-semibold text-slate-900">{customer.name}</div>
-                    <span className="text-[10px] text-slate-500 capitalize">{customer.customerType}</span>
+                    <div className="flex items-center gap-2.5">
+                      {customer.photoUrl && (
+                        <img
+                          src={customer.photoUrl}
+                          alt={customer.name}
+                          className="w-8 h-8 rounded-lg object-cover border border-slate-200 shrink-0"
+                        />
+                      )}
+                      <div>
+                        <div className="font-semibold text-slate-900">{customer.name}</div>
+                        <span className="text-[10px] text-slate-500 capitalize">{customer.customerType}</span>
+                      </div>
+                    </div>
                   </td>
                   <td className="px-4 py-3 font-mono text-slate-700">
                     {customer.mobile}
@@ -344,6 +477,21 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
                     <div className="flex items-center justify-end gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setInstallmentProfileCustomerId(customer.id)}
+                        className={`flex items-center gap-1 px-2 py-1 rounded border text-[11px] font-semibold transition-colors cursor-pointer ${
+                          instInfo?.overdue
+                            ? 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100'
+                            : instInfo?.total
+                            ? 'bg-blue-50 text-[#0B2A6B] border-blue-200 hover:bg-blue-100'
+                            : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                        }`}
+                        title="Customer Installment Profile"
+                      >
+                        <CalendarClock className="w-3.5 h-3.5" />
+                        <span>Installments{instInfo?.total ? ` (${instInfo.total})` : ''}</span>
+                      </button>
                       {customer.currentDue > 0 && (
                         <>
                           <button
@@ -394,7 +542,8 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
 
               {filteredCustomers.length === 0 && (
                 <tr>
@@ -646,10 +795,10 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
 
       {/* Add / Edit Customer Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs overflow-y-auto">
           <form
             onSubmit={handleSubmitCustomer}
-            className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md p-5 space-y-4"
+            className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-lg p-5 space-y-4 my-auto max-h-[92vh] overflow-y-auto"
           >
             <div className="flex items-center justify-between border-b pb-2">
               <h3 className="font-bold text-sm text-slate-900 flex items-center gap-2">
@@ -737,6 +886,110 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
                   placeholder="House, Road, Area"
                   className="w-full p-2 border border-slate-200 rounded-lg"
                 />
+              </div>
+
+              {/* Optional Private Photo & NID Verification */}
+              <div className="p-3 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5 text-[#0B2A6B]" />
+                    <span>Photo &amp; NID Verification (Optional &amp; Private)</span>
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">NID Number (Optional)</label>
+                  <input
+                    type="text"
+                    value={nidNumber}
+                    onChange={(e) => setNidNumber(e.target.value)}
+                    placeholder="National ID number (masked on printed Customer Slip)"
+                    className="w-full p-2 border border-slate-200 rounded-lg bg-white font-mono"
+                  />
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="space-y-1">
+                    <label className="flex flex-col items-center justify-center p-2 border border-dashed border-slate-300 rounded-lg bg-white hover:bg-slate-50 cursor-pointer text-center min-h-[68px]">
+                      {photoUrl ? (
+                        <img src={photoUrl} alt="Customer" className="w-12 h-12 rounded object-cover" />
+                      ) : (
+                        <>
+                          <ImagePlus className="w-4 h-4 text-[#0B2A6B] mb-1" />
+                          <span className="text-[10px] font-medium text-slate-600">Customer Photo</span>
+                        </>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => handlePickKycFile(e.target.files?.[0], setPhotoUrl)}
+                      />
+                    </label>
+                    {photoUrl && (
+                      <button type="button" onClick={() => setPhotoUrl('')} className="w-full text-[10px] text-rose-600 hover:underline">
+                        Remove
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="flex flex-col items-center justify-center p-2 border border-dashed border-slate-300 rounded-lg bg-white hover:bg-slate-50 cursor-pointer text-center min-h-[68px]">
+                      {nidFrontUrl ? (
+                        <img src={nidFrontUrl} alt="NID Front" className="w-full h-12 rounded object-cover" />
+                      ) : (
+                        <>
+                          <ImagePlus className="w-4 h-4 text-[#0B2A6B] mb-1" />
+                          <span className="text-[10px] font-medium text-slate-600">NID Front</span>
+                        </>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => handlePickKycFile(e.target.files?.[0], setNidFrontUrl)}
+                      />
+                    </label>
+                    {nidFrontUrl && (
+                      <button type="button" onClick={() => setNidFrontUrl('')} className="w-full text-[10px] text-rose-600 hover:underline">
+                        Remove
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="flex flex-col items-center justify-center p-2 border border-dashed border-slate-300 rounded-lg bg-white hover:bg-slate-50 cursor-pointer text-center min-h-[68px]">
+                      {nidBackUrl ? (
+                        <img src={nidBackUrl} alt="NID Back" className="w-full h-12 rounded object-cover" />
+                      ) : (
+                        <>
+                          <ImagePlus className="w-4 h-4 text-[#0B2A6B] mb-1" />
+                          <span className="text-[10px] font-medium text-slate-600">NID Back</span>
+                        </>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => handlePickKycFile(e.target.files?.[0], setNidBackUrl)}
+                      />
+                    </label>
+                    {nidBackUrl && (
+                      <button type="button" onClick={() => setNidBackUrl('')} className="w-full text-[10px] text-rose-600 hover:underline">
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <label className="flex items-center gap-1.5 text-[11px] text-slate-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={kycConsent}
+                    onChange={(e) => setKycConsent(e.target.checked)}
+                  />
+                  <span>Customer consented to private identity verification storage</span>
+                </label>
               </div>
             </div>
 
@@ -861,6 +1114,530 @@ export const CustomersView: React.FC<CustomersViewProps> = ({ isAddModalOpen: pr
           </div>
         </div>
       )}
+
+      {/* Customer Installment Profile Modal (Supports Multiple Separate Installment Agreements) */}
+      {installmentProfileCustomerId && (() => {
+        const profileCustomer = customers.find(c => c.id === installmentProfileCustomerId);
+        if (!profileCustomer) return null;
+        const custAgreements = installmentAgreements.filter(a => a.customerId === profileCustomer.id);
+        const totalFinanced = roundMoney(custAgreements.reduce((s, a) => s + a.installmentBalance, 0));
+        const totalRemaining = roundMoney(custAgreements.reduce((s, a) => s + a.remainingDue, 0));
+        const totalOverdue = roundMoney(custAgreements.reduce((s, a) => s + a.overdueAmount, 0));
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-900/65 backdrop-blur-xs overflow-y-auto">
+            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden my-auto">
+              <div className="px-5 py-3.5 border-b border-slate-200 bg-slate-50 flex items-center justify-between gap-3 shrink-0">
+                <div className="flex items-center gap-3 min-w-0">
+                  {profileCustomer.photoUrl ? (
+                    <img
+                      src={profileCustomer.photoUrl}
+                      alt={profileCustomer.name}
+                      className="w-11 h-11 rounded-xl object-cover border border-slate-200 shrink-0"
+                    />
+                  ) : (
+                    <div className="w-11 h-11 rounded-xl bg-[#0B2A6B] text-white font-bold flex items-center justify-center shrink-0">
+                      {profileCustomer.name.slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-sm sm:text-base text-slate-900 truncate">
+                      {profileCustomer.name} — Installment Profile
+                    </h3>
+                    <p className="text-[11px] text-slate-500 truncate">
+                      {profileCustomer.mobile} · {profileCustomer.address || 'No address'}
+                      {profileCustomer.nidNumber && ` · Private NID: ${profileCustomer.nidNumber}`}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setInstallmentProfileCustomerId(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-5 space-y-4 text-xs">
+                {/* Summary Strip + Private KYC Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                    <span className="text-[10px] text-slate-500 block">Total Agreements</span>
+                    <span className="text-lg font-bold font-mono-num text-slate-900">{custAgreements.length}</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-blue-50 border border-blue-200">
+                    <span className="text-[10px] text-blue-700 block">Total Installment Principal</span>
+                    <span className="text-lg font-bold font-mono-num text-blue-950">{formatCurrency(totalFinanced, lang)}</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-200">
+                    <span className="text-[10px] text-amber-800 block">Remaining Installment Due</span>
+                    <span className="text-lg font-bold font-mono-num text-amber-900">{formatCurrency(totalRemaining, lang)}</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-rose-50 border border-rose-200">
+                    <span className="text-[10px] text-rose-700 block">Total Overdue</span>
+                    <span className="text-lg font-bold font-mono-num text-rose-900">{formatCurrency(totalOverdue, lang)}</span>
+                  </div>
+                </div>
+
+                {(profileCustomer.nidNumber || profileCustomer.nidFrontUrl || profileCustomer.nidBackUrl) && (
+                  <div className="p-3 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-slate-800 flex items-center gap-1.5">
+                        <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                        <span>Authorized Staff KYC View (Private — Masked/Hidden on Customer Slip)</span>
+                      </span>
+                      {profileCustomer.nidNumber && (
+                        <span className="font-mono font-bold text-[#0B2A6B]">NID: {profileCustomer.nidNumber}</span>
+                      )}
+                    </div>
+                    {(profileCustomer.nidFrontUrl || profileCustomer.nidBackUrl) && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {profileCustomer.nidFrontUrl && (
+                          <div className="bg-white p-2 rounded-lg border border-slate-200">
+                            <span className="text-[10px] font-semibold text-slate-500 block mb-1">NID Front</span>
+                            <img src={profileCustomer.nidFrontUrl} alt="NID Front" className="w-full h-32 object-contain rounded" />
+                          </div>
+                        )}
+                        {profileCustomer.nidBackUrl && (
+                          <div className="bg-white p-2 rounded-lg border border-slate-200">
+                            <span className="text-[10px] font-semibold text-slate-500 block mb-1">NID Back</span>
+                            <img src={profileCustomer.nidBackUrl} alt="NID Back" className="w-full h-32 object-contain rounded" />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Separate Installment Agreements List */}
+                {custAgreements.length === 0 ? (
+                  <div className="py-10 text-center text-slate-400 border border-dashed border-slate-200 rounded-xl">
+                    <CalendarClock className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                    <p>No installment agreements recorded for this customer yet.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {custAgreements.map(ag => {
+                      const agPayments = installmentPayments.filter(p => p.agreementId === ag.id);
+                      return (
+                        <div key={ag.id} className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+                          <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-bold text-sm text-[#0B2A6B] font-mono">{ag.agreementCode}</span>
+                              {ag.invoiceNumber && (
+                                <span className="px-2 py-0.5 rounded bg-white border border-slate-200 font-mono text-[11px] text-slate-700">
+                                  Invoice: {ag.invoiceNumber}
+                                </span>
+                              )}
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                  ag.status === 'paid'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : ag.overdueAmount > 0
+                                    ? 'bg-rose-100 text-rose-800'
+                                    : ag.status === 'partial'
+                                    ? 'bg-sky-100 text-sky-800'
+                                    : 'bg-amber-100 text-amber-800'
+                                }`}
+                              >
+                                {ag.status === 'paid' ? 'Paid' : ag.overdueAmount > 0 ? 'Overdue' : ag.status}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setSlipAgreement(ag)}
+                                className="flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-slate-100 text-[#0B2A6B] border border-[#0B2A6B]/30 rounded-lg font-semibold cursor-pointer"
+                              >
+                                <Printer className="w-3.5 h-3.5" />
+                                <span>Slip Preview / PDF</span>
+                              </button>
+                              {ag.remainingDue > 0 && canCollectInstallment && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setCollectingAgreement(ag);
+                                    setCompletedInstPayment(null);
+                                    setInstPayDate(getTodayIsoDate());
+                                    setInstPayAmount(Math.min(ag.remainingDue, ag.monthlyInstallment || ag.remainingDue));
+                                    setInstPayMethod('cash');
+                                    setInstPayAccountId(accounts[0]?.id || '');
+                                    setInstPayReceiptNo(generateInstallmentReceiptNumber());
+                                    setInstPayRemarks(`Installment payment for ${ag.agreementCode}`);
+                                    setInstPayClientTxId(`cust-inst-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+                                    setInstPayError(null);
+                                  }}
+                                  className="flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-semibold cursor-pointer"
+                                >
+                                  <CreditCard className="w-3.5 h-3.5" />
+                                  <span>Collect</span>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="p-4 space-y-3 bg-white">
+                            {/* All §5 Agreement Fields */}
+                            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-2 text-[11px]">
+                              <div className="p-2 bg-slate-50 rounded-lg">
+                                <span className="text-slate-500 block">Total Purchase</span>
+                                <span className="font-bold font-mono-num">{formatCurrency(ag.totalPurchaseAmount, lang)}</span>
+                              </div>
+                              <div className="p-2 bg-slate-50 rounded-lg">
+                                <span className="text-slate-500 block">Down Payment</span>
+                                <span className="font-bold font-mono-num text-emerald-700">{formatCurrency(ag.downPayment, lang)}</span>
+                              </div>
+                              <div className="p-2 bg-slate-50 rounded-lg">
+                                <span className="text-slate-500 block">Installment Balance</span>
+                                <span className="font-bold font-mono-num text-blue-900">{formatCurrency(ag.installmentBalance, lang)}</span>
+                              </div>
+                              <div className="p-2 bg-slate-50 rounded-lg">
+                                <span className="text-slate-500 block">Duration / Monthly</span>
+                                <span className="font-bold font-mono-num">{ag.durationMonths}M × {formatCurrency(ag.monthlyInstallment, lang)}</span>
+                              </div>
+                              <div className="p-2 bg-emerald-50 rounded-lg">
+                                <span className="text-emerald-700 block">Total Paid</span>
+                                <span className="font-bold font-mono-num text-emerald-800">{formatCurrency(ag.totalPaidAmount, lang)}</span>
+                              </div>
+                              <div className="p-2 bg-amber-50 rounded-lg">
+                                <span className="text-amber-800 block font-semibold">Remaining Due</span>
+                                <span className="font-bold font-mono-num text-amber-950">{formatCurrency(ag.remainingDue, lang)}</span>
+                              </div>
+                              <div className="p-2 bg-slate-50 rounded-lg">
+                                <span className="text-slate-500 block">Last Payment Date</span>
+                                <span className="font-bold">{ag.lastPaymentDate ? formatDate(ag.lastPaymentDate, 'en') : '—'}</span>
+                              </div>
+                              <div className="p-2 bg-slate-50 rounded-lg">
+                                <span className="text-slate-500 block">Next Due Date</span>
+                                <span className="font-bold">{ag.nextDueDate ? formatDate(ag.nextDueDate, 'en') : 'Settled'}</span>
+                              </div>
+                              <div className="p-2 bg-rose-50 rounded-lg">
+                                <span className="text-rose-700 block">Overdue Amount</span>
+                                <span className="font-bold font-mono-num text-rose-900">{formatCurrency(ag.overdueAmount, lang)}</span>
+                              </div>
+                            </div>
+
+                            {/* Payment History inside Agreement Card */}
+                            {agPayments.length > 0 && (
+                              <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
+                                <div className="px-3 py-1.5 bg-slate-50 font-semibold text-[11px] text-slate-600 flex items-center gap-1.5">
+                                  <History className="w-3.5 h-3.5" />
+                                  <span>Installment Payment History</span>
+                                </div>
+                                {agPayments.map(pmt => (
+                                  <div key={pmt.id} className="px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                    <div>
+                                      <span className="font-mono font-bold text-slate-800">{pmt.receiptNumber}</span>
+                                      <span className="text-slate-500 ml-2">
+                                        {formatDate(pmt.paymentDate, 'en')} · {pmt.paymentMethod.toUpperCase()} · {pmt.collectedBy}
+                                      </span>
+                                      {pmt.status === 'reversed' && (
+                                        <span className="ml-2 px-1.5 py-0.5 bg-rose-100 text-rose-800 rounded font-bold text-[10px]">
+                                          REVERSED ({pmt.reversalReason})
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <span className={`font-mono-num font-bold ${pmt.status === 'reversed' ? 'line-through text-slate-400' : 'text-emerald-700'}`}>
+                                        {formatCurrency(pmt.amount, lang)}
+                                      </span>
+                                      {pmt.status === 'posted' && (
+                                        <>
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              printInstallmentPaymentReceipt({
+                                                payment: pmt,
+                                                agreement: ag,
+                                                settings,
+                                                activeBranch,
+                                              })
+                                            }
+                                            className="p-1 text-slate-600 hover:bg-slate-100 rounded border border-slate-200 cursor-pointer"
+                                            title="Print Receipt"
+                                          >
+                                            <Printer className="w-3 h-3" />
+                                          </button>
+                                          {canReverseInstallment && (
+                                            <button
+                                              type="button"
+                                              onClick={() => {
+                                                setReversingInstPaymentId(pmt.id);
+                                                setReversalReasonInput('');
+                                              }}
+                                              className="flex items-center gap-0.5 px-1.5 py-0.5 text-[10px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded cursor-pointer"
+                                            >
+                                              <RotateCcw className="w-3 h-3" />
+                                              <span>Reverse</span>
+                                            </button>
+                                          )}
+                                        </>
+                                      )}
+                                    </div>
+                                    {reversingInstPaymentId === pmt.id && (
+                                      <div className="w-full mt-1.5 p-2 bg-rose-50 border border-rose-200 rounded flex items-center gap-2">
+                                        <input
+                                          type="text"
+                                          value={reversalReasonInput}
+                                          onChange={e => setReversalReasonInput(e.target.value)}
+                                          placeholder="Reason for reversal..."
+                                          className="flex-1 p-1 border border-rose-300 rounded bg-white text-xs"
+                                        />
+                                        <button
+                                          type="button"
+                                          onClick={() => setReversingInstPaymentId(null)}
+                                          className="px-2 py-1 text-[10px] text-slate-600"
+                                        >
+                                          Cancel
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={isReversingInst}
+                                          onClick={async () => {
+                                            if (!reversalReasonInput.trim()) return;
+                                            setIsReversingInst(true);
+                                            try {
+                                              await reverseInstallmentPayment(pmt.id, reversalReasonInput.trim());
+                                              setReversingInstPaymentId(null);
+                                              setReversalReasonInput('');
+                                            } finally {
+                                              setIsReversingInst(false);
+                                            }
+                                          }}
+                                          className="px-2.5 py-1 text-[10px] font-bold text-white bg-rose-600 rounded cursor-pointer"
+                                        >
+                                          Confirm
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="px-5 py-3 bg-slate-50 border-t border-slate-200 flex justify-end shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setInstallmentProfileCustomerId(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-200 hover:bg-slate-300 rounded-lg cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Quick Collect Installment Payment Modal inside CustomersView */}
+      {collectingAgreement && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 w-full max-w-md p-5 space-y-4">
+            <div className="flex items-center justify-between border-b pb-2">
+              <div>
+                <h3 className="font-bold text-sm text-slate-900 flex items-center gap-1.5">
+                  <CreditCard className="w-4 h-4 text-emerald-600" />
+                  <span>Collect Installment ({collectingAgreement.agreementCode})</span>
+                </h3>
+                <span className="text-[11px] text-slate-500">
+                  {collectingAgreement.customerName} · Remaining: {formatCurrency(collectingAgreement.remainingDue, lang)}
+                </span>
+              </div>
+              <button type="button" onClick={() => setCollectingAgreement(null)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {completedInstPayment ? (
+              <div className="space-y-4 text-xs">
+                <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-center space-y-1">
+                  <CheckCircle2 className="w-7 h-7 text-emerald-600 mx-auto" />
+                  <div className="font-bold text-emerald-950">Payment Recorded!</div>
+                  <div className="font-mono text-slate-700">
+                    Receipt: {completedInstPayment.payment.receiptNumber} · Paid: {formatCurrency(completedInstPayment.payment.amount, lang)}
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setCollectingAgreement(null)}
+                    className="px-3.5 py-2 text-xs font-semibold bg-slate-100 rounded-lg"
+                  >
+                    Done
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      printInstallmentPaymentReceipt({
+                        payment: completedInstPayment.payment,
+                        agreement: completedInstPayment.agreement,
+                        settings,
+                        activeBranch,
+                      })
+                    }
+                    className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#0B2A6B] rounded-lg"
+                  >
+                    <Printer className="w-4 h-4" />
+                    <span>Print Receipt</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  if (isSubmittingInstPay || instPayLockRef.current) return;
+                  setInstPayError(null);
+                  const amt = roundMoney(Number(instPayAmount) || 0);
+                  if (amt <= 0 || amt > collectingAgreement.remainingDue + 0.01) {
+                    setInstPayError(`Enter an amount between ৳1 and ${formatCurrency(collectingAgreement.remainingDue, lang)}.`);
+                    return;
+                  }
+                  instPayLockRef.current = true;
+                  setIsSubmittingInstPay(true);
+                  try {
+                    const pmt = await collectInstallmentPayment({
+                      agreementId: collectingAgreement.id,
+                      paymentDate: instPayDate,
+                      amount: amt,
+                      paymentMethod: instPayMethod,
+                      accountId: instPayAccountId || accounts[0]?.id || '',
+                      receiptNumber: instPayReceiptNo.trim() || undefined,
+                      collectedBy: staffNameDefault,
+                      remarks: instPayRemarks.trim() || undefined,
+                      clientTxId: instPayClientTxId,
+                    });
+                    const updatedAg = installmentAgreements.find(a => a.id === collectingAgreement.id) || {
+                      ...collectingAgreement,
+                      remainingDue: roundMoney(Math.max(0, collectingAgreement.remainingDue - amt)),
+                    };
+                    setCompletedInstPayment({ payment: pmt, agreement: updatedAg });
+                  } catch (err: any) {
+                    setInstPayError(err?.message || 'Failed to record payment.');
+                  } finally {
+                    instPayLockRef.current = false;
+                    setIsSubmittingInstPay(false);
+                  }
+                }}
+                className="space-y-3 text-xs"
+              >
+                {instPayError && (
+                  <div className="p-2 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg">{instPayError}</div>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block font-medium text-slate-700 mb-1">Amount *</label>
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      step="any"
+                      max={collectingAgreement.remainingDue}
+                      value={instPayAmount}
+                      onChange={e => setInstPayAmount(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full p-2 border border-slate-200 rounded-lg font-mono-num font-bold text-emerald-700"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium text-slate-700 mb-1">Date *</label>
+                    <input
+                      type="date"
+                      required
+                      value={instPayDate}
+                      onChange={e => setInstPayDate(e.target.value)}
+                      className="w-full p-2 border border-slate-200 rounded-lg"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block font-medium text-slate-700 mb-1">Method</label>
+                    <select
+                      value={instPayMethod}
+                      onChange={e => setInstPayMethod(e.target.value as PaymentMethod)}
+                      className="w-full p-2 border border-slate-200 rounded-lg bg-white capitalize"
+                    >
+                      <option value="cash">Cash</option>
+                      <option value="bkash">bKash</option>
+                      <option value="nagad">Nagad</option>
+                      <option value="rocket">Rocket</option>
+                      <option value="bank">Bank</option>
+                      <option value="card">Card</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block font-medium text-slate-700 mb-1">Account *</label>
+                    <select
+                      value={instPayAccountId}
+                      onChange={e => setInstPayAccountId(e.target.value)}
+                      className="w-full p-2 border border-slate-200 rounded-lg bg-white"
+                    >
+                      {accounts.map(a => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block font-medium text-slate-700 mb-1">Receipt #</label>
+                    <input
+                      type="text"
+                      value={instPayReceiptNo}
+                      onChange={e => setInstPayReceiptNo(e.target.value)}
+                      className="w-full p-2 border border-slate-200 rounded-lg font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-medium text-slate-700 mb-1">Remarks</label>
+                    <input
+                      type="text"
+                      value={instPayRemarks}
+                      onChange={e => setInstPayRemarks(e.target.value)}
+                      className="w-full p-2 border border-slate-200 rounded-lg"
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2 pt-2 border-t">
+                  <button
+                    type="button"
+                    onClick={() => setCollectingAgreement(null)}
+                    className="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded-lg"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingInstPay}
+                    className="px-4 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg"
+                  >
+                    {isSubmittingInstPay ? 'Saving...' : 'Confirm Payment'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Installment Slip Preview / Print / A4 PDF Modal */}
+      <InstallmentSlipPreviewModal
+        isOpen={Boolean(slipAgreement)}
+        agreement={slipAgreement}
+        customer={slipAgreement ? customers.find(c => c.id === slipAgreement.customerId) || null : null}
+        settings={settings}
+        activeBranch={activeBranch}
+        onClose={() => setSlipAgreement(null)}
+      />
     </div>
   );
 };

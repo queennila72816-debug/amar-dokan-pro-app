@@ -607,7 +607,9 @@ export const ProductivityProvider: React.FC<{
     // 4. Daily Sales Summary (respecting permission & always helpful on counter)
     if (canAccess('sales') || canAccess('pos')) {
       const todayKey = new Date().toISOString().slice(0, 10);
-      const todaySales = sales.filter(s => (s.date || '').slice(0, 10) === todayKey && s.status !== 'void');
+      const todaySales = sales.filter(
+        s => (s.date || '').slice(0, 10) === todayKey && s.status !== 'voided' && s.status !== 'returned'
+      );
       const todayRevenue = todaySales.reduce((s, row) => s + (row.total || 0), 0);
       const todayPaid = todaySales.reduce((s, row) => s + (row.paid || 0), 0);
       list.push({

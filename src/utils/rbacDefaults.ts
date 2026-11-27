@@ -368,7 +368,8 @@ export type LegacyAppModule =
   | 'combos'
   | 'users'
   | 'billing'
-  | 'scanner';
+  | 'scanner'
+  | 'installments';
 
 export function mapLegacyModuleToPermissionKeys(module: LegacyAppModule): PermissionModuleKey[] {
   switch (module) {
@@ -392,6 +393,7 @@ export function mapLegacyModuleToPermissionKeys(module: LegacyAppModule): Permis
     case 'purchases':
       return ['purchase_management'];
     case 'customers':
+    case 'installments':
       return ['customer_management', 'due_collection'];
     case 'suppliers':
       return ['supplier_management', 'due_collection'];

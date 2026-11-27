@@ -26,6 +26,7 @@ import {
   ChevronRight,
   Crown,
   ScanBarcode,
+  CalendarClock,
 } from 'lucide-react';
 import { LegacyAppModule } from '../../utils/rbacDefaults';
 import { getBusinessDisplayName } from '../../config/appIdentity';
@@ -39,12 +40,13 @@ interface SidebarProps {
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpen, setIsOpen }) => {
-  const { settings, products, customers, canAccess, currentUserRole, activeRoleDefinition, branches, activeBranchId } = useApp();
+  const { settings, products, customers, installmentAgreements, canAccess, currentUserRole, activeRoleDefinition, branches, activeBranchId } = useApp();
   const [collapsed, setCollapsed] = useState(false);
 
   const activeBranch = branches.find(b => b.id === activeBranchId) || branches[0];
   const lowStockCount = products.filter(p => p.isActive !== false && p.currentStock <= p.minStockAlert).length;
   const dueCustomerCount = customers.filter(c => c.currentDue > 0).length;
+  const overdueInstallmentCount = installmentAgreements.filter(a => a.status !== 'paid' && a.overdueAmount > 0).length;
 
   interface NavItem {
     id: string;
@@ -60,6 +62,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpe
     { id: 'pos', label: 'POS / New Sale', icon: ShoppingCart, moduleKey: 'pos', group: 'Sales & POS' },
     { id: 'scanner', label: 'Barcode & QR Scanner', icon: ScanBarcode, moduleKey: 'scanner', group: 'Sales & POS' },
     { id: 'sales', label: 'Sales & Invoices', icon: Receipt, moduleKey: 'sales', group: 'Sales & POS' },
+    { id: 'installments', label: 'Installment Sales', icon: CalendarClock, badge: overdueInstallmentCount > 0 ? overdueInstallmentCount : undefined, moduleKey: 'installments', group: 'Sales & POS' },
     { id: 'returns', label: 'Exchange & Returns', icon: RotateCcw, moduleKey: 'returns', group: 'Sales & POS' },
     { id: 'products', label: 'Products & Variants', icon: Package, moduleKey: 'products', group: 'Catalog & Pricing' },
     { id: 'catalog', label: 'Apparel Photo Catalog', icon: Images, moduleKey: 'catalog', group: 'Catalog & Pricing' },

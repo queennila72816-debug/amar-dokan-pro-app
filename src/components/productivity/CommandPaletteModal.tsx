@@ -87,7 +87,7 @@ export const CommandPaletteModal: React.FC = () => {
       items.push({
         id: `act-${log.id}`,
         title: log.details || `${log.eventType} (${log.moduleKey})`,
-        subtitle: `${log.actorName || 'User'} · ${formatDate(log.createdAt, 'en')}`,
+        subtitle: `${log.employeeName || 'User'} · ${formatDate(log.createdAt, 'en')}`,
         ts: log.createdAt,
       });
     });

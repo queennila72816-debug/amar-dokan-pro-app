@@ -44,6 +44,10 @@ import {
   PlatformBillingSettings,
   BusinessType,
   InvoicePaperSize,
+  InstallmentAgreement,
+  InstallmentDurationMonths,
+  InstallmentPaymentRecord,
+  InstallmentProductItem,
 } from '../types';
 import {
   getCurrentYearMonth,
@@ -87,6 +91,17 @@ import {
   branchService,
 } from '../services/businessServices';
 import { comboOfferService } from '../services/comboOfferService';
+import { installmentService } from '../services/installmentService';
+import {
+  calculateInstallmentSchedule,
+  clampInstallmentDuration,
+  generateAgreementCode,
+  generateInstallmentReceiptNumber,
+  getDefaultFirstDueDate,
+  getTodayIsoDate,
+  recomputeAgreementFromPayments,
+  roundMoney,
+} from '../utils/installmentUtils';
 import { getPrinterSettings, getShopLogo, savePrinterSettings, saveShopLogo } from '../utils/printEngine';
 import { generateSafeUuid } from '../utils/polyfills';
 import {
@@ -273,6 +288,38 @@ interface AppContextType {
     accountId: string,
     note?: string
   ) => Promise<void>;
+
+  // Installment Sales & Collections
+  installmentAgreements: InstallmentAgreement[];
+  installmentPayments: InstallmentPaymentRecord[];
+  createInstallmentAgreement: (input: {
+    customerId: string;
+    saleId?: string;
+    invoiceNumber?: string;
+    items: InstallmentProductItem[];
+    totalPurchaseAmount: number;
+    downPayment: number;
+    durationMonths: InstallmentDurationMonths;
+    firstDueDate?: string;
+    agreementDate?: string;
+    notes?: string;
+  }) => Promise<InstallmentAgreement>;
+  collectInstallmentPayment: (input: {
+    agreementId: string;
+    paymentDate: string;
+    amount: number;
+    paymentMethod: PaymentMethod;
+    accountId: string;
+    receiptNumber?: string;
+    collectedBy?: string;
+    remarks?: string;
+    clientTxId?: string;
+  }) => Promise<InstallmentPaymentRecord>;
+  reverseInstallmentPayment: (
+    paymentId: string,
+    reason: string
+  ) => Promise<void>;
+  reloadInstallments: () => Promise<void>;
 
   // Suppliers & Due
   suppliers: Supplier[];
@@ -533,9 +580,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [comboOffers, setComboOffers] = useState<ComboOffer[]>([]);
   const [comboUsageLogs, setComboUsageLogs] = useState<ComboOfferUsage[]>([]);
   const [marketplaceOrders, setMarketplaceOrders] = useState<MarketplaceComboOrder[]>([]);
+  const [installmentAgreements, setInstallmentAgreements] = useState<InstallmentAgreement[]>([]);
+  const [installmentPayments, setInstallmentPayments] = useState<InstallmentPaymentRecord[]>([]);
   const processedClientTxIdsRef = useRef<Map<string, Sale>>(new Map());
   const inFlightClientTxIdsRef = useRef<Set<string>>(new Set());
   const processedReturnTxIdsRef = useRef<Set<string>>(new Set());
+  const processedInstallmentTxIdsRef = useRef<Map<string, InstallmentPaymentRecord>>(new Map());
 
   // Multi-Tenant SaaS & Platform Super Admin State
   const [platformAdmin, setPlatformAdmin] = useState<PlatformAdmin | null>(null);
@@ -939,6 +989,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         rolesRes,
         employeesRes,
         activityRes,
+        installmentsRes,
       ] = await Promise.allSettled([
         productService.fetchProducts(businessId),
         customerService.fetchCustomers(businessId),
@@ -959,6 +1010,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         staffRbacService.fetchRolesAndPermissions(businessId),
         staffRbacService.fetchEmployees(businessId),
         staffRbacService.fetchActivityLogs(businessId),
+        installmentService.fetchAll(businessId),
       ]);
 
       const loadedSales = salesRes.status === 'fulfilled' ? salesRes.value : [];
@@ -982,13 +1034,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (rolesRes.status === 'fulfilled') setRoles(rolesRes.value);
       if (employeesRes.status === 'fulfilled') setEmployees(employeesRes.value);
       if (activityRes.status === 'fulfilled') setActivityLogs(activityRes.value);
+      if (installmentsRes.status === 'fulfilled') {
+        setInstallmentAgreements(installmentsRes.value.agreements);
+        setInstallmentPayments(installmentsRes.value.payments);
+      }
 
       // Sellers depend on loadedSales for aggregate totals
       try {
         const sellerList = await sellerService.fetchSellers(businessId, loadedSales);
         setSellers(sellerList);
       } catch (err) {
-        console.warn('Could not load sellers from Supabase:', err);
+        const msg = formatSupabaseError(err, 'Failed to load sellers from Supabase.');
+        console.error('Could not load sellers from Supabase:', err);
+        setDbError(prev => prev || msg);
+        setLastSyncError(prev => prev || msg);
       }
 
       // Surface critical data load failures cleanly
@@ -1039,6 +1098,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setComboOffers([]);
       setComboUsageLogs([]);
       setMarketplaceOrders([]);
+      setInstallmentAgreements([]);
+      setInstallmentPayments([]);
       setEmployees([]);
       setSellers([]);
       setRoles(createDefaultRolesForBusiness('local'));
@@ -1055,6 +1116,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     comboOfferService.fetchOffers(storedBizId || 'default-business').then(setComboOffers);
     comboOfferService.fetchUsageLogs(storedBizId || 'default-business').then(setComboUsageLogs);
     marketplaceOrderService.fetchOrders(storedBizId || 'default-business').then(setMarketplaceOrders);
+    installmentService.fetchAll(storedBizId || 'default').then(res => {
+      setInstallmentAgreements(res.agreements);
+      setInstallmentPayments(res.payments);
+    });
 
       const bizPrefix = storedBizId ? `${STORAGE_KEY}_${storedBizId}` : STORAGE_KEY;
 
@@ -4978,6 +5043,423 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     addAuditLog('CUSTOMER_DUE_COLLECTED', 'customer', customerId, `Due payment collected from ${target.name}: ৳${amount}`);
   };
 
+  // ==================== INSTALLMENT SALES & COLLECTIONS ====================
+
+  const reloadInstallments = async (): Promise<void> => {
+    const biz = activeBusinessId || 'default';
+    const data = await installmentService.fetchAll(biz);
+    setInstallmentAgreements(data.agreements);
+    setInstallmentPayments(data.payments);
+  };
+
+  const createInstallmentAgreement = async (input: {
+    customerId: string;
+    saleId?: string;
+    invoiceNumber?: string;
+    items: InstallmentProductItem[];
+    totalPurchaseAmount: number;
+    downPayment: number;
+    durationMonths: InstallmentDurationMonths;
+    firstDueDate?: string;
+    agreementDate?: string;
+    notes?: string;
+  }): Promise<InstallmentAgreement> => {
+    const biz = activeBusinessId || 'default';
+    const cust = customers.find(c => c.id === input.customerId);
+    if (!cust) throw new Error('Please select a valid customer for installment agreement.');
+
+    const totalPurchase = roundMoney(Math.max(0, Number(input.totalPurchaseAmount) || 0));
+    const downPay = roundMoney(Math.max(0, Math.min(totalPurchase, Number(input.downPayment) || 0)));
+    const balance = roundMoney(Math.max(0, totalPurchase - downPay));
+    const duration = clampInstallmentDuration(input.durationMonths);
+    const agrDate = (input.agreementDate || getTodayIsoDate()).slice(0, 10);
+    const firstDue = (input.firstDueDate || getDefaultFirstDueDate(agrDate)).slice(0, 10);
+    const calc = calculateInstallmentSchedule(balance, duration, firstDue);
+    const nowIso = new Date().toISOString();
+
+    const codeIndex = customers.length > 0
+      ? Math.max(1, customers.findIndex(c => c.id === cust.id) + 1)
+      : 1;
+    const resolvedCustomerCode =
+      cust.customerCode || `IC-${String(codeIndex).padStart(4, '0')}`;
+
+    const staffName =
+      currentEmployee?.name ||
+      user?.user_metadata?.full_name ||
+      user?.email?.split('@')[0] ||
+      'Admin';
+
+    const draft: InstallmentAgreement = recomputeAgreementFromPayments(
+      {
+        id: `ins-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        businessId: biz,
+        branchId: activeBranchId || branches[0]?.id || '',
+        agreementCode: generateAgreementCode(installmentAgreements.length),
+        customerId: cust.id,
+        customerCode: resolvedCustomerCode,
+        customerName: cust.name,
+        customerMobile: cust.mobile,
+        customerAddress: cust.address,
+        customerPhotoUrl: cust.photoUrl,
+        customerNidNumber: cust.nidNumber,
+        hasIdentityDocuments: Boolean(cust.nidNumber || cust.nidFrontUrl || cust.nidBackUrl),
+        saleId: input.saleId,
+        invoiceNumber: input.invoiceNumber,
+        items: input.items,
+        totalPurchaseAmount: totalPurchase,
+        downPayment: downPay,
+        installmentBalance: balance,
+        durationMonths: duration,
+        monthlyInstallment: calc.monthlyInstallment,
+        firstDueDate: firstDue,
+        agreementDate: agrDate,
+        totalPaidAmount: downPay,
+        installmentsPaid: 0,
+        remainingDue: balance,
+        overdueAmount: 0,
+        status: balance <= 0 ? 'paid' : downPay > 0 ? 'partial' : 'unpaid',
+        schedule: calc.schedule,
+        notes: input.notes,
+        createdBy: staffName,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      },
+      []
+    );
+
+    const saved = await installmentService.createAgreement(draft, biz);
+    setInstallmentAgreements(prev => [saved, ...prev.filter(a => a.id !== saved.id)]);
+    addAuditLog(
+      'INSTALLMENT_CREATED',
+      'installment_agreement',
+      saved.id,
+      `Installment ${saved.agreementCode} created for ${cust.name}: Purchase ৳${totalPurchase}, Down ৳${downPay}, Balance ৳${balance} (${duration}M)`
+    );
+    return saved;
+  };
+
+  const collectInstallmentPayment = async (input: {
+    agreementId: string;
+    paymentDate: string;
+    amount: number;
+    paymentMethod: PaymentMethod;
+    accountId: string;
+    receiptNumber?: string;
+    collectedBy?: string;
+    remarks?: string;
+    clientTxId?: string;
+  }): Promise<InstallmentPaymentRecord> => {
+    const biz = activeBusinessId || 'default';
+    const txId =
+      input.clientTxId?.trim() ||
+      `ins-pay-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+    const existingCached =
+      processedInstallmentTxIdsRef.current.get(txId) ||
+      installmentPayments.find(p => p.clientTxId === txId);
+    if (existingCached) return existingCached;
+
+    const targetAgr = installmentAgreements.find(a => a.id === input.agreementId);
+    if (!targetAgr) throw new Error('Installment agreement not found.');
+
+    const amount = roundMoney(Number(input.amount) || 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error('Payment amount must be greater than zero.');
+    }
+    if (amount > targetAgr.remainingDue + 0.01) {
+      throw new Error(`Payment amount cannot exceed remaining due (৳${targetAgr.remainingDue}).`);
+    }
+
+    const resolvedAccount = accounts.find(a => a.id === input.accountId) || accounts[0];
+    if (!resolvedAccount) {
+      throw new Error('Please create or select a deposit account first.');
+    }
+
+    const receiptNumber = input.receiptNumber?.trim() || generateInstallmentReceiptNumber();
+    const collectedBy =
+      input.collectedBy?.trim() ||
+      currentEmployee?.name ||
+      user?.user_metadata?.full_name ||
+      user?.email?.split('@')[0] ||
+      'Staff';
+    const paymentDate = (input.paymentDate || getTodayIsoDate()).slice(0, 10);
+
+    const res = await installmentService.collectPayment(
+      {
+        agreement: targetAgr,
+        paymentDate,
+        amount,
+        paymentMethod: input.paymentMethod,
+        accountId: resolvedAccount.id,
+        accountName: resolvedAccount.name,
+        receiptNumber,
+        collectedBy,
+        remarks: input.remarks?.trim(),
+        clientTxId: txId,
+      },
+      biz
+    );
+
+    if (res.usedCloudRpc) {
+      const [refreshedInst, custs, custTxs, accs, accTxs] = await Promise.all([
+        installmentService.fetchAll(biz),
+        customerService.fetchCustomers(biz),
+        customerService.fetchCustomerTransactions(biz).catch(() => customerTransactions),
+        financeService.fetchAccounts(biz),
+        financeService.fetchAccountTransactions(biz).catch(() => accountTransactions),
+      ]);
+      setInstallmentAgreements(refreshedInst.agreements);
+      setInstallmentPayments(refreshedInst.payments);
+      setCustomers(custs);
+      setCustomerTransactions(custTxs);
+      setAccounts(accs);
+      setAccountTransactions(accTxs);
+
+      const savedPay =
+        refreshedInst.payments.find(p => p.clientTxId === txId) ||
+        refreshedInst.payments.find(p => p.receiptNumber === receiptNumber) ||
+        refreshedInst.payments[0];
+      if (savedPay) {
+        processedInstallmentTxIdsRef.current.set(txId, savedPay);
+      }
+      addAuditLog(
+        'INSTALLMENT_PAYMENT_COLLECTED',
+        'installment_agreement',
+        targetAgr.id,
+        `Collected ৳${amount} (${receiptNumber}) for ${targetAgr.agreementCode} from ${targetAgr.customerName}`
+      );
+      return savedPay!;
+    }
+
+    // Offline or schema-fallback atomic local ledger update
+    const paymentRecord: InstallmentPaymentRecord = res.payment || {
+      id: `inspay-${Date.now()}`,
+      businessId: biz,
+      agreementId: targetAgr.id,
+      agreementCode: targetAgr.agreementCode,
+      customerId: targetAgr.customerId,
+      customerName: targetAgr.customerName,
+      paymentDate,
+      amount,
+      paymentMethod: input.paymentMethod,
+      accountId: resolvedAccount.id,
+      accountName: resolvedAccount.name,
+      receiptNumber,
+      collectedBy,
+      remarks: input.remarks?.trim(),
+      clientTxId: txId,
+      status: 'posted',
+      createdAt: new Date().toISOString(),
+    };
+
+    const nextPayments = [paymentRecord, ...installmentPayments];
+    const nextAgreements = installmentAgreements.map(a =>
+      a.id === targetAgr.id ? recomputeAgreementFromPayments(a, nextPayments) : a
+    );
+    setInstallmentPayments(nextPayments);
+    setInstallmentAgreements(nextAgreements);
+    installmentService.saveLocalSnapshot(biz, nextAgreements, nextPayments);
+
+    // Sync customer receivable & cash/bank account balance without double-counting sales/profit
+    const custTarget = customers.find(c => c.id === targetAgr.customerId);
+    if (isSupabaseConfigured && custTarget && custTarget.currentDue >= amount) {
+      await customerService
+        .collectDue(
+          custTarget.id,
+          amount,
+          input.paymentMethod,
+          resolvedAccount.id,
+          biz,
+          `Installment ${targetAgr.agreementCode} (${receiptNumber})${input.remarks ? `: ${input.remarks}` : ''}`
+        )
+        .then(async () => {
+          const [custs, custTxs, accs, accTxs] = await Promise.all([
+            customerService.fetchCustomers(biz),
+            customerService.fetchCustomerTransactions(biz).catch(() => customerTransactions),
+            financeService.fetchAccounts(biz),
+            financeService.fetchAccountTransactions(biz).catch(() => accountTransactions),
+          ]);
+          setCustomers(custs);
+          setCustomerTransactions(custTxs);
+          setAccounts(accs);
+          setAccountTransactions(accTxs);
+        })
+        .catch(() => {});
+    } else if (!isSupabaseConfigured) {
+      const now = new Date().toISOString();
+      if (custTarget) {
+        const nextDue = roundMoney(Math.max(0, custTarget.currentDue - amount));
+        setCustomers(prev =>
+          prev.map(c =>
+            c.id === custTarget.id
+              ? { ...c, currentDue: nextDue, totalPaid: roundMoney(c.totalPaid + amount) }
+              : c
+          )
+        );
+        setCustomerTransactions(prev => [
+          {
+            id: `ctx-ins-${Date.now()}`,
+            customerId: custTarget.id,
+            customerName: custTarget.name,
+            date: now,
+            type: 'due_collection',
+            amount,
+            balanceAfter: nextDue,
+            paymentMethod: input.paymentMethod,
+            referenceId: receiptNumber,
+            note: `Installment ${targetAgr.agreementCode}${input.remarks ? `: ${input.remarks}` : ''}`,
+          },
+          ...prev,
+        ]);
+      }
+      setAccounts(prev =>
+        prev.map(acc =>
+          acc.id === resolvedAccount.id
+            ? { ...acc, balance: roundMoney(acc.balance + amount) }
+            : acc
+        )
+      );
+      setAccountTransactions(prev => [
+        {
+          id: `atx-ins-${Date.now()}`,
+          accountId: resolvedAccount.id,
+          accountName: resolvedAccount.name,
+          date: now,
+          type: 'customer_payment',
+          amount,
+          balanceAfter: roundMoney(resolvedAccount.balance + amount),
+          referenceId: receiptNumber,
+          note: `Installment collected from ${targetAgr.customerName} (${targetAgr.agreementCode})`,
+        },
+        ...prev,
+      ]);
+    }
+
+    processedInstallmentTxIdsRef.current.set(txId, paymentRecord);
+    addAuditLog(
+      'INSTALLMENT_PAYMENT_COLLECTED',
+      'installment_agreement',
+      targetAgr.id,
+      `Collected ৳${amount} (${receiptNumber}) for ${targetAgr.agreementCode} from ${targetAgr.customerName}`
+    );
+    return paymentRecord;
+  };
+
+  const reverseInstallmentPayment = async (
+    paymentId: string,
+    reason: string
+  ): Promise<void> => {
+    const biz = activeBusinessId || 'default';
+    const payment = installmentPayments.find(p => p.id === paymentId);
+    if (!payment) throw new Error('Installment payment record not found.');
+    if (payment.status === 'reversed') return;
+
+    const reversedBy =
+      currentEmployee?.name ||
+      user?.user_metadata?.full_name ||
+      user?.email?.split('@')[0] ||
+      'Admin';
+    const cleanReason = reason.trim() || 'Installment payment correction / reversal';
+
+    const res = await installmentService.reversePayment(payment, reversedBy, cleanReason, biz);
+
+    if (res.usedCloudRpc) {
+      const [refreshedInst, custs, custTxs, accs, accTxs] = await Promise.all([
+        installmentService.fetchAll(biz),
+        customerService.fetchCustomers(biz),
+        customerService.fetchCustomerTransactions(biz).catch(() => customerTransactions),
+        financeService.fetchAccounts(biz),
+        financeService.fetchAccountTransactions(biz).catch(() => accountTransactions),
+      ]);
+      setInstallmentAgreements(refreshedInst.agreements);
+      setInstallmentPayments(refreshedInst.payments);
+      setCustomers(custs);
+      setCustomerTransactions(custTxs);
+      setAccounts(accs);
+      setAccountTransactions(accTxs);
+    } else {
+      const now = new Date().toISOString();
+      const nextPayments: InstallmentPaymentRecord[] = installmentPayments.map(p =>
+        p.id === payment.id
+          ? {
+              ...p,
+              status: 'reversed',
+              reversedAt: now,
+              reversedBy,
+              reversalReason: cleanReason,
+            }
+          : p
+      );
+      const nextAgreements = installmentAgreements.map(a =>
+        a.id === payment.agreementId ? recomputeAgreementFromPayments(a, nextPayments) : a
+      );
+      setInstallmentPayments(nextPayments);
+      setInstallmentAgreements(nextAgreements);
+      installmentService.saveLocalSnapshot(biz, nextAgreements, nextPayments);
+
+      if (!isSupabaseConfigured) {
+        const custTarget = customers.find(c => c.id === payment.customerId);
+        if (custTarget) {
+          const restoredDue = roundMoney(custTarget.currentDue + payment.amount);
+          setCustomers(prev =>
+            prev.map(c =>
+              c.id === custTarget.id
+                ? {
+                    ...c,
+                    currentDue: restoredDue,
+                    totalPaid: roundMoney(Math.max(0, c.totalPaid - payment.amount)),
+                  }
+                : c
+            )
+          );
+          setCustomerTransactions(prev => [
+            {
+              id: `ctx-rev-${Date.now()}`,
+              customerId: custTarget.id,
+              customerName: custTarget.name,
+              date: now,
+              type: 'sale_due',
+              amount: payment.amount,
+              balanceAfter: restoredDue,
+              paymentMethod: payment.paymentMethod,
+              referenceId: payment.receiptNumber,
+              note: `REVERSAL of ${payment.receiptNumber} (${payment.agreementCode}): ${cleanReason}`,
+            },
+            ...prev,
+          ]);
+        }
+        const accTarget = accounts.find(a => a.id === payment.accountId);
+        if (accTarget) {
+          const nextBal = roundMoney(accTarget.balance - payment.amount);
+          setAccounts(prev =>
+            prev.map(a => (a.id === accTarget.id ? { ...a, balance: nextBal } : a))
+          );
+          setAccountTransactions(prev => [
+            {
+              id: `atx-rev-${Date.now()}`,
+              accountId: accTarget.id,
+              accountName: accTarget.name,
+              date: now,
+              type: 'adjustment',
+              amount: -payment.amount,
+              balanceAfter: nextBal,
+              referenceId: payment.receiptNumber,
+              note: `REVERSAL of installment receipt ${payment.receiptNumber} (${payment.agreementCode})`,
+            },
+            ...prev,
+          ]);
+        }
+      }
+    }
+
+    addAuditLog(
+      'INSTALLMENT_PAYMENT_REVERSED',
+      'installment_agreement',
+      payment.agreementId,
+      `Reversed receipt ${payment.receiptNumber} (৳${payment.amount}) for ${payment.agreementCode}: ${cleanReason}`
+    );
+  };
+
   // Suppliers (Database-first)
   const addSupplier = async (
     data: Omit<Supplier, 'id' | 'createdAt' | 'currentDue' | 'totalPurchase' | 'totalPaid' | 'openingDue'> & {
@@ -6745,6 +7227,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addCustomer,
         updateCustomer,
         collectCustomerDue,
+        installmentAgreements,
+        installmentPayments,
+        createInstallmentAgreement,
+        collectInstallmentPayment,
+        reverseInstallmentPayment,
+        reloadInstallments,
         suppliers,
         supplierTransactions,
         addSupplier,

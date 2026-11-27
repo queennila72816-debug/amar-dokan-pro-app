@@ -165,6 +165,17 @@ export const MODULE_THEMES: Record<string, ModuleThemeConfig> = {
     headerAccentText: 'text-cyan-600',
     pillBg: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300',
   },
+  installments: {
+    id: 'installments',
+    label: 'Installment Sales',
+    hex: '#1D4ED8',
+    sidebarActiveBg: 'bg-[#162749] bg-gradient-to-r from-blue-500/30 to-cyan-500/10 text-white',
+    sidebarActiveBorder: 'border-blue-400/55',
+    sidebarIconColor: 'text-sky-400',
+    sidebarBadgeBg: 'bg-[#F59E0B] text-[#0B1428]',
+    headerAccentText: 'text-blue-700',
+    pillBg: 'bg-blue-500/15 text-blue-700 dark:text-sky-300',
+  },
   suppliers: {
     id: 'suppliers',
     label: 'Suppliers',

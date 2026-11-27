@@ -149,81 +149,114 @@ export const sellerService = {
       return this.getLocalSellers(businessId, currentSales);
     }
 
-    try {
-      // 1. Query business_users with user_profiles and branches
-      const { data: members, error } = await supabase
-        .from('business_users')
-        .select(`
-          user_id,
-          branch_id,
-          role,
-          status,
-          created_at,
-          updated_at,
-          user_profiles (
-            id,
-            email,
-            full_name,
-            username,
-            mobile
-          ),
-          branches (
-            id,
-            name
-          )
-        `)
-        .eq('business_id', businessId)
-        .in('role', ['seller', 'salesman']);
+    // 1. Query business_users directly (no direct FK exists between business_users and user_profiles;
+    //    both reference auth.users(id), so PostgREST embedded joins fail schema cache resolution).
+    const { data: members, error: membersError } = await supabase
+      .from('business_users')
+      .select('user_id, branch_id, role, status, created_at, updated_at')
+      .eq('business_id', businessId)
+      .in('role', ['seller', 'salesman']);
 
-      if (error || !members || members.length === 0) {
-        console.warn('Could not fetch sellers from Supabase or table empty, using local cache:', error?.message);
-        return this.getLocalSellers(businessId, currentSales);
+    if (membersError) {
+      throw new Error(`Failed to fetch sellers from Supabase: ${membersError.message}`);
+    }
+
+    if (!members || members.length === 0) {
+      try {
+        localStorage.setItem(`${SELLERS_STORAGE_KEY}_${businessId}`, JSON.stringify([]));
+      } catch {}
+      return [];
+    }
+
+    // 2. Fetch linked user_profiles (by user_id -> user_profiles.id) and branches (by branch_id -> branches.id)
+    const userIds = Array.from(
+      new Set(
+        members
+          .map((m: any) => m.user_id)
+          .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+      )
+    );
+    const branchIds = Array.from(
+      new Set(
+        members
+          .map((m: any) => m.branch_id)
+          .filter((id: unknown): id is string => typeof id === 'string' && id.length > 0)
+      )
+    );
+
+    const [profilesRes, branchesRes] = await Promise.all([
+      userIds.length > 0
+        ? supabase
+            .from('user_profiles')
+            .select('id, email, full_name, username, mobile')
+            .in('id', userIds)
+        : Promise.resolve({ data: [] as any[], error: null }),
+      branchIds.length > 0
+        ? supabase
+            .from('branches')
+            .select('id, name')
+            .eq('business_id', businessId)
+            .in('id', branchIds)
+        : Promise.resolve({ data: [] as any[], error: null }),
+    ]);
+
+    if (profilesRes.error) {
+      throw new Error(`Failed to fetch seller profiles from Supabase: ${profilesRes.error.message}`);
+    }
+    if (branchesRes.error) {
+      throw new Error(`Failed to fetch seller branches from Supabase: ${branchesRes.error.message}`);
+    }
+
+    const profileMap = new Map<string, any>(
+      (profilesRes.data || []).map((p: any) => [p.id, p])
+    );
+    const branchMap = new Map<string, any>(
+      (branchesRes.data || []).map((b: any) => [b.id, b])
+    );
+
+    // 3. Map Supabase rows to Seller interface
+    const sellers: Seller[] = members.map((m: any) => {
+      const profile = profileMap.get(m.user_id) || {};
+      const branch = (m.branch_id ? branchMap.get(m.branch_id) : null) || {};
+      const sellerId = m.user_id;
+
+      // Calculate sales count and amount from current sales if available
+      let count = 0;
+      let amount = 0;
+      if (currentSales && currentSales.length > 0) {
+        const sellerSales = currentSales.filter(
+          s => s.sellerId === sellerId || s.servedBy === profile.full_name || s.servedBy === profile.email
+        );
+        count = sellerSales.length;
+        amount = sellerSales.reduce(
+          (acc, curr) => acc + (curr.status !== 'voided' && curr.status !== 'returned' ? curr.total : 0),
+          0
+        );
       }
 
-      // 2. Map Supabase rows to Seller interface
-      const sellers: Seller[] = members.map((m: any) => {
-        const profile = m.user_profiles || {};
-        const branch = m.branches || {};
-        const sellerId = m.user_id;
+      return {
+        id: sellerId,
+        username: profile.username || profile.email?.split('@')[0] || `seller_${sellerId.slice(0, 5)}`,
+        fullName: profile.full_name || 'Seller',
+        phone: profile.mobile || '',
+        email: profile.email || '',
+        role: m.role === 'salesman' ? 'salesman' : 'seller',
+        branchId: m.branch_id || undefined,
+        branchName: branch.name || undefined,
+        status: m.status === 'suspended' ? 'inactive' : (m.status || 'active'),
+        totalSalesCount: count,
+        totalSalesAmount: amount,
+        createdAt: m.created_at || new Date().toISOString(),
+        updatedAt: m.updated_at,
+      };
+    });
 
-        // Calculate sales count and amount from current sales if available
-        let count = 0;
-        let amount = 0;
-        if (currentSales && currentSales.length > 0) {
-          const sellerSales = currentSales.filter(
-            s => s.sellerId === sellerId || s.servedBy === profile.full_name || s.servedBy === profile.email
-          );
-          count = sellerSales.length;
-          amount = sellerSales.reduce((acc, curr) => acc + (curr.status !== 'voided' && curr.status !== 'returned' ? curr.total : 0), 0);
-        }
+    // Save to local cache
+    try {
+      localStorage.setItem(`${SELLERS_STORAGE_KEY}_${businessId}`, JSON.stringify(sellers));
+    } catch {}
 
-        return {
-          id: sellerId,
-          username: profile.username || profile.email?.split('@')[0] || `seller_${sellerId.slice(0, 5)}`,
-          fullName: profile.full_name || 'Seller',
-          phone: profile.mobile || '',
-          email: profile.email || '',
-          role: m.role === 'salesman' ? 'salesman' : 'seller',
-          branchId: m.branch_id || undefined,
-          branchName: branch.name || undefined,
-          status: m.status === 'suspended' ? 'inactive' : (m.status || 'active'),
-          totalSalesCount: count,
-          totalSalesAmount: amount,
-          createdAt: m.created_at || new Date().toISOString(),
-          updatedAt: m.updated_at,
-        };
-      });
-
-      // Save to local cache
-      try {
-        localStorage.setItem(`${SELLERS_STORAGE_KEY}_${businessId}`, JSON.stringify(sellers));
-      } catch {}
-
-      return sellers;
-    } catch (err) {
-      console.error('Error fetching sellers from Supabase:', err);
-      return this.getLocalSellers(businessId, currentSales);
-    }
+    return sellers;
   },
 
   /**
@@ -403,31 +436,36 @@ export const sellerService = {
     businessId: string
   ): Promise<void> {
     if (isSupabaseConfigured && businessId) {
-      try {
-        if (payload.fullName || payload.phone) {
-          await supabase
-            .from('user_profiles')
-            .update({
-              full_name: payload.fullName,
-              mobile: payload.phone,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', id);
-        }
+      const now = new Date().toISOString();
+      if (payload.fullName !== undefined || payload.phone !== undefined) {
+        const profilePatch: Record<string, unknown> = { updated_at: now };
+        if (payload.fullName !== undefined) profilePatch.full_name = payload.fullName;
+        if (payload.phone !== undefined) profilePatch.mobile = payload.phone;
 
-        if (payload.branchId !== undefined || payload.status) {
-          await supabase
-            .from('business_users')
-            .update({
-              branch_id: payload.branchId || null,
-              status: payload.status,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('business_id', businessId)
-            .eq('user_id', id);
+        const { error: profUpdErr } = await supabase
+          .from('user_profiles')
+          .update(profilePatch)
+          .eq('id', id);
+
+        if (profUpdErr) {
+          throw new Error(`Failed to update seller profile: ${profUpdErr.message}`);
         }
-      } catch (err) {
-        console.warn('Error updating seller in Supabase:', err);
+      }
+
+      if (payload.branchId !== undefined || payload.status !== undefined) {
+        const buPatch: Record<string, unknown> = { updated_at: now };
+        if (payload.branchId !== undefined) buPatch.branch_id = payload.branchId || null;
+        if (payload.status !== undefined) buPatch.status = payload.status;
+
+        const { error: buUpdErr } = await supabase
+          .from('business_users')
+          .update(buPatch)
+          .eq('business_id', businessId)
+          .eq('user_id', id);
+
+        if (buUpdErr) {
+          throw new Error(`Failed to update seller membership: ${buUpdErr.message}`);
+        }
       }
     }
 

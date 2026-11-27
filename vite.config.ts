@@ -57,8 +57,10 @@ export default defineConfig(({ mode }) => {
     },
 
     server: {
-      // HMR configuration
+      // HMR & WebSocket configuration
       hmr: process.env.DISABLE_HMR !== 'true',
+      ws: process.env.DISABLE_HMR === 'true' ? false : undefined,
+      allowedHosts: true,
 
       // Disable file watching when HMR is disabled
       watch:

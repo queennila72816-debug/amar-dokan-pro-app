@@ -1,6 +1,17 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Product, ProductVariant, SaleItem, PaymentMethod, Sale, SalePayment, ComboOffer, ComboPackageSaleRecord } from '../../types';
+import {
+  Product,
+  ProductVariant,
+  SaleItem,
+  PaymentMethod,
+  Sale,
+  SalePayment,
+  ComboOffer,
+  ComboPackageSaleRecord,
+  InstallmentAgreement,
+  InstallmentDurationMonths,
+} from '../../types';
 import { formatCurrency, toBnNumber } from '../../utils/formatters';
 import { InvoiceModal } from './InvoiceModal';
 import { SearchableCombobox, ComboboxOption } from '../common/SearchableCombobox';
@@ -12,6 +23,13 @@ import {
   resolveProductColors,
   resolveProductImage,
 } from '../../utils/productImageResolver';
+import {
+  buildInstallmentItemsFromSaleItems,
+  calculateInstallmentSchedule,
+  getDefaultFirstDueDate,
+  getTodayIsoDate,
+} from '../../utils/installmentUtils';
+import { InstallmentSlipPreviewModal } from '../installments/InstallmentSlipPreviewModal';
 import {
   Search,
   Barcode,
@@ -42,6 +60,7 @@ import {
   Package,
   ChevronDown,
   ChevronUp,
+  CalendarClock,
 } from 'lucide-react';
 import { comboOfferService, DetectedOfferMatch } from '../../services/comboOfferService';
 import { ScannerModal } from '../scanner/ScannerModal';
@@ -54,7 +73,7 @@ import {
 } from '../../utils/scannerLookup';
 
 export const POSView: React.FC = () => {
-  const { products, categories: appCategories, customers, accounts, addCustomer, recordSale, settings, activeBranchId, currentUserRole, user, isAdmin, currentEmployee, employees, addAuditLog, comboOffers, pendingPosSelection, setPendingPosSelection } = useApp();
+  const { products, categories: appCategories, customers, accounts, addCustomer, recordSale, settings, branches, activeBranchId, currentUserRole, user, isAdmin, currentEmployee, employees, addAuditLog, comboOffers, pendingPosSelection, setPendingPosSelection, createInstallmentAgreement } = useApp();
   const isBn = false;
   const lang = settings.language;
 
@@ -126,8 +145,13 @@ export const POSView: React.FC = () => {
   const [variantProduct, setVariantProduct] = useState<Product | null>(null);
   const [variantModalColorFilter, setVariantModalColorFilter] = useState<string>('all');
 
-  // Completed Invoice Modal
+  // Completed Invoice Modal & Optional Installment Plan
   const [completedSale, setCompletedSale] = useState<Sale | null>(null);
+  const [isInstallmentPlan, setIsInstallmentPlan] = useState(false);
+  const [installmentDurationMonths, setInstallmentDurationMonths] = useState<InstallmentDurationMonths>(6);
+  const [installmentFirstDueDate, setInstallmentFirstDueDate] = useState<string>(getDefaultFirstDueDate());
+  const [completedInstallmentAgreement, setCompletedInstallmentAgreement] = useState<InstallmentAgreement | null>(null);
+  const [isInstallmentSlipModalOpen, setIsInstallmentSlipModalOpen] = useState(false);
 
   // Discount Protection & Admin Auth Modal
   const [isAdminAuthModalOpen, setIsAdminAuthModalOpen] = useState(false);
@@ -919,6 +943,27 @@ export const POSView: React.FC = () => {
         addAuditLog('DISCOUNT_AUTHORIZED', 'sale', saleRecord.id, `Loss-making/deep discount authorized by Admin (${effectiveAdminApprover}) for Invoice ${saleRecord.invoiceNumber}`);
       }
 
+      // If Installment Plan enabled for a due sale with a registered customer, create the agreement
+      let createdAgreement: InstallmentAgreement | null = null;
+      if (isInstallmentPlan && dueAmount > 0 && selectedCustomer) {
+        try {
+          createdAgreement = await createInstallmentAgreement({
+            customerId: selectedCustomer.id,
+            saleId: saleRecord.id,
+            invoiceNumber: saleRecord.invoiceNumber,
+            items: buildInstallmentItemsFromSaleItems(combinedSaleItems),
+            totalPurchaseAmount: grandTotal,
+            downPayment: actualPaid,
+            durationMonths: installmentDurationMonths,
+            firstDueDate: installmentFirstDueDate,
+            agreementDate: getTodayIsoDate(),
+            notes: notes.trim() || undefined,
+          });
+        } catch (instErr: any) {
+          showPosNotice('warning', `Sale saved, but installment plan creation failed: ${instErr?.message || 'Error'}`);
+        }
+      }
+
       // Reset Form
       pendingClientTxIdRef.current = null;
       cartRef.current = [];
@@ -934,8 +979,10 @@ export const POSView: React.FC = () => {
       setNotes('');
       setApprovedAdminName(null);
       setAppliedOffers([]);
+      setIsInstallmentPlan(false);
 
       // Open Invoice & Close mobile drawer
+      setCompletedInstallmentAgreement(createdAgreement);
       setCompletedSale(saleRecord);
       setIsMobileCartOpen(false);
     } catch (err: any) {
@@ -1840,9 +1887,59 @@ export const POSView: React.FC = () => {
             </div>
           )}
           {dueAmount > 0 && (
-            <div className="flex justify-between text-xs font-bold text-rose-700 bg-rose-50 px-2 py-1 rounded">
-              <span>{'Pending Due:'}</span>
-              <span className="font-mono-num">{formatCurrency(dueAmount, lang)}</span>
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-xs font-bold text-rose-700 bg-rose-50 px-2 py-1 rounded">
+                <span>{'Pending Due:'}</span>
+                <span className="font-mono-num">{formatCurrency(dueAmount, lang)}</span>
+              </div>
+
+              {selectedCustomerId && (
+                <div className="p-2 rounded-lg border border-blue-200 bg-blue-50/70 space-y-1.5">
+                  <label className="flex items-center justify-between gap-2 text-[11px] font-bold text-[#0B2A6B] cursor-pointer">
+                    <span className="flex items-center gap-1.5">
+                      <CalendarClock className="w-3.5 h-3.5" />
+                      <span>Installment Plan (1–6 Months)</span>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={isInstallmentPlan}
+                      onChange={e => setIsInstallmentPlan(e.target.checked)}
+                    />
+                  </label>
+                  {isInstallmentPlan && (
+                    <div className="grid grid-cols-2 gap-1.5 pt-1 text-[11px]">
+                      <select
+                        value={installmentDurationMonths}
+                        onChange={e => setInstallmentDurationMonths(Number(e.target.value) as InstallmentDurationMonths)}
+                        className="p-1 border border-blue-200 rounded bg-white font-semibold text-[#0B2A6B]"
+                      >
+                        {[1, 2, 3, 4, 5, 6].map(m => (
+                          <option key={m} value={m}>{m} Month{m > 1 ? 's' : ''}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="date"
+                        value={installmentFirstDueDate}
+                        onChange={e => setInstallmentFirstDueDate(e.target.value)}
+                        className="p-1 border border-blue-200 rounded bg-white"
+                      />
+                      <div className="col-span-2 text-[10px] font-semibold text-blue-900 flex justify-between">
+                        <span>Monthly Installment:</span>
+                        <span className="font-mono-num">
+                          {formatCurrency(
+                            calculateInstallmentSchedule(
+                              dueAmount,
+                              installmentDurationMonths,
+                              installmentFirstDueDate
+                            ).monthlyInstallment,
+                            lang
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -2556,6 +2653,47 @@ export const POSView: React.FC = () => {
                   </div>
                 )}
 
+                {dueAmount > 0 && selectedCustomerId && (
+                  <div className="p-3 rounded-xl border border-blue-200 bg-blue-50/70 space-y-2">
+                    <label className="flex items-center justify-between gap-2 text-xs font-bold text-[#0B2A6B] cursor-pointer">
+                      <span className="flex items-center gap-1.5">
+                        <CalendarClock className="w-4 h-4" />
+                        <span>Convert Due to Installment Plan (1–6M)</span>
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={isInstallmentPlan}
+                        onChange={e => setIsInstallmentPlan(e.target.checked)}
+                      />
+                    </label>
+                    {isInstallmentPlan && (
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                          <label className="block text-[10px] text-slate-600 mb-0.5">Duration</label>
+                          <select
+                            value={installmentDurationMonths}
+                            onChange={e => setInstallmentDurationMonths(Number(e.target.value) as InstallmentDurationMonths)}
+                            className="w-full p-1.5 border border-blue-200 rounded-lg bg-white font-semibold"
+                          >
+                            {[1, 2, 3, 4, 5, 6].map(m => (
+                              <option key={m} value={m}>{m} Month{m > 1 ? 's' : ''}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-600 mb-0.5">First Due Date</label>
+                          <input
+                            type="date"
+                            value={installmentFirstDueDate}
+                            onChange={e => setInstallmentFirstDueDate(e.target.value)}
+                            className="w-full p-1.5 border border-blue-200 rounded-lg bg-white"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Order Notes */}
                 <div>
                   <label className="text-[11px] font-semibold text-slate-700 block mb-1">
@@ -2842,10 +2980,29 @@ export const POSView: React.FC = () => {
       {completedSale && (
         <InvoiceModal
           sale={completedSale}
-          onClose={() => setCompletedSale(null)}
+          onClose={() => {
+            setCompletedSale(null);
+            setCompletedInstallmentAgreement(null);
+          }}
           settings={settings}
+          installmentAgreement={completedInstallmentAgreement}
+          onOpenInstallmentSlip={() => setIsInstallmentSlipModalOpen(true)}
         />
       )}
+
+      {/* Post-Sale Installment Slip Preview / Print / PDF Modal */}
+      <InstallmentSlipPreviewModal
+        isOpen={isInstallmentSlipModalOpen && Boolean(completedInstallmentAgreement)}
+        agreement={completedInstallmentAgreement}
+        customer={
+          completedInstallmentAgreement
+            ? customers.find(c => c.id === completedInstallmentAgreement.customerId) || null
+            : null
+        }
+        settings={settings}
+        activeBranch={branches.find(b => b.id === activeBranchId) || branches[0]}
+        onClose={() => setIsInstallmentSlipModalOpen(false)}
+      />
 
       {/* Admin Authorization Modal for Discount Protection */}
       {isAdminAuthModalOpen && (

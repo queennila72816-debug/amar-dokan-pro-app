@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import fs from 'fs';
+import http from 'http';
 import path from 'path';
 import crypto from 'crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
@@ -3222,14 +3223,88 @@ function injectPublicConfigIntoHtml(html: string): string {
 
 async function startServer() {
   const app = createApp();
+  const httpServer = http.createServer(app);
   const isProd = process.env.NODE_ENV === 'production';
 
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
+    const hmrDisabled = process.env.DISABLE_HMR === 'true';
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ws: hmrDisabled ? false : { server: httpServer },
+        hmr: hmrDisabled ? false : true,
+      },
       appType: 'spa',
     });
+
+    if (hmrDisabled) {
+      // Vite 8 still serves @vite/client with a :24678 WebSocket attempt even when ws/hmr are false.
+      // When HMR is disabled, provide the client style/HMR exports without opening a WebSocket.
+      app.get('/@vite/client', (_req, res) => {
+        res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.send(`
+const sheetsMap = new Map();
+const linkSheetsMap = new Map();
+if (typeof document !== 'undefined') {
+  document.querySelectorAll('style[data-vite-dev-id]').forEach((el) => {
+    sheetsMap.set(el.getAttribute('data-vite-dev-id'), el);
+  });
+  document.querySelectorAll('link[rel="stylesheet"][data-vite-dev-id]').forEach((el) => {
+    linkSheetsMap.set(el.getAttribute('data-vite-dev-id'), el);
+  });
+}
+export function updateStyle(id, content) {
+  if (typeof document === 'undefined' || linkSheetsMap.has(id)) return;
+  let style = sheetsMap.get(id);
+  if (!style) {
+    style = document.createElement('style');
+    style.setAttribute('type', 'text/css');
+    style.setAttribute('data-vite-dev-id', id);
+    style.textContent = content;
+    document.head.appendChild(style);
+    sheetsMap.set(id, style);
+  } else {
+    style.textContent = content;
+  }
+}
+export function removeStyle(id) {
+  if (typeof document === 'undefined') return;
+  if (linkSheetsMap.has(id)) {
+    document.querySelectorAll('link[rel="stylesheet"][data-vite-dev-id="' + CSS.escape(id) + '"]').forEach((el) => el.remove());
+    linkSheetsMap.delete(id);
+  }
+  const style = sheetsMap.get(id);
+  if (style && style.parentNode) {
+    style.parentNode.removeChild(style);
+    sheetsMap.delete(id);
+  }
+}
+export function createHotContext() {
+  return {
+    data: {},
+    accept() {},
+    acceptExports() {},
+    dispose() {},
+    prune() {},
+    decline() {},
+    invalidate() {},
+    on() {},
+    off() {},
+    send() {},
+  };
+}
+export function injectQuery(url, queryToInject) {
+  if (url[0] !== '.' && url[0] !== '/') return url;
+  const pathname = url.replace(/[?#].*$/, '');
+  const { search, hash } = new URL(url, 'http://vite.dev');
+  return pathname + '?' + queryToInject + (search ? '&' + search.slice(1) : '') + (hash || '');
+}
+export class ErrorOverlay {}
+`);
+      });
+    }
 
     app.use(async (req, res, next) => {
       const reqPath = req.path || '';
@@ -3287,7 +3362,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     const publicCfg = getPublicBrowserConfig();
     console.log(`PROTIVA server listening on http://0.0.0.0:${PORT}`);
     console.log('[PROTIVA] Server env presence:', {

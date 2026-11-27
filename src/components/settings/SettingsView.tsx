@@ -9,14 +9,21 @@ import {
   InvoicePaperSize,
   LabelTemplateId,
   PrinterSettings,
+  Sale,
+  ShopSettings,
   UserRole,
 } from '../../types';
 import {
+  clampWatermarkOpacity,
+  clampWatermarkSize,
   getPrinterSettings,
   getShopLogo,
+  previewInvoice,
+  PrintPreviewPayload,
   savePrinterSettings,
   saveShopLogo,
 } from '../../utils/printEngine';
+import { PrintPreviewModal } from '../printing/PrintPreviewModal';
 import { isSalesmanOrCashierRole, normalizeRoleKey, roleKeyToLegacyUserRole } from '../../utils/rbacDefaults';
 import {
   Settings,
@@ -46,6 +53,8 @@ import {
   Clock,
   Cloud,
   HardDrive,
+  Eye,
+  FileText,
 } from 'lucide-react';
 
 type SettingsSectionTab = 'all' | 'stores' | 'profile' | 'advanced' | 'sync';
@@ -171,6 +180,7 @@ export const SettingsView: React.FC = () => {
   const [deleteConfirmInput, setDeleteConfirmInput] = useState('');
   const [deletingStore, setDeletingStore] = useState(false);
   const [confirmDemoResetOpen, setConfirmDemoResetOpen] = useState(false);
+  const [invoicePreviewPayload, setInvoicePreviewPayload] = useState<PrintPreviewPayload | null>(null);
 
   const showFeedback = (tone: 'success' | 'error', text: string) => {
     setFeedback({ tone, text });
@@ -242,6 +252,10 @@ export const SettingsView: React.FC = () => {
     const syncedPrinter: PrinterSettings = {
       ...printerSettings,
       invoicePaperSize: invoiceFormat,
+      invoiceShowHeaderLogo: printerSettings.invoiceShowHeaderLogo !== false,
+      invoiceShowWatermark: printerSettings.invoiceShowWatermark !== false,
+      invoiceWatermarkSize: clampWatermarkSize(printerSettings.invoiceWatermarkSize),
+      invoiceWatermarkOpacity: clampWatermarkOpacity(printerSettings.invoiceWatermarkOpacity),
     };
     savePrinterSettings(syncedPrinter);
     saveShopLogo(logoUrl, activeBusinessId);
@@ -277,6 +291,85 @@ export const SettingsView: React.FC = () => {
     } catch (err: any) {
       showFeedback('error', err?.message || 'Failed to save settings to database.');
     }
+  };
+
+  const handleOpenInvoicePreview = () => {
+    const draftPrinter: PrinterSettings = {
+      ...printerSettings,
+      invoicePaperSize: invoiceFormat,
+      invoiceShowHeaderLogo: printerSettings.invoiceShowHeaderLogo !== false,
+      invoiceShowWatermark: printerSettings.invoiceShowWatermark !== false,
+      invoiceWatermarkSize: clampWatermarkSize(printerSettings.invoiceWatermarkSize),
+      invoiceWatermarkOpacity: clampWatermarkOpacity(printerSettings.invoiceWatermarkOpacity),
+    };
+
+    const previewSettingsObj: ShopSettings = {
+      ...settings,
+      shopName: shopName.trim() || settings.shopName || 'PROTIVA Store',
+      ownerName: ownerName.trim(),
+      tagline: tagline.trim(),
+      address: address.trim() || settings.address,
+      mobile: mobile.trim() || settings.mobile,
+      email: email.trim(),
+      logoUrl,
+      vatTaxRate: Number.isFinite(Number(vatTaxRate)) ? Number(vatTaxRate) : settings.vatTaxRate,
+      vatRegistrationNo: vatRegistrationNo.trim(),
+      invoiceFormat,
+      printerSettings: draftPrinter,
+    };
+
+    const sampleSale: Sale = sales[0] || {
+      id: 'preview-sample-sale',
+      invoiceNumber: 'INV-PREVIEW-001',
+      date: new Date().toISOString(),
+      customerName: 'Walk-in Customer',
+      customerMobile: '+880 1700-000000',
+      items: [
+        {
+          productId: 'sample-1',
+          productName: 'Premium Cotton Polo Shirt',
+          sku: 'POLO-M-NVY',
+          variantDetails: 'Navy / M',
+          quantity: 2,
+          purchasePrice: 550,
+          unitPrice: 850,
+          discount: 0,
+          total: 1700,
+        },
+        {
+          productId: 'sample-2',
+          productName: 'Classic Chino Pant',
+          sku: 'CHNO-32-KHK',
+          variantDetails: 'Khaki / 32',
+          quantity: 1,
+          purchasePrice: 780,
+          unitPrice: 1200,
+          discount: 100,
+          total: 1100,
+        },
+      ],
+      subtotal: 2900,
+      discount: 100,
+      vatTaxRate: previewSettingsObj.vatTaxRate || 0,
+      vatTaxAmount: Math.round((2800 * (previewSettingsObj.vatTaxRate || 0)) / 100),
+      total: 2800 + Math.round((2800 * (previewSettingsObj.vatTaxRate || 0)) / 100),
+      paid: 2800 + Math.round((2800 * (previewSettingsObj.vatTaxRate || 0)) / 100),
+      due: 0,
+      paymentMethod: 'cash',
+      payments: [
+        {
+          method: 'cash',
+          amount: 2800 + Math.round((2800 * (previewSettingsObj.vatTaxRate || 0)) / 100),
+        },
+      ],
+      servedBy: ownerName.trim() || 'Cashier',
+      branchId: branches[0]?.id || 'main',
+      status: 'paid',
+    };
+
+    const previewBranch = branches.find((b) => b.id === sampleSale.branchId) || branches[0] || null;
+    const payload = previewInvoice(sampleSale, previewSettingsObj, invoiceFormat, previewBranch);
+    setInvoicePreviewPayload(payload);
   };
 
   const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -819,12 +912,13 @@ export const SettingsView: React.FC = () => {
 
                 <div>
                   <label className="block font-medium text-slate-700 dark:text-slate-300 mb-1">
-                    Business Email
+                    Business Email / Gmail
                   </label>
                   <input
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
+                    placeholder="shop@gmail.com"
                     className="w-full p-2.5 border border-slate-200 dark:border-[#1F3158] bg-white dark:bg-[#0B1428] text-slate-900 dark:text-white rounded-lg"
                   />
                 </div>
@@ -920,6 +1014,237 @@ export const SettingsView: React.FC = () => {
                         <Trash2 className="w-4 h-4" />
                       </button>
                     )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Invoice Design Settings (Logo & Watermark) */}
+              <div className="p-4 rounded-xl bg-slate-50 dark:bg-[#0B1428] border border-slate-200 dark:border-[#1F3158] space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-200 dark:border-[#1F3158]">
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                      <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                      <span>Invoice Design Settings</span>
+                    </h4>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                      Control header logo visibility and the centered body watermark for invoice preview, print, and PDF exports using your saved Business Logo above.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleOpenInvoicePreview}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white dark:bg-[#162344] hover:bg-slate-100 dark:hover:bg-[#1F3158] border border-slate-300 dark:border-[#2A3F6D] text-slate-800 dark:text-slate-100 font-semibold text-xs transition-colors cursor-pointer"
+                    >
+                      <Eye className="w-3.5 h-3.5 text-[#087F8C]" />
+                      <span>Invoice Preview</span>
+                    </button>
+                    {canEditSettings && (
+                      <button
+                        type="submit"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition-colors cursor-pointer"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        <span>Save Settings</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+                  <fieldset
+                    disabled={!canEditSettings}
+                    className="lg:col-span-7 space-y-3.5 disabled:opacity-60"
+                  >
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <label className="flex items-center justify-between gap-3 p-3 rounded-lg bg-white dark:bg-[#101B35] border border-slate-200 dark:border-[#1F3158] cursor-pointer">
+                        <div>
+                          <div className="font-semibold text-slate-800 dark:text-slate-100">
+                            Header Logo
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {printerSettings.invoiceShowHeaderLogo !== false ? 'Shown at top of invoice' : 'Hidden in invoice header'}
+                          </div>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={printerSettings.invoiceShowHeaderLogo !== false}
+                          onChange={(e) =>
+                            setPrinterSettings({
+                              ...printerSettings,
+                              invoiceShowHeaderLogo: e.target.checked,
+                            })
+                          }
+                          className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 shrink-0"
+                        />
+                      </label>
+
+                      <label className="flex items-center justify-between gap-3 p-3 rounded-lg bg-white dark:bg-[#101B35] border border-slate-200 dark:border-[#1F3158] cursor-pointer">
+                        <div>
+                          <div className="font-semibold text-slate-800 dark:text-slate-100">
+                            Body Watermark
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {printerSettings.invoiceShowWatermark !== false ? 'Centered behind invoice body' : 'Hidden from invoice body'}
+                          </div>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={printerSettings.invoiceShowWatermark !== false}
+                          onChange={(e) =>
+                            setPrinterSettings({
+                              ...printerSettings,
+                              invoiceShowWatermark: e.target.checked,
+                            })
+                          }
+                          className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 shrink-0"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="p-3 rounded-lg bg-white dark:bg-[#101B35] border border-slate-200 dark:border-[#1F3158] space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label
+                            htmlFor="invoice-watermark-size"
+                            className="font-semibold text-slate-800 dark:text-slate-100"
+                          >
+                            Watermark Size
+                          </label>
+                          <span className="font-mono font-bold text-[#087F8C] dark:text-[#D6AD60]">
+                            {clampWatermarkSize(printerSettings.invoiceWatermarkSize)}%
+                          </span>
+                        </div>
+                        <input
+                          id="invoice-watermark-size"
+                          type="range"
+                          min={20}
+                          max={100}
+                          step={1}
+                          disabled={!canEditSettings || printerSettings.invoiceShowWatermark === false}
+                          value={clampWatermarkSize(printerSettings.invoiceWatermarkSize)}
+                          onChange={(e) =>
+                            setPrinterSettings({
+                              ...printerSettings,
+                              invoiceWatermarkSize: clampWatermarkSize(e.target.value),
+                            })
+                          }
+                          className="w-full accent-emerald-600 cursor-pointer"
+                        />
+                        <div className="flex justify-between text-[10px] text-slate-400">
+                          <span>20%</span>
+                          <span>Default 70%</span>
+                          <span>100%</span>
+                        </div>
+                      </div>
+
+                      <div className="p-3 rounded-lg bg-white dark:bg-[#101B35] border border-slate-200 dark:border-[#1F3158] space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label
+                            htmlFor="invoice-watermark-opacity"
+                            className="font-semibold text-slate-800 dark:text-slate-100"
+                          >
+                            Watermark Transparency
+                          </label>
+                          <span className="font-mono font-bold text-[#087F8C] dark:text-[#D6AD60]">
+                            {clampWatermarkOpacity(printerSettings.invoiceWatermarkOpacity)}%
+                          </span>
+                        </div>
+                        <input
+                          id="invoice-watermark-opacity"
+                          type="range"
+                          min={2}
+                          max={30}
+                          step={1}
+                          disabled={!canEditSettings || printerSettings.invoiceShowWatermark === false}
+                          value={clampWatermarkOpacity(printerSettings.invoiceWatermarkOpacity)}
+                          onChange={(e) =>
+                            setPrinterSettings({
+                              ...printerSettings,
+                              invoiceWatermarkOpacity: clampWatermarkOpacity(e.target.value),
+                            })
+                          }
+                          className="w-full accent-emerald-600 cursor-pointer"
+                        />
+                        <div className="flex justify-between text-[10px] text-slate-400">
+                          <span>2% (Faint)</span>
+                          <span>Default 8%</span>
+                          <span>30%</span>
+                        </div>
+                      </div>
+                    </div>
+                  </fieldset>
+
+                  {/* Live Mini Invoice Preview */}
+                  <div className="lg:col-span-5">
+                    <div className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 mb-1.5 flex items-center justify-between">
+                      <span>Live Watermark Preview</span>
+                      <span className="uppercase font-mono text-[10px] text-slate-400">
+                        {invoiceFormat}
+                      </span>
+                    </div>
+                    <div className="relative overflow-hidden rounded-lg border border-slate-200 dark:border-[#1F3158] bg-white text-slate-900 p-3.5 shadow-xs min-h-[152px]">
+                      {printerSettings.invoiceShowWatermark !== false && (
+                        <div
+                          aria-hidden="true"
+                          className="pointer-events-none select-none absolute inset-0 flex items-center justify-center z-0 overflow-hidden"
+                        >
+                          <img
+                            src={logoUrl || APP_IDENTITY.symbolPath}
+                            alt=""
+                            className="object-contain grayscale contrast-105"
+                            style={{
+                              width: `${clampWatermarkSize(printerSettings.invoiceWatermarkSize)}%`,
+                              maxWidth: `${clampWatermarkSize(printerSettings.invoiceWatermarkSize)}%`,
+                              maxHeight: `${clampWatermarkSize(printerSettings.invoiceWatermarkSize)}%`,
+                              opacity: clampWatermarkOpacity(printerSettings.invoiceWatermarkOpacity) / 100,
+                            }}
+                          />
+                        </div>
+                      )}
+                      <div className="relative z-10 space-y-2 text-[10px]">
+                        <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-slate-200">
+                          <div className="flex items-center gap-2 min-w-0">
+                            {printerSettings.invoiceShowHeaderLogo !== false && (
+                              <img
+                                src={logoUrl || APP_IDENTITY.symbolPath}
+                                alt="Header Logo"
+                                className="h-6 max-w-[52px] object-contain shrink-0"
+                              />
+                            )}
+                            <div className="min-w-0">
+                              <div className="font-bold text-[11px] text-slate-900 truncate">
+                                {shopName || settings.shopName || 'PROTIVA Store'}
+                              </div>
+                              <div className="text-[9px] text-slate-500 truncate">
+                                {mobile || settings.mobile || '+880 1700-000000'}
+                              </div>
+                            </div>
+                          </div>
+                          <span className="px-1.5 py-0.5 rounded bg-[#101B3F] text-white font-mono text-[9px] font-bold shrink-0">
+                            INVOICE
+                          </span>
+                        </div>
+                        <div className="space-y-1 text-[9.5px]">
+                          <div className="flex justify-between font-semibold text-slate-600 border-b border-slate-200 pb-0.5">
+                            <span>Item · SKU</span>
+                            <span>Amount</span>
+                          </div>
+                          <div className="flex justify-between text-slate-800">
+                            <span>Premium Cotton Polo × 2</span>
+                            <span className="font-mono font-semibold">৳1,700</span>
+                          </div>
+                          <div className="flex justify-between text-slate-800">
+                            <span>Classic Chino Pant × 1</span>
+                            <span className="font-mono font-semibold">৳1,100</span>
+                          </div>
+                        </div>
+                        <div className="pt-1.5 border-t border-slate-200 flex items-center justify-between text-[10px] font-bold text-slate-900">
+                          <span>Grand Total</span>
+                          <span className="font-mono">৳2,800</span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1982,6 +2307,17 @@ export const SettingsView: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {invoicePreviewPayload && (
+        <PrintPreviewModal
+          isOpen={true}
+          title={invoicePreviewPayload.title}
+          html={invoicePreviewPayload.html}
+          paperInfo={invoicePreviewPayload.paperInfo}
+          showScaleGuidance={invoicePreviewPayload.showScaleGuidance}
+          onClose={() => setInvoicePreviewPayload(null)}
+        />
       )}
     </div>
   );

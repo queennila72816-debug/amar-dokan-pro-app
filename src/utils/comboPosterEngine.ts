@@ -2209,13 +2209,13 @@ export function printPosterCanvases(
     .join('');
 
   const html = `<!DOCTYPE html>
-  <html>
+  <html class="adp-poster-doc">
     <head>
       <meta charset="utf-8" />
       <title>${title}</title>
       <style>
         @page { size: ${pageCssSize}; margin: 0; }
-        html, body { margin: 0; padding: 0; background: #fff; }
+        html.adp-poster-doc, html.adp-poster-doc body { margin: 0; padding: 0; background: #fff; }
         .poster-page {
           width: 100vw;
           height: 100vh;
@@ -2224,7 +2224,7 @@ export function printPosterCanvases(
           justify-content: center;
           overflow: hidden;
         }
-        img {
+        .poster-page img {
           max-width: 100%;
           max-height: 100%;
           object-fit: contain;

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { InvoicePaperSize, Sale, ShopSettings } from '../../types';
+import { InstallmentAgreement, InvoicePaperSize, Sale, ShopSettings } from '../../types';
 import { useApp } from '../../context/AppContext';
 import { APP_IDENTITY, resolveBusinessProfile } from '../../config/appIdentity';
 import { formatCurrency, formatDate, formatTime } from '../../utils/formatters';
@@ -25,18 +25,28 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronUp,
+  CalendarClock,
 } from 'lucide-react';
 
 interface InvoiceModalProps {
   sale: Sale | null;
   onClose: () => void;
   settings: ShopSettings;
+  installmentAgreement?: InstallmentAgreement | null;
+  onOpenInstallmentSlip?: () => void;
 }
 
-export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, settings }) => {
+export const InvoiceModal: React.FC<InvoiceModalProps> = ({
+  sale,
+  onClose,
+  settings,
+  installmentAgreement,
+  onOpenInstallmentSlip,
+}) => {
   const { hasPermission, branches, activeBranchId, products } = useApp();
   const canPrintInvoice = hasPermission('invoice_printing', 'print');
-  const defaultPaper = getPrinterSettings(settings).invoicePaperSize || settings.invoiceFormat || 'thermal';
+  const printerCfg = getPrinterSettings(settings);
+  const defaultPaper = printerCfg.invoicePaperSize || settings.invoiceFormat || 'thermal';
   const [format, setFormat] = useState<InvoicePaperSize>(defaultPaper);
   const [copied, setCopied] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
@@ -61,6 +71,11 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
   const activeBranch = branches.find(b => b.id === activeBranchId) || branches[0];
   const biz = resolveBusinessProfile(settings, activeBranch);
   const shopLogo = getShopLogo(settings);
+  const effectiveLogo = shopLogo || APP_IDENTITY.symbolPath;
+  const showHeaderLogo = printerCfg.invoiceShowHeaderLogo !== false;
+  const showBodyWatermark = printerCfg.invoiceShowWatermark !== false;
+  const watermarkSize = Math.max(20, Math.min(100, Number(printerCfg.invoiceWatermarkSize ?? 70)));
+  const watermarkOpacity = Math.max(2, Math.min(30, Number(printerCfg.invoiceWatermarkOpacity ?? 8)));
 
   const handlePrint = () => {
     if (!canPrintInvoice) {
@@ -191,15 +206,37 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
               /* Thermal POS Receipt Format (80mm standard) */
               <div
                 id="printable-receipt"
-                className="print-paper-white bg-white p-5 rounded-lg shadow-sm border border-slate-200 w-full max-w-[340px] text-slate-900 text-xs font-mono"
+                className="print-paper-white relative overflow-hidden bg-white p-5 rounded-lg shadow-sm border border-slate-200 w-full max-w-[340px] text-slate-900 text-xs font-mono"
               >
+                {showBodyWatermark && (
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none select-none absolute inset-0 z-0 flex items-center justify-center overflow-hidden"
+                  >
+                    <img
+                      src={effectiveLogo}
+                      alt=""
+                      style={{
+                        width: `${watermarkSize}%`,
+                        maxWidth: `${watermarkSize}%`,
+                        maxHeight: `${watermarkSize}%`,
+                        opacity: watermarkOpacity / 100,
+                        filter: 'grayscale(100%) contrast(105%)',
+                      }}
+                      className="object-contain"
+                    />
+                  </div>
+                )}
+
                 {/* Shop Info */}
-                <div className="text-center space-y-1 pb-3 border-b border-dashed border-slate-300">
-                  <img
-                    src={shopLogo || APP_IDENTITY.symbolPath}
-                    alt={shopLogo ? biz.shopName : APP_IDENTITY.name}
-                    className="h-9 max-w-[120px] object-contain mx-auto mb-1"
-                  />
+                <div className="relative z-10 text-center space-y-1 pb-3 border-b border-dashed border-slate-300">
+                  {showHeaderLogo && (
+                    <img
+                      src={effectiveLogo}
+                      alt={shopLogo ? biz.shopName : APP_IDENTITY.name}
+                      className="h-9 max-w-[120px] object-contain mx-auto mb-1"
+                    />
+                  )}
                   <h2 className="text-sm font-bold tracking-tight text-[#101B3F] font-sans">
                     {biz.shopName}
                   </h2>
@@ -221,7 +258,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                 </div>
 
                 {/* Invoice Meta */}
-                <div className="py-2 border-b border-dashed border-slate-300 text-[11px] space-y-0.5">
+                <div className="relative z-10 py-2 border-b border-dashed border-slate-300 text-[11px] space-y-0.5">
                   <div className="flex justify-between">
                     <span>Invoice No:</span>
                     <span className="font-bold">{sale.invoiceNumber}</span>
@@ -252,7 +289,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                 </div>
 
                 {/* Items List */}
-                <div className="py-2 border-b border-dashed border-slate-300">
+                <div className="relative z-10 py-2 border-b border-dashed border-slate-300">
                   <div className="flex justify-between font-bold text-[11px] pb-1">
                     <span>Item &amp; Qty</span>
                     <span>Amount</span>
@@ -326,7 +363,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                 </div>
 
                 {/* Bill Calculation */}
-                <div className="py-2 border-b border-dashed border-slate-300 space-y-1 text-[11px]">
+                <div className="relative z-10 py-2 border-b border-dashed border-slate-300 space-y-1 text-[11px]">
                   <div className="flex justify-between text-slate-600">
                     <span>Subtotal:</span>
                     <span className="font-mono-num">{formatCurrency(sale.subtotal, 'en')}</span>
@@ -377,7 +414,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                 </div>
 
                 {/* Barcode & Footer */}
-                <div className="pt-3 text-center space-y-1.5">
+                <div className="relative z-10 pt-3 text-center space-y-1.5">
                   <div className="flex justify-center items-center py-1">
                     <BarcodeSvg value={sale.invoiceNumber} width={180} height={32} showText={true} />
                   </div>
@@ -396,18 +433,40 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
               /* A4 or A5 Invoice Layout */
               <div
                 id="printable-receipt"
-                className={`print-paper-white bg-white p-6 sm:p-8 rounded-lg shadow-sm border border-slate-200 w-full text-slate-900 text-xs ${
+                className={`print-paper-white relative overflow-hidden bg-white p-6 sm:p-8 rounded-lg shadow-sm border border-slate-200 w-full text-slate-900 text-xs ${
                   format === 'a5' ? 'max-w-md' : 'max-w-xl'
                 }`}
               >
-                {/* Header */}
-                <div className="flex justify-between items-start pb-5 border-b-2 border-[#101B3F] gap-4">
-                  <div className="flex items-start gap-3">
+                {showBodyWatermark && (
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none select-none absolute inset-0 z-0 flex items-center justify-center overflow-hidden"
+                  >
                     <img
-                      src={shopLogo || APP_IDENTITY.symbolPath}
-                      alt={shopLogo ? biz.shopName : APP_IDENTITY.name}
-                      className="h-12 max-w-[110px] object-contain shrink-0"
+                      src={effectiveLogo}
+                      alt=""
+                      style={{
+                        width: `${watermarkSize}%`,
+                        maxWidth: `${watermarkSize}%`,
+                        maxHeight: `${watermarkSize}%`,
+                        opacity: watermarkOpacity / 100,
+                        filter: 'grayscale(100%) contrast(105%)',
+                      }}
+                      className="object-contain"
                     />
+                  </div>
+                )}
+
+                {/* Header */}
+                <div className="relative z-10 flex justify-between items-start pb-5 border-b-2 border-[#101B3F] gap-4">
+                  <div className="flex items-start gap-3">
+                    {showHeaderLogo && (
+                      <img
+                        src={effectiveLogo}
+                        alt={shopLogo ? biz.shopName : APP_IDENTITY.name}
+                        className="h-12 max-w-[110px] object-contain shrink-0"
+                      />
+                    )}
                     <div>
                       <h1 className="text-lg sm:text-xl font-bold text-[#101B3F]">{biz.shopName}</h1>
                       {biz.tagline && <p className="text-xs text-slate-500 mt-0.5">{biz.tagline}</p>}
@@ -438,7 +497,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                 </div>
 
                 {/* Bill To */}
-                <div className="py-4 border-b border-slate-200 grid grid-cols-2 gap-4">
+                <div className="relative z-10 py-4 border-b border-slate-200 grid grid-cols-2 gap-4">
                   <div>
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
                       BILL TO (CUSTOMER)
@@ -460,7 +519,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                 </div>
 
                 {/* Items Table */}
-                <div className="py-4 overflow-x-auto">
+                <div className="relative z-10 py-4 overflow-x-auto">
                   <table className="w-full text-left">
                     <thead>
                       <tr className="border-b border-slate-200 text-slate-500 text-[11px]">
@@ -573,7 +632,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                 </div>
 
                 {/* Total Summary */}
-                <div className="pt-3 border-t border-slate-200 flex flex-col sm:flex-row justify-between items-start gap-4">
+                <div className="relative z-10 pt-3 border-t border-slate-200 flex flex-col sm:flex-row justify-between items-start gap-4">
                   <div className="pt-1">
                     <BarcodeSvg value={sale.invoiceNumber} width={150} height={30} showText={true} />
                   </div>
@@ -629,7 +688,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                 </div>
 
                 {/* Signature & Note */}
-                <div className="pt-10 flex justify-between items-end text-slate-500 text-[11px]">
+                <div className="relative z-10 pt-10 flex justify-between items-end text-slate-500 text-[11px]">
                   <div>
                     <p>For exchange or return, please bring this invoice within 3 days.</p>
                     <p className="font-semibold text-slate-700 mt-1">Thank you!</p>
@@ -638,7 +697,7 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
                     <p>Authorized Signature</p>
                   </div>
                 </div>
-                <div className="mt-5 pt-2.5 border-t border-slate-200 flex items-center justify-between text-[10px] text-slate-400">
+                <div className="relative z-10 mt-5 pt-2.5 border-t border-slate-200 flex items-center justify-between text-[10px] text-slate-400">
                   <span>Powered by <strong className="text-[#101B3F]">{APP_IDENTITY.name}</strong></span>
                   <span>{APP_IDENTITY.subtitle}</span>
                 </div>
@@ -667,7 +726,17 @@ export const InvoiceModal: React.FC<InvoiceModalProps> = ({ sale, onClose, setti
               </button>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {installmentAgreement && onOpenInstallmentSlip && (
+                <button
+                  type="button"
+                  onClick={onOpenInstallmentSlip}
+                  className="flex items-center justify-center gap-1.5 px-3.5 py-2 text-xs md:text-sm font-bold text-white bg-[#0B2A6B] hover:brightness-110 rounded-[10px] shadow-xs transition-all cursor-pointer"
+                >
+                  <CalendarClock className="w-4 h-4" />
+                  <span>Installment Slip ({installmentAgreement.durationMonths}M)</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={onClose}

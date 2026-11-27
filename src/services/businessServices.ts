@@ -13,6 +13,50 @@ import {
   StockTransfer,
 } from '../types';
 
+const CUSTOMER_KYC_LOCAL_PREFIX = 'AMAR_DOKAN_PRO_CUST_KYC_V1_';
+
+type CustomerKycPatch = Pick<
+  Customer,
+  'customerCode' | 'photoUrl' | 'nidNumber' | 'nidFrontUrl' | 'nidBackUrl' | 'kycConsent' | 'kycConsentAt'
+>;
+
+function readLocalCustomerKycMap(businessId?: string): Record<string, CustomerKycPatch> {
+  try {
+    if (typeof localStorage === 'undefined') return {};
+    const key = `${CUSTOMER_KYC_LOCAL_PREFIX}${businessId || 'default'}`;
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLocalCustomerKycPatch(
+  customerId: string,
+  patch: CustomerKycPatch,
+  businessId?: string
+): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    const key = `${CUSTOMER_KYC_LOCAL_PREFIX}${businessId || 'default'}`;
+    const existing = readLocalCustomerKycMap(businessId);
+    existing[customerId] = { ...(existing[customerId] || {}), ...patch };
+    localStorage.setItem(key, JSON.stringify(existing));
+  } catch {
+    // non-fatal
+  }
+}
+
+function isMissingColumnError(err: any): boolean {
+  const code = String(err?.code || '');
+  const msg = String(err?.message || '').toLowerCase();
+  return (
+    code === 'PGRST204' ||
+    code === '42703' ||
+    (msg.includes('column') && (msg.includes('does not exist') || msg.includes('schema cache')))
+  );
+}
+
 export const customerService = {
   async fetchCustomers(businessId?: string): Promise<Customer[]> {
     if (!isSupabaseConfigured) throw new Error('Supabase client is not configured.');
@@ -20,21 +64,32 @@ export const customerService = {
     if (businessId) query = query.eq('business_id', businessId);
     const { data, error } = await query;
     if (error) throw error;
-    return (data || []).map((c: any) => ({
-      id: c.id,
-      name: c.name,
-      mobile: c.mobile,
-      address: c.address || undefined,
-      email: c.email || undefined,
-      customerType: c.customer_type || 'retail',
-      openingDue: Number(c.opening_due || 0),
-      currentDue: Number(c.current_due || 0),
-      creditLimit: Number(c.credit_limit || 0),
-      totalPurchase: Number(c.total_purchase || 0),
-      totalPaid: Number(c.total_paid || 0),
-      createdAt: c.created_at,
-      notes: c.notes || undefined,
-    }));
+    const localKyc = readLocalCustomerKycMap(businessId);
+    return (data || []).map((c: any) => {
+      const kyc = localKyc[c.id] || {};
+      return {
+        id: c.id,
+        customerCode: c.customer_code || kyc.customerCode || undefined,
+        name: c.name,
+        mobile: c.mobile,
+        address: c.address || undefined,
+        email: c.email || undefined,
+        customerType: c.customer_type || 'retail',
+        openingDue: Number(c.opening_due || 0),
+        currentDue: Number(c.current_due || 0),
+        creditLimit: Number(c.credit_limit || 0),
+        totalPurchase: Number(c.total_purchase || 0),
+        totalPaid: Number(c.total_paid || 0),
+        createdAt: c.created_at,
+        notes: c.notes || undefined,
+        photoUrl: c.photo_url || kyc.photoUrl || undefined,
+        nidNumber: c.nid_number || kyc.nidNumber || undefined,
+        nidFrontUrl: c.nid_front_url || kyc.nidFrontUrl || undefined,
+        nidBackUrl: c.nid_back_url || kyc.nidBackUrl || undefined,
+        kycConsent: c.kyc_consent ?? kyc.kycConsent ?? undefined,
+        kycConsentAt: c.kyc_consent_at || kyc.kycConsentAt || undefined,
+      };
+    });
   },
 
   async fetchCustomerTransactions(businessId: string): Promise<CustomerTransaction[]> {
@@ -67,7 +122,7 @@ export const customerService = {
   ): Promise<Customer> {
     if (!isSupabaseConfigured) throw new Error('Supabase client is not configured.');
     const opDue = Number(data.openingDue || 0);
-    const payload = {
+    const basePayload: any = {
       business_id: businessId,
       name: data.name,
       mobile: data.mobile,
@@ -81,8 +136,52 @@ export const customerService = {
       total_paid: 0,
       notes: data.notes || null,
     };
-    const { data: res, error } = await supabase.from('customers').insert(payload).select().single();
-    if (error) throw error;
+    const extendedPayload: any = {
+      ...basePayload,
+      customer_code: data.customerCode || null,
+      photo_url: data.photoUrl || null,
+      nid_number: data.nidNumber || null,
+      nid_front_url: data.nidFrontUrl || null,
+      nid_back_url: data.nidBackUrl || null,
+      kyc_consent: data.kycConsent ?? false,
+      kyc_consent_at: data.kycConsentAt || null,
+    };
+
+    let res: any;
+    let insertErr: any;
+    ({ data: res, error: insertErr } = await supabase
+      .from('customers')
+      .insert(extendedPayload)
+      .select()
+      .single());
+
+    if (insertErr && isMissingColumnError(insertErr)) {
+      ({ data: res, error: insertErr } = await supabase
+        .from('customers')
+        .insert(basePayload)
+        .select()
+        .single());
+    }
+    if (insertErr) throw insertErr;
+
+    const kycPatch: CustomerKycPatch = {
+      customerCode: data.customerCode,
+      photoUrl: data.photoUrl,
+      nidNumber: data.nidNumber,
+      nidFrontUrl: data.nidFrontUrl,
+      nidBackUrl: data.nidBackUrl,
+      kycConsent: data.kycConsent,
+      kycConsentAt: data.kycConsentAt,
+    };
+    if (
+      kycPatch.customerCode ||
+      kycPatch.photoUrl ||
+      kycPatch.nidNumber ||
+      kycPatch.nidFrontUrl ||
+      kycPatch.nidBackUrl
+    ) {
+      saveLocalCustomerKycPatch(res.id, kycPatch, businessId);
+    }
 
     if (opDue > 0) {
       const { error: txErr } = await supabase.from('customer_transactions').insert({
@@ -99,6 +198,7 @@ export const customerService = {
 
     return {
       id: res.id,
+      customerCode: res.customer_code || data.customerCode || undefined,
       name: res.name,
       mobile: res.mobile,
       address: res.address || undefined,
@@ -111,26 +211,71 @@ export const customerService = {
       totalPaid: Number(res.total_paid || 0),
       createdAt: res.created_at,
       notes: res.notes || undefined,
+      photoUrl: res.photo_url || data.photoUrl || undefined,
+      nidNumber: res.nid_number || data.nidNumber || undefined,
+      nidFrontUrl: res.nid_front_url || data.nidFrontUrl || undefined,
+      nidBackUrl: res.nid_back_url || data.nidBackUrl || undefined,
+      kycConsent: res.kyc_consent ?? data.kycConsent ?? undefined,
+      kycConsentAt: res.kyc_consent_at || data.kycConsentAt || undefined,
     };
   },
 
   async updateCustomer(id: string, data: Partial<Customer>, businessId?: string): Promise<void> {
     if (!isSupabaseConfigured) throw new Error('Supabase client is not configured.');
-    const payload: any = { updated_at: new Date().toISOString() };
-    if (data.name !== undefined) payload.name = data.name;
-    if (data.mobile !== undefined) payload.mobile = data.mobile;
-    if (data.address !== undefined) payload.address = data.address;
-    if (data.email !== undefined) payload.email = data.email;
-    if (data.customerType !== undefined) payload.customer_type = data.customerType;
-    if (data.currentDue !== undefined) payload.current_due = data.currentDue;
-    if (data.creditLimit !== undefined) payload.credit_limit = data.creditLimit;
-    if (data.totalPurchase !== undefined) payload.total_purchase = data.totalPurchase;
-    if (data.totalPaid !== undefined) payload.total_paid = data.totalPaid;
-    if (data.notes !== undefined) payload.notes = data.notes;
+    const basePayload: any = { updated_at: new Date().toISOString() };
+    if (data.name !== undefined) basePayload.name = data.name;
+    if (data.mobile !== undefined) basePayload.mobile = data.mobile;
+    if (data.address !== undefined) basePayload.address = data.address;
+    if (data.email !== undefined) basePayload.email = data.email;
+    if (data.customerType !== undefined) basePayload.customer_type = data.customerType;
+    if (data.currentDue !== undefined) basePayload.current_due = data.currentDue;
+    if (data.creditLimit !== undefined) basePayload.credit_limit = data.creditLimit;
+    if (data.totalPurchase !== undefined) basePayload.total_purchase = data.totalPurchase;
+    if (data.totalPaid !== undefined) basePayload.total_paid = data.totalPaid;
+    if (data.notes !== undefined) basePayload.notes = data.notes;
 
-    let query = supabase.from('customers').update(payload).eq('id', id);
+    const extPayload: any = { ...basePayload };
+    if (data.customerCode !== undefined) extPayload.customer_code = data.customerCode || null;
+    if (data.photoUrl !== undefined) extPayload.photo_url = data.photoUrl || null;
+    if (data.nidNumber !== undefined) extPayload.nid_number = data.nidNumber || null;
+    if (data.nidFrontUrl !== undefined) extPayload.nid_front_url = data.nidFrontUrl || null;
+    if (data.nidBackUrl !== undefined) extPayload.nid_back_url = data.nidBackUrl || null;
+    if (data.kycConsent !== undefined) extPayload.kyc_consent = Boolean(data.kycConsent);
+    if (data.kycConsentAt !== undefined) extPayload.kyc_consent_at = data.kycConsentAt || null;
+
+    if (
+      data.customerCode !== undefined ||
+      data.photoUrl !== undefined ||
+      data.nidNumber !== undefined ||
+      data.nidFrontUrl !== undefined ||
+      data.nidBackUrl !== undefined ||
+      data.kycConsent !== undefined
+    ) {
+      saveLocalCustomerKycPatch(
+        id,
+        {
+          customerCode: data.customerCode,
+          photoUrl: data.photoUrl,
+          nidNumber: data.nidNumber,
+          nidFrontUrl: data.nidFrontUrl,
+          nidBackUrl: data.nidBackUrl,
+          kycConsent: data.kycConsent,
+          kycConsentAt: data.kycConsentAt,
+        },
+        businessId
+      );
+    }
+
+    let query = supabase.from('customers').update(extPayload).eq('id', id);
     if (businessId) query = query.eq('business_id', businessId);
-    const { error } = await query;
+    let { error } = await query;
+
+    if (error && isMissingColumnError(error)) {
+      let fallbackQ = supabase.from('customers').update(basePayload).eq('id', id);
+      if (businessId) fallbackQ = fallbackQ.eq('business_id', businessId);
+      const resFallback = await fallbackQ;
+      error = resFallback.error;
+    }
     if (error) throw error;
   },
 
